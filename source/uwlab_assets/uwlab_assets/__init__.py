@@ -23,6 +23,10 @@ UWLAB_ASSETS_METADATA = toml.load(os.path.join(UWLAB_ASSETS_EXT_DIR, "config", "
 
 UWLAB_CLOUD_ASSETS_DIR = "https://huggingface.co/datasets/UW-Lab/uwlab-assets/resolve/main"
 
+UWLAB_LOCAL_ASSETS_DIR = os.path.join(os.path.dirname(__file__), "local")
+"""Path to in-repo local (dev) assets, resolved relative to this package so it is portable
+across machines. Mirrors the layout under ``UWLAB_CLOUD_ASSETS_DIR`` (e.g. ``Props/Custom/...``)."""
+
 
 def _extract_relative_path(url: str) -> str:
     """Strip the HuggingFace resolve-URL prefix, returning the repo-relative path.
