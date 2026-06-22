@@ -42,13 +42,17 @@ _CORNERS = [
     (-1, 1, 1),
 ]
 _FACE_COUNTS = [4, 4, 4, 4, 4, 4]
+# Winding is CCW as seen from outside so face normals point OUTWARD. This matters because
+# the grasp sampler reads the visual mesh's trimesh face_normals (process=False, i.e. winding
+# is trusted) to bias toward top faces and cast grasp rays along -normal. Inward normals yield
+# zero grasp candidates. (Verified: for a box centered on the prim, dot(normal, centroid) > 0.)
 _FACE_INDICES = [
-    0, 1, 2, 3,  # -Z
-    4, 7, 6, 5,  # +Z
-    0, 4, 5, 1,  # -Y
-    2, 6, 7, 3,  # +Y
-    0, 3, 7, 4,  # -X
-    1, 5, 6, 2,  # +X
+    0, 3, 2, 1,  # -Z
+    4, 5, 6, 7,  # +Z
+    0, 1, 5, 4,  # -Y
+    3, 7, 6, 2,  # +Y
+    0, 4, 7, 3,  # -X
+    1, 2, 6, 5,  # +X
 ]
 
 
