@@ -75,11 +75,15 @@ def create_stage(usd_path: str, root_name: str, friction: float = 0.5) -> tuple[
 
     root = UsdGeom.Xform.Define(stage, f"/{root_name}")
     stage.SetDefaultPrim(root.GetPrim())
-    # Mark the root as a single rigid body; the spawn config overrides mass/kinematic flags.
+    # Mark the root as a single rigid body; the spawn config overrides kinematic flag.
     UsdPhysics.RigidBodyAPI.Apply(root.GetPrim())
-    # MassAPI must exist for the spawn config's mass_props to apply (isaaclab
-    # modify_mass_properties returns False otherwise). The mass value is set at spawn time.
-    UsdPhysics.MassAPI.Apply(root.GetPrim())
+    # NOTE: deliberately do NOT apply MassAPI. The reference assets (e.g. the cube) author no
+    # mass/density, so the spawn config's mass=0.001 silently fails to apply (a harmless
+    # "could not modify mass" warning) and PhysX auto-computes mass from collision volume x
+    # default density (~tens of grams). Applying MassAPI makes mass=0.001 (1 g) actually take
+    # effect, which is ~80x too light: the grasp-success perturbation force (0.01) then flings
+    # the object (a=F/m) past the stability threshold, so grasps/manipulation fail. Matching the
+    # cube (no MassAPI -> auto-computed mass) is required for stable grasping and training.
 
     UsdGeom.Scope.Define(stage, f"/{root_name}/visuals")
     UsdGeom.Scope.Define(stage, f"/{root_name}/collisions")
