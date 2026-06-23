@@ -43,7 +43,7 @@ def main() -> None:
     parser.add_argument("--clearance", type=float, default=0.005, help="Gap per side between PCB and wall (m).")
     parser.add_argument("--wall", type=float, default=0.004, help="Side wall thickness (m).")
     parser.add_argument("--floor", type=float, default=0.004, help="Floor thickness (m).")
-    parser.add_argument("--depth", type=float, default=0.015, help="Cavity depth above the floor (m).")
+    parser.add_argument("--depth", type=float, default=0.035, help="Cavity depth above the floor (m).")
     parser.add_argument("--output", type=str, default=_DEFAULT_OUT, help="Output .usd path.")
     args = parser.parse_args()
 
