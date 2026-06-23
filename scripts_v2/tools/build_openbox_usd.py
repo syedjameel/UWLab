@@ -92,8 +92,8 @@ def main() -> None:
     metadata = {
         "assembled_offset": {"pos": [0.0, 0.0, round(floor_top, 6)], "quat": [1.0, 0.0, 0.0, 0.0]},
         "bottom_offset": {"pos": [0.0, 0.0, round(z_bottom, 6)], "quat": [1.0, 0.0, 0.0, 0.0]},
-        # Loose fit (PCB + 5mm/side clearance); tighten for harder tasks.
-        "success_thresholds": {"position": 0.005, "orientation": 0.05},
+        # Match the reference cube asset's thresholds exactly.
+        "success_thresholds": {"position": 0.005, "orientation": 0.025},
     }
     meta_path = write_metadata(args.output, metadata)
 

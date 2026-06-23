@@ -54,6 +54,9 @@ _FACE_INDICES = [
     0, 4, 7, 3,  # -X
     1, 2, 6, 5,  # +X
 ]
+# Outward normal per face (same face order as _FACE_INDICES), authored explicitly to mirror
+# the reference cube asset (faceVarying, 4 normals per quad face).
+_FACE_NORMAL_DIRS = [(0, 0, -1), (0, 0, 1), (0, -1, 0), (0, 1, 0), (-1, 0, 0), (1, 0, 0)]
 
 
 def create_stage(usd_path: str, root_name: str, friction: float = 0.5) -> tuple[Usd.Stage, UsdGeom.Xform, str]:
@@ -129,6 +132,9 @@ def add_box(
     mesh.CreateExtentAttr(
         Vt.Vec3fArray([Gf.Vec3f(cx - hx, cy - hy, cz - hz), Gf.Vec3f(cx + hx, cy + hy, cz + hz)])
     )
+    # Explicit outward face-varying normals (mirrors the reference cube asset).
+    mesh.CreateNormalsAttr(Vt.Vec3fArray([Gf.Vec3f(*n) for n in _FACE_NORMAL_DIRS for _ in range(4)]))
+    mesh.SetNormalsInterpolation(UsdGeom.Tokens.faceVarying)
 
     if collision:
         UsdGeom.Imageable(mesh).CreateVisibilityAttr(UsdGeom.Tokens.invisible)

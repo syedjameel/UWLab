@@ -4,4 +4,4 @@ assembled_offset:
 bottom_offset:
   pos: [0.0, 0.0, -0.0195]
   quat: [1.0, 0.0, 0.0, 0.0]
-success_thresholds: {position: 0.005, orientation: 0.05}
+success_thresholds: {position: 0.005, orientation: 0.025}
