@@ -28,7 +28,7 @@ import os
 from collections.abc import Sequence
 
 import yaml
-from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, Vt
+from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, UsdShade, Vt
 
 # Box corner offsets (unit half-extents) and outward quad faces.
 _CORNERS = [
@@ -56,8 +56,18 @@ _FACE_INDICES = [
 ]
 
 
-def create_stage(usd_path: str, root_name: str) -> tuple[Usd.Stage, UsdGeom.Xform]:
-    """Create a Z-up, meter-scale stage with an Xform root that is a rigid body."""
+def create_stage(usd_path: str, root_name: str, friction: float = 0.5) -> tuple[Usd.Stage, UsdGeom.Xform, str]:
+    """Create a Z-up, meter-scale stage with an Xform root that is a rigid body.
+
+    Also authors a ``PhysicsMaterial`` (static/dynamic friction = ``friction``) under the
+    root and returns its path. This mirrors the cloud cube asset and is **required**: the
+    grasp-sampling environment does NOT randomize friction, so it relies on the friction
+    baked into the USD. Without it the gripper cannot hold the object and grasp sampling
+    nearly always fails. (Training/reset envs override friction via events, but grasp
+    sampling does not.)
+
+    Returns ``(stage, root_xform, physics_material_path)``.
+    """
     os.makedirs(os.path.dirname(os.path.abspath(usd_path)), exist_ok=True)
     stage = Usd.Stage.CreateNew(usd_path)
     UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
@@ -73,7 +83,14 @@ def create_stage(usd_path: str, root_name: str) -> tuple[Usd.Stage, UsdGeom.Xfor
 
     UsdGeom.Scope.Define(stage, f"/{root_name}/visuals")
     UsdGeom.Scope.Define(stage, f"/{root_name}/collisions")
-    return stage, root
+
+    # Physics material with friction, matching the reference cube asset.
+    mat_path = f"/{root_name}/PhysicsMaterial"
+    material = UsdShade.Material.Define(stage, mat_path)
+    mat_api = UsdPhysics.MaterialAPI.Apply(material.GetPrim())
+    mat_api.CreateStaticFrictionAttr(friction)
+    mat_api.CreateDynamicFrictionAttr(friction)
+    return stage, root, mat_path
 
 
 def add_box(
@@ -84,6 +101,7 @@ def add_box(
     *,
     collision: bool,
     color: Sequence[float] | None = None,
+    material_path: str | None = None,
 ) -> UsdGeom.Mesh:
     """Author an axis-aligned box mesh.
 
@@ -92,6 +110,7 @@ def add_box(
         half_extents: box half-sizes along x, y, z (meters).
         collision: if True author an invisible collider; else a rendered visual mesh.
         color: optional RGB display color for visual meshes.
+        material_path: if given (collision only), bind this physics material to the collider.
     """
     cx, cy, cz = center
     hx, hy, hz = half_extents
@@ -113,6 +132,10 @@ def add_box(
         mesh_collision = UsdPhysics.MeshCollisionAPI.Apply(mesh.GetPrim())
         # convexHull is exact for a box and needs no PhysX SDF cooking.
         mesh_collision.CreateApproximationAttr(UsdPhysics.Tokens.convexHull)
+        if material_path is not None:
+            binding = UsdShade.MaterialBindingAPI.Apply(mesh.GetPrim())
+            material = UsdShade.Material(stage.GetPrimAtPath(material_path))
+            binding.Bind(material, bindingStrength=UsdShade.Tokens.weakerThanDescendants)
     elif color is not None:
         mesh.CreateDisplayColorAttr(Vt.Vec3fArray([Gf.Vec3f(*color)]))
 

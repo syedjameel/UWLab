@@ -38,13 +38,13 @@ def main() -> None:
 
     if os.path.exists(args.output):
         os.remove(args.output)
-    stage, _ = create_stage(args.output, root_name="Pcb")
+    stage, _, mat = create_stage(args.output, root_name="Pcb")
 
     # Origin at the slab center -> visual and collision boxes are both centered at z=0.
     add_box(stage, "/Pcb/visuals/slab", center=(0, 0, 0), half_extents=(hx, hy, hz),
             collision=False, color=(0.10, 0.40, 0.18))
     add_box(stage, "/Pcb/collisions/slab", center=(0, 0, 0), half_extents=(hx, hy, hz),
-            collision=True)
+            collision=True, material_path=mat)
     stage.GetRootLayer().Save()
 
     # bottom_offset.z = -(origin -> lowest point) = -thickness/2.

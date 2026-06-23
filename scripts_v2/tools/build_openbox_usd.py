@@ -79,12 +79,12 @@ def main() -> None:
 
     if os.path.exists(args.output):
         os.remove(args.output)
-    stage, _ = create_stage(args.output, root_name="OpenBox")
+    stage, _, mat = create_stage(args.output, root_name="OpenBox")
     for name, center, half in boxes:
         add_box(stage, f"/OpenBox/visuals/{name}", center=center, half_extents=half,
                 collision=False, color=_COLOR)
         add_box(stage, f"/OpenBox/collisions/{name}", center=center, half_extents=half,
-                collision=True)
+                collision=True, material_path=mat)
     stage.GetRootLayer().Save()
 
     # bottom_offset.z = -height/2 (origin -> lowest point).
