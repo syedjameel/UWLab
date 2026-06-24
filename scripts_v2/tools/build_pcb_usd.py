@@ -30,7 +30,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Build the PCB insertive slab USD asset.")
     parser.add_argument("--length", type=float, default=0.040, help="PCB length along X (m).")
     parser.add_argument("--width", type=float, default=0.040, help="PCB width along Y (m).")
-    parser.add_argument("--thickness", type=float, default=0.040, help="PCB thickness along Z (m).")
+    parser.add_argument("--thickness", type=float, default=0.020, help="PCB thickness along Z (m).")
     parser.add_argument("--output", type=str, default=_DEFAULT_OUT, help="Output .usd path.")
     args = parser.parse_args()
 
@@ -41,8 +41,9 @@ def main() -> None:
     stage, _, mat = create_stage(args.output, root_name="Pcb")
 
     # Origin at the slab center -> visual and collision boxes are both centered at z=0.
+    # The +Z (top) face is dark green so the top side is visually identifiable in sim/playback.
     add_box(stage, "/Pcb/visuals/slab", center=(0, 0, 0), half_extents=(hx, hy, hz),
-            collision=False, color=(0.10, 0.40, 0.18))
+            collision=False, color=(0.20, 0.55, 0.30), top_color=(0.0, 0.20, 0.05))
     add_box(stage, "/Pcb/collisions/slab", center=(0, 0, 0), half_extents=(hx, hy, hz),
             collision=True, material_path=mat)
     stage.GetRootLayer().Save()

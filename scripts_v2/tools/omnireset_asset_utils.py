@@ -108,6 +108,7 @@ def add_box(
     *,
     collision: bool,
     color: Sequence[float] | None = None,
+    top_color: Sequence[float] | None = None,
     material_path: str | None = None,
 ) -> UsdGeom.Mesh:
     """Author an axis-aligned box mesh.
@@ -117,6 +118,9 @@ def add_box(
         half_extents: box half-sizes along x, y, z (meters).
         collision: if True author an invisible collider; else a rendered visual mesh.
         color: optional RGB display color for visual meshes.
+        top_color: if given (visual only), color the +Z (top) face with this RGB instead of
+            ``color``, so the top side is visually identifiable. Authored as a per-face
+            (uniform) displayColor, one entry per face in ``_FACE_INDICES`` order.
         material_path: if given (collision only), bind this physics material to the collider.
     """
     cx, cy, cz = center
@@ -146,6 +150,13 @@ def add_box(
             binding = UsdShade.MaterialBindingAPI.Apply(mesh.GetPrim())
             material = UsdShade.Material(stage.GetPrimAtPath(material_path))
             binding.Bind(material, bindingStrength=UsdShade.Tokens.weakerThanDescendants)
+    elif top_color is not None and color is not None:
+        # Per-face (uniform) colors: +Z (face index 1 in _FACE_INDICES) gets top_color.
+        base = Gf.Vec3f(*color)
+        face_colors = [base] * len(_FACE_COUNTS)
+        face_colors[1] = Gf.Vec3f(*top_color)
+        primvar = mesh.CreateDisplayColorPrimvar(UsdGeom.Tokens.uniform)
+        primvar.Set(Vt.Vec3fArray(face_colors))
     elif color is not None:
         mesh.CreateDisplayColorAttr(Vt.Vec3fArray([Gf.Vec3f(*color)]))
 
