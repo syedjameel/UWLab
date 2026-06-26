@@ -198,8 +198,11 @@ class ObjectAnywhereEEAnywhereEventCfg(ResetStatesBaseEventCfg):
                 "x": (0.3, 0.55),
                 "y": (-0.1, 0.5),
                 "z": (0.0, 0.3),
-                "roll": (-np.pi, np.pi),
-                "pitch": (-np.pi, np.pi),
+                # PCB stays essentially top-up: only a small +/-0.1 rad (~6 deg) roll/pitch
+                # jitter for robustness to placement error; yaw stays free (in-plane spin
+                # is realistic and does not affect success, which checks roll+pitch only).
+                "roll": (-0.1, 0.1),
+                "pitch": (-0.1, 0.1),
                 "yaw": (-np.pi, np.pi),
             },
             "velocity_range": {},
@@ -274,8 +277,11 @@ class ObjectAnywhereEEGraspedEventCfg(ResetStatesBaseEventCfg):
                 "x": (0.3, 0.55),
                 "y": (-0.1, 0.3),
                 "z": (0.0, 0.3),
-                "roll": (-np.pi, np.pi),
-                "pitch": (-np.pi, np.pi),
+                # PCB stays essentially top-up: only a small +/-0.1 rad (~6 deg) roll/pitch
+                # jitter for robustness to placement error; yaw stays free (in-plane spin
+                # is realistic and does not affect success, which checks roll+pitch only).
+                "roll": (-0.1, 0.1),
+                "pitch": (-0.1, 0.1),
                 "yaw": (-np.pi, np.pi),
             },
             "velocity_range": {},
