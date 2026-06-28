@@ -14,7 +14,7 @@
 -->
 <robot name="linear_gripper">
   <mujoco>
-    <compiler meshdir="meshes" discardvisual="false"/>
+    <compiler meshdir="." discardvisual="false"/>
   </mujoco>
 
   <link name="robotiq_base_link">
@@ -26,7 +26,7 @@
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry>
-        <mesh filename="base.stl" scale="0.001 0.001 0.001"/>
+        <mesh filename="meshes/base.stl" scale="0.001 0.001 0.001"/>
       </geometry>
       <material name="dark_gray">
         <color rgba="0.75 0.75 0.72 1"/>
@@ -35,7 +35,7 @@
     <collision>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry>
-        <mesh filename="base.stl" scale="0.001 0.001 0.001"/>
+        <mesh filename="meshes/base.stl" scale="0.001 0.001 0.001"/>
       </geometry>
     </collision>
   </link>
@@ -49,7 +49,7 @@
     <visual>
       <origin xyz="-0.041639558 -0.013 -0.04754972" rpy="0 0 0"/>
       <geometry>
-        <mesh filename="tip.stl" scale="0.001 0.001 0.001"/>
+        <mesh filename="meshes/tip.stl" scale="0.001 0.001 0.001"/>
       </geometry>
       <material name="dark_gray">
         <color rgba="0.75 0.75 0.72 1"/>
@@ -58,7 +58,7 @@
     <collision>
       <origin xyz="-0.041639558 -0.013 -0.04754972" rpy="0 0 0"/>
       <geometry>
-        <mesh filename="tip.stl" scale="0.001 0.001 0.001"/>
+        <mesh filename="meshes/tip.stl" scale="0.001 0.001 0.001"/>
       </geometry>
     </collision>
   </link>
@@ -72,7 +72,7 @@
     <visual>
       <origin xyz="0.041639558 0.013 -0.04754972" rpy="0 0 3.14159265359"/>
       <geometry>
-        <mesh filename="tip.stl" scale="0.001 0.001 0.001"/>
+        <mesh filename="meshes/tip.stl" scale="0.001 0.001 0.001"/>
       </geometry>
       <material name="dark_gray">
         <color rgba="0.75 0.75 0.72 1"/>
@@ -81,7 +81,7 @@
     <collision>
       <origin xyz="0.041639558 0.013 -0.04754972" rpy="0 0 3.14159265359"/>
       <geometry>
-        <mesh filename="tip.stl" scale="0.001 0.001 0.001"/>
+        <mesh filename="meshes/tip.stl" scale="0.001 0.001 0.001"/>
       </geometry>
     </collision>
   </link>
