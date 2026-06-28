@@ -1,0 +1,6 @@
+assembled_offset:
+  pos: [0.0, 0.0, 0.0015]
+  quat: [1.0, 0.0, 0.0, 0.0]
+bottom_offset:
+  pos: [0.0, 0.0, -0.0045]
+  quat: [1.0, 0.0, 0.0, 0.0]
