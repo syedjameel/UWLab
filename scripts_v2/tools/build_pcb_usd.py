@@ -30,7 +30,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Build the PCB insertive slab USD asset.")
     parser.add_argument("--length", type=float, default=0.040, help="PCB length along X (m).")
     parser.add_argument("--width", type=float, default=0.040, help="PCB width along Y (m).")
-    parser.add_argument("--thickness", type=float, default=0.020, help="PCB thickness along Z (m).")
+    parser.add_argument("--thickness", type=float, default=0.010, help="PCB thickness along Z (m).")
     parser.add_argument("--output", type=str, default=_DEFAULT_OUT, help="Output .usd path.")
     args = parser.parse_args()
 
