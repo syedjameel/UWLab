@@ -52,24 +52,29 @@ def _find_joint(stage, name):
     raise RuntimeError(f"joint '{name}' not found")
 
 
-def relocate_collision_to_mesh(stage) -> int:
-    """Move CollisionAPI from converter-made Xform wrappers onto the child Mesh prims.
+def relocate_collision_to_mesh(usd_path: str) -> int:
+    """Move CollisionAPI onto the child Mesh in the collider PROTOTYPE, preserving instancing.
 
-    Isaac's URDF importer applies PhysicsCollisionAPI/PhysicsMeshCollisionAPI on an Xform
-    (``node_STL_BINARY_``) with the Mesh nested below. The OmniReset collision-point sampler
-    (RigidObjectHasher) only accepts colliders whose prim is a Mesh/primitive (like the
-    reference 2F-85's ``/collisions/mesh_1``), so it finds 0 colliders and grasp sampling
-    crashes. This relocates the collision schemas onto the child Mesh and removes them from
-    the Xform, matching the 2F-85 layout. Returns the number of colliders moved.
+    Isaac's URDF importer applies PhysicsCollisionAPI/MeshCollisionAPI on an Xform wrapper
+    (``node_STL_BINARY_``) and makes each body's ``collisions`` subtree a USD instance. The
+    OmniReset collision-point sampler (RigidObjectHasher) only accepts colliders whose prim is
+    a Mesh (like the reference 2F-85's ``/collisions/mesh_1``) -- so it finds 0 colliders and
+    grasp sampling crashes (``torch.cat([])``).
+
+    The prototype lives in the ``configuration/<name>_physics.usd`` layer under ``/colliders``.
+    Editing it there (move CollisionAPI onto the child Mesh) fixes every instance at once and
+    KEEPS instancing -- important, because de-instancing duplicates the big collision meshes
+    (26k+ pts) per env and makes grasp sampling extremely slow. Returns colliders moved.
     """
-    # The converter makes the per-body ``collisions`` subtree an instance (read-only proxies).
-    # De-instance it so the collider prims become editable on the stage.
-    for prim in list(stage.Traverse()):
-        if prim.GetName() == "collisions" and prim.IsInstanceable():
-            prim.SetInstanceable(False)
-
+    cfg_dir = os.path.join(os.path.dirname(os.path.abspath(usd_path)), "configuration")
+    base = os.path.splitext(os.path.basename(usd_path))[0]
+    phys = os.path.join(cfg_dir, f"{base}_physics.usd")
+    if not os.path.exists(phys):
+        print(f"  WARNING: prototype layer {phys} not found; skipping collision relocation.")
+        return 0
+    ps = Usd.Stage.Open(phys)
     moved = 0
-    for prim in list(stage.Traverse()):
+    for prim in list(ps.Traverse()):
         if not prim.HasAPI(UsdPhysics.CollisionAPI) or prim.GetTypeName() == "Mesh":
             continue
         mesh = next((c for c in prim.GetChildren() if c.GetTypeName() == "Mesh"), None)
@@ -85,6 +90,7 @@ def relocate_collision_to_mesh(stage) -> int:
         prim.RemoveAPI(UsdPhysics.MeshCollisionAPI)
         prim.RemoveAPI(UsdPhysics.CollisionAPI)
         moved += 1
+    ps.GetRootLayer().Save()
     return moved
 
 
@@ -103,8 +109,9 @@ def author_mimic() -> None:
     if hasattr(api, "CreateReferenceJointAxisAttr"):
         api.CreateReferenceJointAxisAttr(args.axis)
 
-    # Relocate CollisionAPI onto the Mesh prims so the OmniReset hasher detects the colliders.
-    n = relocate_collision_to_mesh(stage)
+    # Relocate CollisionAPI onto the Mesh prims (in the prototype layer) so the OmniReset
+    # hasher detects the colliders -- without de-instancing (keeps it fast).
+    n = relocate_collision_to_mesh(args.usd)
     print(f"Relocated CollisionAPI onto {n} mesh prim(s) (converter put it on Xform wrappers).")
 
     stage.GetRootLayer().Save()
