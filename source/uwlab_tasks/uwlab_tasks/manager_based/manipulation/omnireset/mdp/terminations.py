@@ -5,6 +5,8 @@
 
 """MDP functions for manipulation tasks."""
 
+import os
+
 import numpy as np
 import torch
 
@@ -213,6 +215,19 @@ class check_grasp_success(ManagerTermBase):
             & collision_free
             & time_out
         )
+
+        # Opt-in diagnostic: set UWLAB_GRASP_DEBUG=1 to see which condition is the bottleneck.
+        if os.environ.get("UWLAB_GRASP_DEBUG"):
+            n = env.num_envs
+            print(
+                f"[grasp dbg] not_abnormal={int((~abnormal_gripper_state).sum())}/{n} "
+                f"stable={int(stability_reached.sum())} "
+                f"not_far={int((~excessive_pose_deviation).sum())} "
+                f"above_ground={int(pos_above_ground.sum())} "
+                f"coll_free={int(collision_free.sum())} "
+                f"timeout={int(time_out.sum())} -> success={int(grasp_success.sum())}",
+                flush=True,
+            )
 
         return grasp_success
 
