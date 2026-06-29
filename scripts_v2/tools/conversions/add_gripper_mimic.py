@@ -109,6 +109,17 @@ def author_mimic() -> None:
     if hasattr(api, "CreateReferenceJointAxisAttr"):
         api.CreateReferenceJointAxisAttr(args.axis)
 
+    # CRITICAL: the URDF converter gives BOTH prismatic joints a position DriveAPI. On the
+    # passive (mimic) joint that drive pins it at its target (0) and overrides the mimic, so
+    # the second jaw never moves (-> 0% grasp success). The reference 2F-85's passive joints
+    # have NO drive -- the mimic controls them. Remove the drive from the mimic joint to match.
+    removed_drive = False
+    for inst in ("linear", "angular"):
+        if mimic_prim.HasAPI(UsdPhysics.DriveAPI, inst):
+            mimic_prim.RemoveAPI(UsdPhysics.DriveAPI, inst)
+            removed_drive = True
+    print(f"Removed DriveAPI from mimic joint '{args.mimic_joint}': {removed_drive}")
+
     # Relocate CollisionAPI onto the Mesh prims (in the prototype layer) so the OmniReset
     # hasher detects the colliders -- without de-instancing (keeps it fast).
     n = relocate_collision_to_mesh(args.usd)
