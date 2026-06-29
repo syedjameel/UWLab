@@ -32,6 +32,8 @@ parser.add_argument("--driver-joint", type=str, default="finger_joint", help="Re
 parser.add_argument("--axis", type=str, default="transX", help="Mimic axis token (e.g. transX, rotZ).")
 parser.add_argument("--gearing", type=float, default=-1.0, help="Mimic gearing (sign verified by --test).")
 parser.add_argument("--offset", type=float, default=0.0, help="Mimic offset.")
+parser.add_argument("--finger-friction", type=float, default=0.8,
+                    help="Static/dynamic friction baked onto the gripper colliders (2F-85 fingertips use 0.8).")
 parser.add_argument("--max-joint-velocity", type=float, default=130.0,
                     help="physxJoint:maxJointVelocity for both jaws (URDF default 0.05 throttles the mimic).")
 parser.add_argument("--test", action="store_true", help="After authoring, drive the joint in sim to verify coupling.")
@@ -44,7 +46,7 @@ simulation_app = app_launcher.app
 
 import os
 
-from pxr import PhysxSchema, Sdf, Usd, UsdPhysics
+from pxr import PhysxSchema, Sdf, Usd, UsdPhysics, UsdShade
 
 
 def _find_joint(stage, name):
@@ -54,7 +56,7 @@ def _find_joint(stage, name):
     raise RuntimeError(f"joint '{name}' not found")
 
 
-def relocate_collision_to_mesh(usd_path: str) -> int:
+def relocate_collision_to_mesh(usd_path: str, friction: float | None = None) -> int:
     """Move CollisionAPI onto the child Mesh in the collider PROTOTYPE, preserving instancing.
 
     Isaac's URDF importer applies PhysicsCollisionAPI/MeshCollisionAPI on an Xform wrapper
@@ -76,6 +78,7 @@ def relocate_collision_to_mesh(usd_path: str) -> int:
         return 0
     ps = Usd.Stage.Open(phys)
     moved = 0
+    meshes = []
     for prim in list(ps.Traverse()):
         if not prim.HasAPI(UsdPhysics.CollisionAPI) or prim.GetTypeName() == "Mesh":
             continue
@@ -91,7 +94,22 @@ def relocate_collision_to_mesh(usd_path: str) -> int:
             UsdPhysics.MeshCollisionAPI.Apply(mesh.GetPrim()).CreateApproximationAttr(approx_attr.Get())
         prim.RemoveAPI(UsdPhysics.MeshCollisionAPI)
         prim.RemoveAPI(UsdPhysics.CollisionAPI)
+        meshes.append(mesh.GetPrim())
         moved += 1
+
+    # Bake friction onto the colliders. The grasp-sampling env does NOT randomize friction --
+    # it relies on the friction in the gripper USD. Without it the object slides out of the
+    # jaws and falls (0% grasp success). The reference 2F-85 fingertips use 0.8.
+    if friction is not None and meshes:
+        mat = UsdShade.Material.Define(ps, "/colliders/GripperPhysicsMaterial")
+        papi = UsdPhysics.MaterialAPI.Apply(mat.GetPrim())
+        papi.CreateStaticFrictionAttr(friction)
+        papi.CreateDynamicFrictionAttr(friction)
+        for m in meshes:
+            binding = UsdShade.MaterialBindingAPI.Apply(m)
+            binding.Bind(mat, bindingStrength=UsdShade.Tokens.weakerThanDescendants, materialPurpose="physics")
+        print(f"  Bound friction={friction} physics material to {len(meshes)} collider mesh(es).")
+
     ps.GetRootLayer().Save()
     return moved
 
@@ -134,7 +152,7 @@ def author_mimic() -> None:
 
     # Relocate CollisionAPI onto the Mesh prims (in the prototype layer) so the OmniReset
     # hasher detects the colliders -- without de-instancing (keeps it fast).
-    n = relocate_collision_to_mesh(args.usd)
+    n = relocate_collision_to_mesh(args.usd, friction=args.finger_friction)
     print(f"Relocated CollisionAPI onto {n} mesh prim(s) (converter put it on Xform wrappers).")
 
     stage.GetRootLayer().Save()
