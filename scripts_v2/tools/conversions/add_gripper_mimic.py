@@ -42,7 +42,7 @@ simulation_app = app_launcher.app
 
 import os
 
-from pxr import PhysxSchema, Usd, UsdPhysics
+from pxr import PhysxSchema, Sdf, Usd, UsdPhysics
 
 
 def _find_joint(stage, name):
@@ -50,6 +50,42 @@ def _find_joint(stage, name):
         if p.GetName() == name and "Joint" in str(p.GetTypeName()):
             return p
     raise RuntimeError(f"joint '{name}' not found")
+
+
+def relocate_collision_to_mesh(stage) -> int:
+    """Move CollisionAPI from converter-made Xform wrappers onto the child Mesh prims.
+
+    Isaac's URDF importer applies PhysicsCollisionAPI/PhysicsMeshCollisionAPI on an Xform
+    (``node_STL_BINARY_``) with the Mesh nested below. The OmniReset collision-point sampler
+    (RigidObjectHasher) only accepts colliders whose prim is a Mesh/primitive (like the
+    reference 2F-85's ``/collisions/mesh_1``), so it finds 0 colliders and grasp sampling
+    crashes. This relocates the collision schemas onto the child Mesh and removes them from
+    the Xform, matching the 2F-85 layout. Returns the number of colliders moved.
+    """
+    # The converter makes the per-body ``collisions`` subtree an instance (read-only proxies).
+    # De-instance it so the collider prims become editable on the stage.
+    for prim in list(stage.Traverse()):
+        if prim.GetName() == "collisions" and prim.IsInstanceable():
+            prim.SetInstanceable(False)
+
+    moved = 0
+    for prim in list(stage.Traverse()):
+        if not prim.HasAPI(UsdPhysics.CollisionAPI) or prim.GetTypeName() == "Mesh":
+            continue
+        mesh = next((c for c in prim.GetChildren() if c.GetTypeName() == "Mesh"), None)
+        if mesh is None:
+            continue
+        ce_attr = prim.GetAttribute("physics:collisionEnabled")
+        approx_attr = prim.GetAttribute("physics:approximation")
+        UsdPhysics.CollisionAPI.Apply(mesh.GetPrim())
+        if ce_attr and ce_attr.Get() is not None:
+            mesh.CreateAttribute("physics:collisionEnabled", Sdf.ValueTypeNames.Bool).Set(ce_attr.Get())
+        if approx_attr and approx_attr.Get() is not None:
+            UsdPhysics.MeshCollisionAPI.Apply(mesh.GetPrim()).CreateApproximationAttr(approx_attr.Get())
+        prim.RemoveAPI(UsdPhysics.MeshCollisionAPI)
+        prim.RemoveAPI(UsdPhysics.CollisionAPI)
+        moved += 1
+    return moved
 
 
 def author_mimic() -> None:
@@ -66,6 +102,10 @@ def author_mimic() -> None:
     # referenceJointAxis defaults to the same axis; set explicitly to match the reference USD.
     if hasattr(api, "CreateReferenceJointAxisAttr"):
         api.CreateReferenceJointAxisAttr(args.axis)
+
+    # Relocate CollisionAPI onto the Mesh prims so the OmniReset hasher detects the colliders.
+    n = relocate_collision_to_mesh(stage)
+    print(f"Relocated CollisionAPI onto {n} mesh prim(s) (converter put it on Xform wrappers).")
 
     stage.GetRootLayer().Save()
     print(f"Applied mimic on '{args.mimic_joint}' (axis {args.axis}) -> reference '{args.driver_joint}', "
