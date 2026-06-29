@@ -31,6 +31,7 @@ from isaaclab.app import AppLauncher
 parser = argparse.ArgumentParser(description="Measure linear gripper grasp geometry.")
 parser.add_argument("--usd", type=str, required=True, help="Gripper-only USD (with mimic).")
 parser.add_argument("--driver-joint", type=str, default="finger_joint")
+parser.add_argument("--mimic-joint", type=str, default="right_finger_joint")
 parser.add_argument("--open-value", type=float, default=0.0, help="Driver joint value at OPEN.")
 parser.add_argument("--close-value", type=float, default=0.068, help="Driver joint value at CLOSED.")
 parser.add_argument("--left-finger", type=str, default="left_inner_finger")
@@ -69,13 +70,18 @@ def main() -> None:
     sim.reset()
 
     didx = robot.joint_names.index(args.driver_joint)
+    midx = robot.joint_names.index(args.mimic_joint) if args.mimic_joint in robot.joint_names else None
     print("joint_names:", robot.joint_names)
     print("body_names :", robot.body_names)
 
     results = {}
     for label, val in [("OPEN", args.open_value), ("CLOSED", args.close_value)]:
         q = robot.data.default_joint_pos.clone()
+        # Set BOTH jaws to the symmetric config (q_right = q_finger); the mimic makes right
+        # passive during stepping, but for an FK snapshot we set both explicitly.
         q[0, didx] = val
+        if midx is not None:
+            q[0, midx] = val
         # forward-kinematics only: write joint state and let the kinematics update (a couple of steps,
         # NOT a long control loop -- this avoids the hang seen on weak GPUs).
         robot.write_joint_state_to_sim(q, torch.zeros_like(q))
