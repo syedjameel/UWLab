@@ -32,6 +32,8 @@ parser.add_argument("--driver-joint", type=str, default="finger_joint", help="Re
 parser.add_argument("--axis", type=str, default="transX", help="Mimic axis token (e.g. transX, rotZ).")
 parser.add_argument("--gearing", type=float, default=-1.0, help="Mimic gearing (sign verified by --test).")
 parser.add_argument("--offset", type=float, default=0.0, help="Mimic offset.")
+parser.add_argument("--max-joint-velocity", type=float, default=130.0,
+                    help="physxJoint:maxJointVelocity for both jaws (URDF default 0.05 throttles the mimic).")
 parser.add_argument("--test", action="store_true", help="After authoring, drive the joint in sim to verify coupling.")
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
@@ -119,6 +121,16 @@ def author_mimic() -> None:
             mimic_prim.RemoveAPI(UsdPhysics.DriveAPI, inst)
             removed_drive = True
     print(f"Removed DriveAPI from mimic joint '{args.mimic_joint}': {removed_drive}")
+
+    # The URDF's velocity="0.05" m/s caps physxJoint:maxJointVelocity at 0.05 on BOTH jaws,
+    # which throttles the mimic jaw so it can't keep up with the driver (lag). The reference
+    # 2F-85 uses 130. Raise it on both jaws so the mimic follows rigidly (it's a safety cap;
+    # the drive/actuator sets the real closing speed).
+    for jp in (mimic_prim, driver_prim):
+        mv = jp.GetAttribute("physxJoint:maxJointVelocity")
+        if mv:
+            mv.Set(args.max_joint_velocity)
+    print(f"Set physxJoint:maxJointVelocity = {args.max_joint_velocity} on both jaw joints.")
 
     # Relocate CollisionAPI onto the Mesh prims (in the prototype layer) so the OmniReset
     # hasher detects the colliders -- without de-instancing (keeps it fast).
