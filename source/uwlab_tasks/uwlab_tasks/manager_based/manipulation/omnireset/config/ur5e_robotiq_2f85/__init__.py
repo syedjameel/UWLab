@@ -25,6 +25,14 @@ gym.register(
     disable_env_checker=True,
 )
 
+# Linear-gripper variant of grasp sampling (new robot, 2F-85 untouched).
+gym.register(
+    id="OmniReset-LinearGripper-GraspSampling-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    kwargs={"env_cfg_entry_point": f"{__name__}.linear_gripper_cfg:LinearGripperGraspSamplingCfg"},
+    disable_env_checker=True,
+)
+
 # Register reset states environments
 gym.register(
     id="OmniReset-UR5eRobotiq2f85-ObjectAnywhereEEAnywhere-v0",
