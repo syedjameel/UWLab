@@ -1,0 +1,24 @@
+# Grasp-sampling metadata for the linear parallel-jaw gripper (read by the OmniReset grasp
+# sampler via read_metadata_from_usd_directory). Same field set as the reference 2F-85
+# metadata, but the VALUES reflect THIS gripper's geometry (fingers reach +Z, jaws close
+# along X), measured from sim body poses + the body-local collision mesh:
+#
+#   * fingers extend along +Z (approach), vertical gripping jaws span base-Z ~0.063..0.144 m
+#   * jaws close along X; inner-face gap ~0.137 m at OPEN (finger_joint=0), ~0.003 m CLOSED
+#   * finger_joint=0 is OPEN (jaws widest); increasing CLOSES (verified in sim)
+#
+# NOTE: maximum_aperture / finger_offset are derived (large gripper); they will be validated
+# by the first grasp-sampling run (yield + visualization) and refined if needed. For the
+# current task objects (<=58 mm) the exact aperture is not critical -- they all fit.
+
+# TCP / grasp frame relative to robotiq_base_link (grasp point between the jaws, along +Z).
+gripper_offset:
+  pos: [0.0, 0.0, 0.10]
+  quat: [1.0, 0.0, 0.0, 0.0]
+finger_offset: 0.10          # base origin -> vertical-jaw pad center, along +Z approach
+finger_clearance: 0.05
+maximum_aperture: 0.13       # usable jaw opening (inner-face gap at OPEN ~0.137; slight margin)
+gripper_approach_direction: [0, 0, 1]   # fingers reach +Z; standoff backs off along -Z
+grasp_align_axis: [1, 0, 0]             # jaw closing axis (aligned to the object antipodal line)
+orientation_sample_axis: [0, 0, 1]      # roll about the approach axis when sampling orientations
+finger_open_joint_angle: 0.0            # finger_joint value at OPEN
