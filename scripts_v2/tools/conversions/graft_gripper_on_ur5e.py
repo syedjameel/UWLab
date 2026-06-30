@@ -30,8 +30,13 @@ import os
 
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
 
-_CACHE = os.path.expanduser(
-    "~/.cache/uwlab/assets/Robots/UniversalRobots/Ur5e2f85RobotiqGripperCalibrated/"
+from uwlab_assets import UWLAB_CLOUD_ASSETS_DIR, resolve_cloud_path
+
+# The calibrated UR5e+2F-85 arm USD is a CLOUD asset. resolve_cloud_path downloads it once to
+# ~/.cache/uwlab/assets/... and returns the local path (so this works on a fresh A100 cache,
+# not only where the 2F-85 tasks were already run). Same URL the 2F-85 robot cfg spawns from.
+_ARM_USD_URL = (
+    f"{UWLAB_CLOUD_ASSETS_DIR}/Robots/UniversalRobots/Ur5e2f85RobotiqGripperCalibrated/"
     "ur5e_robotiq_gripper_d415_mount_safety_calibrated.usd"
 )
 _REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -52,7 +57,8 @@ F85_JOINTS = [
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="Graft the linear gripper onto the UR5e arm.")
-    ap.add_argument("--arm-usd", default=_CACHE, help="Calibrated UR5e+2F-85 USD (input).")
+    ap.add_argument("--arm-usd", default=None,
+                    help="Calibrated UR5e+2F-85 USD (input). Default: resolve/download from the cloud.")
     ap.add_argument("--gripper-usd",
                     default=os.path.join(_REPO, "source/uwlab_assets/uwlab_assets/local/Robots/LinearGripper/linear_gripper.usd"))
     ap.add_argument("--output",
@@ -60,13 +66,15 @@ def main() -> None:
     ap.add_argument("--standoff", type=float, default=0.049, help="Mount offset along wrist_3 +Z (m).")
     args = ap.parse_args()
 
-    if not os.path.exists(args.arm_usd):
-        raise SystemExit(f"arm USD not found: {args.arm_usd}\nDownload the calibrated USD from the cloud first.")
+    # Resolve the arm USD: explicit --arm-usd as given, else download the cloud asset to the cache.
+    arm_usd = resolve_cloud_path(args.arm_usd) if args.arm_usd else resolve_cloud_path(_ARM_USD_URL)
+    if not os.path.exists(arm_usd):
+        raise SystemExit(f"arm USD not found: {arm_usd}\nDownload the calibrated USD from the cloud first.")
     if not os.path.exists(args.gripper_usd):
         raise SystemExit(f"gripper USD not found: {args.gripper_usd}\nRun convert_gripper_urdf.py + add_gripper_mimic.py first.")
     os.makedirs(os.path.dirname(args.output), exist_ok=True)
 
-    stage = Usd.Stage.Open(args.arm_usd)
+    stage = Usd.Stage.Open(arm_usd)
 
     # 1) strip the 2F-85
     for name in F85_BODIES + F85_JOINTS:
@@ -96,6 +104,24 @@ def main() -> None:
     if rb.HasAPI(UsdPhysics.ArticulationRootAPI):
         rb.RemoveAPI(UsdPhysics.ArticulationRootAPI)
 
+    # 3b) HYBRID GRIPPER COUPLING (full robot only). The PhysX PRISMATIC mimic is INERT once the
+    #     gripper is embedded in the full arm articulation -- verified exhaustively: the follower
+    #     jaw gets ~zero coupling force (revolute mimic like the 2F-85 works, prismatic does not,
+    #     and PhysxMimicJointAPI has no stiffness/compliance knob). Worse, the inert mimic still
+    #     CAPTURES the joint's control and blocks any actuator drive on it. So for the full robot
+    #     we DRIVE BOTH jaws: strip the mimic from right_finger_joint and (re)activate its linear
+    #     position DriveAPI (the orphaned drive:* attrs from the converter are still present), so
+    #     the actuator/action can command both jaws to the same target -> rigid symmetric closure
+    #     (follower tracks driver with |diff|=0.0000, verified). The follower is slaved in the
+    #     action layer (one binary gripper command), NOT an independent policy DOF, so the paper's
+    #     no-exploitable-compliant-DOF intent (A.3.3) still holds. The STANDALONE gripper USD KEEPS
+    #     the mimic untouched (grasp sampling works there -- the finger joints are the root DOFs).
+    #     (The mimic attrs live across the gripper reference and can only be removed after flatten;
+    #     see step 5. Here we just (re)activate the follower's linear DriveAPI.)
+    rfj = stage.GetPrimAtPath(f"{gpath}/joints/right_finger_joint")
+    UsdPhysics.DriveAPI.Apply(rfj, "linear")  # re-activate the orphaned linear drive (200/20/120 force)
+    print("  full-robot follower: re-activated linear DriveAPI (dual-drive)")
+
     # 4) mount FixedJoint wrist_3 -> robotiq_base_link, authored like the 2F-85's.
     fj = UsdPhysics.FixedJoint.Define(stage, f"{gpath}/robotiq_base_link/MountJoint")
     fp = fj.GetPrim()
@@ -113,6 +139,13 @@ def main() -> None:
 
     # 5) flatten (inlines the gripper + its meshes) and export a self-contained USD.
     flat = stage.Flatten()
+    # Now that the referenced mimic attrs are local opinions, strip the (inert, drive-blocking)
+    # mimic from the full-robot follower so the dual-drive actuator can control it (see 3b).
+    frfj = flat.GetPrimAtPath(f"{gpath}/joints/right_finger_joint")  # Sdf.PrimSpec (Flatten -> Sdf.Layer)
+    stripped = [n for n in list(frfj.properties.keys()) if "physxMimicJoint" in n]
+    for name in stripped:
+        del frfj.properties[name]
+    print(f"  full-robot follower: stripped {len(stripped)} inert mimic prop(s) post-flatten")
     flat.Export(args.output)
     print(f"Wrote {args.output}")
     print(f"  standoff along wrist_3 +Z = {args.standoff} m (identity rotation; approach +Z = wrist_3 +Z)")
