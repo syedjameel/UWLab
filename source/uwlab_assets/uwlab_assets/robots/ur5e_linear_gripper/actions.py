@@ -7,9 +7,18 @@
 
 The arm actions are identical to the 2F-85 robot's (same arm, same IK body
 ``robotiq_base_link``), so they are reused. Only the gripper action differs: a binary
-open/close on the single driver joint ``finger_joint`` -- but in METERS (prismatic),
-0.0 = OPEN, 0.068 = CLOSED. The PhysX mimic makes ``right_finger_joint`` follow, so only
-the driver joint is commanded (exactly like the 2F-85 commands only ``finger_joint``).
+open/close in METERS (prismatic), 0.0 = OPEN, 0.068 = CLOSED.
+
+Two gripper-action variants, because the jaw coupling differs by context (see
+``ur5e_linear_gripper.py``):
+
+* :obj:`LINEAR_GRIPPER_BINARY_ACTIONS` -- STANDALONE gripper (grasp sampling). Commands ONLY
+  ``finger_joint``; the PhysX prismatic mimic makes ``right_finger_joint`` follow (it works
+  there because the finger joints are the articulation root DOFs).
+* :obj:`LINEAR_GRIPPER_DUAL_BINARY_ACTIONS` -- FULL ROBOT (reset/RL). Commands BOTH jaws to the
+  same target, because the prismatic mimic is inert once the gripper is embedded in the full
+  arm articulation (the graft strips it and drives both jaws instead). Still ONE binary command,
+  so the follower is slaved, not an independent policy DOF.
 """
 
 from __future__ import annotations
@@ -25,11 +34,22 @@ from uwlab_assets.robots.ur5e_robotiq_gripper.actions import (
     UR5E_RELATIVE_JOINT_POSITION,
 )
 
+# STANDALONE (grasp sampling): drive the driver only; the mimic follows.
 LINEAR_GRIPPER_BINARY_ACTIONS = BinaryJointPositionActionCfg(
     asset_name="robot",
     joint_names=["finger_joint"],
     open_command_expr={"finger_joint": 0.0},      # jaws fully open
     close_command_expr={"finger_joint": 0.068},   # jaws fully closed (meters)
+)
+
+# FULL ROBOT (reset/RL): drive BOTH jaws to the same target (mimic is inert in the full
+# articulation). gearing was -1 with right_finger_joint framed so q_right = q_finger gives
+# symmetric closure -> both jaws go to +0.068 closed (verified |follower-driver|=0.0000).
+LINEAR_GRIPPER_DUAL_BINARY_ACTIONS = BinaryJointPositionActionCfg(
+    asset_name="robot",
+    joint_names=["finger_joint", "right_finger_joint"],
+    open_command_expr={"finger_joint": 0.0, "right_finger_joint": 0.0},
+    close_command_expr={"finger_joint": 0.068, "right_finger_joint": 0.068},
 )
 
 
@@ -60,3 +80,9 @@ class Ur5eLinearGripperRelativeJointPositionAction:
 @configclass
 class LinearGripperBinaryGripperAction:
     gripper = LINEAR_GRIPPER_BINARY_ACTIONS
+
+
+@configclass
+class LinearGripperDualBinaryGripperAction:
+    # Grasp sampling: dual-drive both jaws (the prismatic mimic pins the gripper at 0 otherwise).
+    gripper = LINEAR_GRIPPER_DUAL_BINARY_ACTIONS

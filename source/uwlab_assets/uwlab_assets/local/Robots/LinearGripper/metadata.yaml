@@ -22,5 +22,6 @@ finger_clearance: 0.05
 maximum_aperture: 0.13       # usable jaw opening (inner-face gap at OPEN ~0.137; slight margin)
 gripper_approach_direction: [0, 0, 1]   # fingers reach +Z; standoff backs off along -Z
 grasp_align_axis: [1, 0, 0]             # jaw closing axis (aligned to the object antipodal line)
-orientation_sample_axis: [0, 0, 1]      # roll about the approach axis when sampling orientations
+orientation_sample_axis: [1, 0, 0]      # roll about the CLOSING/align axis so sampled orientations
+                                        # sweep grip azimuth consistently (was [0,0,1]=approach)
 finger_open_joint_angle: 0.0            # finger_joint value at OPEN

@@ -36,6 +36,7 @@ parser.add_argument("--close-value", type=float, default=0.068)
 parser.add_argument("--stiffness", type=float, default=50.0)  # gentle close; high stiffness ejects the slab
 parser.add_argument("--effort", type=float, default=120.0, help="effort_limit_sim (N): low cap = gentle, force-limited grip.")
 parser.add_argument("--slab-friction", type=float, default=0.5, help="object friction (diagnostic).")
+parser.add_argument("--slab-mass", type=float, default=0.05, help="object mass (kg). Grasp env uses 0.001.")
 parser.add_argument("--gravity-step", type=int, default=150, help="Step at which to enable gravity on the slab.")
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
@@ -66,7 +67,7 @@ def main() -> None:
                 rigid_props=sim_utils.RigidBodyPropertiesCfg(disable_gravity=True),
             ),
             init_state=ArticulationCfg.InitialStateCfg(pos=(0, 0, 0.5)),  # lift base so jaws are in the air
-            actuators={"g": ImplicitActuatorCfg(joint_names_expr=["finger_joint"], stiffness=args.stiffness, damping=50.0, effort_limit_sim=args.effort)},
+            actuators={"g": ImplicitActuatorCfg(joint_names_expr=["finger_joint", "right_finger_joint"], stiffness=args.stiffness, damping=50.0, effort_limit_sim=args.effort)},
         )
     )
     # A box slab as the object, placed on the gripper's +Z axis, between the jaws.
@@ -78,7 +79,7 @@ def main() -> None:
                 rigid_props=sim_utils.RigidBodyPropertiesCfg(disable_gravity=True),
                 collision_props=sim_utils.CollisionPropertiesCfg(),
                 physics_material=sim_utils.RigidBodyMaterialCfg(static_friction=args.slab_friction, dynamic_friction=args.slab_friction),
-                mass_props=sim_utils.MassPropertiesCfg(mass=0.05),
+                mass_props=sim_utils.MassPropertiesCfg(mass=args.slab_mass),
             ),
             init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, 0.5 + args.finger_offset)),
         )
@@ -120,6 +121,8 @@ def main() -> None:
         slab_start = slab.data.root_pos_w[0].clone()
         target = torch.zeros_like(gripper.data.joint_pos)
         target[0, d] = args.close_value
+        if rfj is not None:
+            target[0, rfj] = args.close_value  # dual-drive: drive BOTH jaws (mimic stripped)
         for _ in range(150):
             gripper.write_root_pose_to_sim(root_pose)  # pin the base so it can't fall/drift
             gripper.write_root_velocity_to_sim(zero_vel)

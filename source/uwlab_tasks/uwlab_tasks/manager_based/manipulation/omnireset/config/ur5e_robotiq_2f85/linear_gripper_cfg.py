@@ -85,7 +85,8 @@ class LinearGripperGraspSamplingCfg(Robotiq2f85GraspSamplingCfg):
     def __post_init__(self):
         # Swap the gripper-only robot and the binary action before the base configures sim.
         self.scene.robot = ur5e_linear_gripper.LINEAR_GRIPPER.replace(prim_path="{ENV_REGEX_NS}/Robot")
-        self.actions = ur5e_linear_gripper.LinearGripperBinaryGripperAction()
+        # Dual-drive both jaws (the prismatic mimic pins the gripper at 0; see ur5e_linear_gripper.py).
+        self.actions = ur5e_linear_gripper.LinearGripperDualBinaryGripperAction()
         super().__post_init__()
 
 

@@ -30,7 +30,17 @@ parser.add_argument("--usd", type=str, required=True, help="Gripper USD to edit 
 parser.add_argument("--mimic-joint", type=str, default="right_finger_joint", help="Passive joint name.")
 parser.add_argument("--driver-joint", type=str, default="finger_joint", help="Reference (driver) joint name.")
 parser.add_argument("--axis", type=str, default="transX", help="Mimic axis token (e.g. transX, rotZ).")
-parser.add_argument("--gearing", type=float, default=-1.0, help="Mimic gearing (sign verified by --test).")
+parser.add_argument("--gearing", type=float, default=1.0,
+                    help="Mimic gearing. +1.0: both jaws' joint coords increase together to close "
+                    "(right_finger_joint is frame-flipped Rz180, so q_right=+q_finger is symmetric). "
+                    "-1.0 demands q_right=-q_finger, which is below right's lower limit 0 -> the mimic "
+                    "constraint pins the driver at 0 and the gripper never closes. Ignored with --dual-drive.")
+parser.add_argument("--dual-drive", action="store_true",
+                    help="Do NOT author a mimic; keep BOTH jaws' position DriveAPI so they are dual-driven "
+                    "to the same binary target (the standalone grasp-sampling config drives both). The PhysX "
+                    "prismatic mimic is unreliable even in the standalone: the soft driver outruns the free "
+                    "follower, the mimic equality constraint accumulates error, and the solver pins both jaws "
+                    "at 0 (recorded grasps then have finger_joint=0). Dual-drive matches the full robot.")
 parser.add_argument("--offset", type=float, default=0.0, help="Mimic offset.")
 parser.add_argument("--finger-friction", type=float, default=100.0,
                     help="Static/dynamic friction baked onto the gripping fingers. The reference 2F-85 binds "
@@ -233,25 +243,32 @@ def author_mimic() -> None:
     mimic_prim = _find_joint(stage, args.mimic_joint)
     driver_prim = _find_joint(stage, args.driver_joint)
 
-    api = PhysxSchema.PhysxMimicJointAPI.Apply(mimic_prim, args.axis)
-    api.CreateGearingAttr(args.gearing)
-    api.CreateOffsetAttr(args.offset)
-    ref_rel = api.CreateReferenceJointRel()
-    ref_rel.SetTargets([driver_prim.GetPath()])
-    # referenceJointAxis defaults to the same axis; set explicitly to match the reference USD.
-    if hasattr(api, "CreateReferenceJointAxisAttr"):
-        api.CreateReferenceJointAxisAttr(args.axis)
+    if args.dual_drive:
+        # Dual-drive: NO mimic; keep both jaws' DriveAPI (the converter gives both a linear drive).
+        # The standalone grasp-sampling actuator/action drive both jaws to the same binary target.
+        if not mimic_prim.HasAPI(UsdPhysics.DriveAPI, "linear"):
+            UsdPhysics.DriveAPI.Apply(mimic_prim, "linear")
+        print(f"Dual-drive: kept DriveAPI on both jaws ('{args.driver_joint}', '{args.mimic_joint}'); no mimic.")
+    else:
+        api = PhysxSchema.PhysxMimicJointAPI.Apply(mimic_prim, args.axis)
+        api.CreateGearingAttr(args.gearing)
+        api.CreateOffsetAttr(args.offset)
+        ref_rel = api.CreateReferenceJointRel()
+        ref_rel.SetTargets([driver_prim.GetPath()])
+        # referenceJointAxis defaults to the same axis; set explicitly to match the reference USD.
+        if hasattr(api, "CreateReferenceJointAxisAttr"):
+            api.CreateReferenceJointAxisAttr(args.axis)
 
-    # CRITICAL: the URDF converter gives BOTH prismatic joints a position DriveAPI. On the
-    # passive (mimic) joint that drive pins it at its target (0) and overrides the mimic, so
-    # the second jaw never moves (-> 0% grasp success). The reference 2F-85's passive joints
-    # have NO drive -- the mimic controls them. Remove the drive from the mimic joint to match.
-    removed_drive = False
-    for inst in ("linear", "angular"):
-        if mimic_prim.HasAPI(UsdPhysics.DriveAPI, inst):
-            mimic_prim.RemoveAPI(UsdPhysics.DriveAPI, inst)
-            removed_drive = True
-    print(f"Removed DriveAPI from mimic joint '{args.mimic_joint}': {removed_drive}")
+        # CRITICAL: the URDF converter gives BOTH prismatic joints a position DriveAPI. On the
+        # passive (mimic) joint that drive pins it at its target (0) and overrides the mimic, so
+        # the second jaw never moves (-> 0% grasp success). The reference 2F-85's passive joints
+        # have NO drive -- the mimic controls them. Remove the drive from the mimic joint to match.
+        removed_drive = False
+        for inst in ("linear", "angular"):
+            if mimic_prim.HasAPI(UsdPhysics.DriveAPI, inst):
+                mimic_prim.RemoveAPI(UsdPhysics.DriveAPI, inst)
+                removed_drive = True
+        print(f"Removed DriveAPI from mimic joint '{args.mimic_joint}': {removed_drive}")
 
     # Per-jaw velocity caps decouple "gentle close" from "rigid mimic":
     #  * DRIVER jaw -> a LOW cap (--close-velocity) so the actuator closes gently and does not
@@ -276,8 +293,11 @@ def author_mimic() -> None:
     add_jaw_box_colliders(stage, args.finger_friction)
 
     stage.GetRootLayer().Save()
-    print(f"Applied mimic on '{args.mimic_joint}' (axis {args.axis}) -> reference '{args.driver_joint}', "
-          f"gearing={args.gearing}, offset={args.offset}")
+    if args.dual_drive:
+        print(f"Dual-drive standalone: both jaws driven, no mimic ('{args.driver_joint}', '{args.mimic_joint}').")
+    else:
+        print(f"Applied mimic on '{args.mimic_joint}' (axis {args.axis}) -> reference '{args.driver_joint}', "
+              f"gearing={args.gearing}, offset={args.offset}")
     print("applied schemas now:", list(mimic_prim.GetAppliedSchemas()))
     for a in mimic_prim.GetAttributes():
         if "imic" in a.GetName().lower():
