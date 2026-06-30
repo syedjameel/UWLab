@@ -77,12 +77,13 @@ UR5E_LINEAR_ARTICULATION = ArticulationCfg(
 )
 
 # Gripper actuator: drive ONLY the finger_joint (the mimic makes right_finger_joint follow).
-# Prismatic position drive -- gains are in N/m and N; these are starting values and (per the
-# paper) gripper force/speed need tuning to match real behavior.
+# Prismatic position drive (N/m, N). Stiffness is deliberately LOW: a stiff/fast close slams
+# the jaws shut and FLINGS a light object out (verified -- stiffness>=200 ejects the slab,
+# stiffness 50 grips it: finger_joint stops on the object instead of closing fully).
 _LINEAR_GRIPPER_ACTUATOR = ImplicitActuatorCfg(
     joint_names_expr=["finger_joint"],
-    stiffness=500.0,
-    damping=50.0,
+    stiffness=50.0,
+    damping=5.0,
     effort_limit_sim=120.0,
 )
 

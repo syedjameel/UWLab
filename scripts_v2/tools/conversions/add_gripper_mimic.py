@@ -144,14 +144,21 @@ _JAW_BOXES = {
 }
 
 
+_BOX_CORNERS = [(-1, -1, -1), (1, -1, -1), (1, 1, -1), (-1, 1, -1),
+                (-1, -1, 1), (1, -1, 1), (1, 1, 1), (-1, 1, 1)]
+_BOX_FACES = [0, 3, 2, 1, 4, 5, 6, 7, 0, 1, 5, 4, 3, 7, 6, 2, 0, 4, 7, 3, 1, 2, 6, 5]
+
+
 def add_jaw_box_colliders(stage, friction: float | None) -> int:
     """Add a clean box collider at each finger's gripping pad (replaces the mesh collider).
 
-    Box-box contact is generated reliably, unlike the L-finger's concave mesh (convexHull /
-    convexDecomposition / SDF all failed to grip). The box sits on the inner gripping face of
-    the upper jaw so the two jaws pinch an object between them.
+    The collider is a box MESH with convexHull approximation -- the SAME way the base and the
+    working object USDs are authored. (A UsdGeom.Cube with non-uniform xformOp:scale does NOT
+    collide -- the scale is not propagated to the PhysX shape; verified: base mesh+convexHull
+    ejects the slab, the scaled Cube generates no contact.) The box sits on the inner gripping
+    face of the upper jaw so the two jaws pinch an object between them.
     """
-    from pxr import Gf, UsdGeom
+    from pxr import Gf, UsdGeom, Vt
 
     mat = None
     if friction is not None:
@@ -166,19 +173,31 @@ def add_jaw_box_colliders(stage, friction: float | None) -> int:
         if not body_prim or not body_prim.IsValid():
             print(f"  WARNING: finger body /linear_gripper/{body} not found; skipping jaw box.")
             continue
-        cube = UsdGeom.Cube.Define(stage, f"/linear_gripper/{body}/JawCollider")
-        cube.GetSizeAttr().Set(1.0)
-        xf = UsdGeom.Xformable(cube.GetPrim())
-        xf.AddTranslateOp().Set(Gf.Vec3d(*center))
-        xf.AddScaleOp().Set(Gf.Vec3f(2 * half[0], 2 * half[1], 2 * half[2]))  # unit cube -> box
-        UsdGeom.Imageable(cube).CreateVisibilityAttr(UsdGeom.Tokens.invisible)
-        UsdPhysics.CollisionAPI.Apply(cube.GetPrim())
+        # The collider must live INSIDE the link's /collisions subtree (where the base's working
+        # collider is); de-instance it so we can add the box there. /collisions is at identity
+        # relative to the body, so body-local box points are correct.
+        coll = stage.GetPrimAtPath(f"/linear_gripper/{body}/collisions")
+        if coll and coll.IsValid():
+            coll.SetInstanceable(False)
+        cx, cy, cz = center
+        hx, hy, hz = half
+        mesh = UsdGeom.Mesh.Define(stage, f"/linear_gripper/{body}/collisions/JawBox")
+        mesh.CreatePointsAttr(Vt.Vec3fArray([Gf.Vec3f(cx + sx * hx, cy + sy * hy, cz + sz * hz)
+                                             for sx, sy, sz in _BOX_CORNERS]))
+        mesh.CreateFaceVertexCountsAttr(Vt.IntArray([4] * 6))
+        mesh.CreateFaceVertexIndicesAttr(Vt.IntArray(_BOX_FACES))
+        mesh.CreateSubdivisionSchemeAttr(UsdGeom.Tokens.none)
+        mesh.CreateExtentAttr(Vt.Vec3fArray([Gf.Vec3f(cx - hx, cy - hy, cz - hz),
+                                             Gf.Vec3f(cx + hx, cy + hy, cz + hz)]))
+        UsdGeom.Imageable(mesh).CreateVisibilityAttr(UsdGeom.Tokens.invisible)
+        UsdPhysics.CollisionAPI.Apply(mesh.GetPrim())
+        UsdPhysics.MeshCollisionAPI.Apply(mesh.GetPrim()).CreateApproximationAttr(UsdPhysics.Tokens.convexHull)
         if mat is not None:
-            UsdShade.MaterialBindingAPI.Apply(cube.GetPrim()).Bind(
+            UsdShade.MaterialBindingAPI.Apply(mesh.GetPrim()).Bind(
                 mat, bindingStrength=UsdShade.Tokens.weakerThanDescendants, materialPurpose="physics"
             )
         n += 1
-    print(f"Added {n} jaw box collider(s) (friction={friction}).")
+    print(f"Added {n} jaw box collider mesh(es) (convexHull, friction={friction}).")
     return n
 
 

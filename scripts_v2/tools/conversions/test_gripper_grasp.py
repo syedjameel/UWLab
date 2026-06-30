@@ -33,7 +33,7 @@ parser.add_argument("--slab-x", type=float, default=0.040, help="Slab size along
 parser.add_argument("--slab-y", type=float, default=0.040)
 parser.add_argument("--slab-z", type=float, default=0.020)
 parser.add_argument("--close-value", type=float, default=0.068)
-parser.add_argument("--stiffness", type=float, default=500.0)
+parser.add_argument("--stiffness", type=float, default=50.0)  # gentle close; high stiffness ejects the slab
 parser.add_argument("--gravity-step", type=int, default=150, help="Step at which to enable gravity on the slab.")
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
@@ -57,7 +57,12 @@ def main() -> None:
     gripper = Articulation(
         ArticulationCfg(
             prim_path="/World/Gripper",
-            spawn=sim_utils.UsdFileCfg(usd_path=os.path.abspath(args.usd)),
+            spawn=sim_utils.UsdFileCfg(
+                usd_path=os.path.abspath(args.usd),
+                # CRITICAL: disable gravity so the (un-anchored) gripper does not fall away from
+                # the floating slab during the close (it would drop ~7 m in 1.25 s otherwise).
+                rigid_props=sim_utils.RigidBodyPropertiesCfg(disable_gravity=True),
+            ),
             init_state=ArticulationCfg.InitialStateCfg(pos=(0, 0, 0.5)),  # lift base so jaws are in the air
             actuators={"g": ImplicitActuatorCfg(joint_names_expr=["finger_joint"], stiffness=args.stiffness, damping=50.0, effort_limit_sim=120.0)},
         )
@@ -97,8 +102,12 @@ def main() -> None:
     offsets = [0.04, 0.05, 0.06, 0.07, 0.08, 0.09, 0.10, 0.11, 0.12, 0.13, 0.14]
     print("\n=== sweep: slab at z=base+offset, close jaws, where does finger_joint stop? ===")
     print("  offset   finger_joint_stop   slab_disp   verdict")
+    root_pose = torch.tensor([[0.0, 0.0, 0.5, 1.0, 0.0, 0.0, 0.0]], device=gripper.device)
+    zero_vel = torch.zeros((1, 6), device=gripper.device)
     for off in offsets:
-        # reset gripper OPEN and slab at this height
+        # reset gripper OPEN, pinned at its spawn pose, and slab at this height
+        gripper.write_root_pose_to_sim(root_pose)
+        gripper.write_root_velocity_to_sim(zero_vel)
         qopen = torch.zeros_like(gripper.data.joint_pos)
         gripper.write_joint_state_to_sim(qopen, torch.zeros_like(qopen))
         sp = torch.tensor([[0.0, 0.0, bz + off, 1.0, 0.0, 0.0, 0.0]], device=slab.device)
@@ -110,6 +119,8 @@ def main() -> None:
         target = torch.zeros_like(gripper.data.joint_pos)
         target[0, d] = args.close_value
         for _ in range(150):
+            gripper.write_root_pose_to_sim(root_pose)  # pin the base so it can't fall/drift
+            gripper.write_root_velocity_to_sim(zero_vel)
             gripper.set_joint_position_target(target); gripper.write_data_to_sim()
             sim.step(); gripper.update(1 / 120.0); slab.update(1 / 120.0)
         fj = float(gripper.data.joint_pos[0, d])
@@ -125,5 +136,9 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    import os
+    import sys
+
     main()
-    simulation_app.close()
+    sys.stdout.flush()
+    os._exit(0)  # Isaac's simulation_app.close() deadlocks on shutdown; hard-exit after results.
