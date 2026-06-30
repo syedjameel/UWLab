@@ -89,30 +89,22 @@ def relocate_collision_to_mesh(usd_path: str, friction: float | None = None,
         mesh = next((c for c in prim.GetChildren() if c.GetTypeName() == "Mesh"), None)
         if mesh is None:
             continue
+        # The L-shaped FINGER mesh cannot be collided reliably (convexHull crushes at the
+        # bracket, convexDecomposition drops the thin jaw, SDF on a dynamic articulation link
+        # generates no contacts against the jaw). So we DISABLE the finger mesh collision here
+        # and add a clean jaw BOX proxy on the body instead (add_jaw_box_colliders). The BASE
+        # mesh keeps its convexHull collision (it doesn't grip).
+        prim.RemoveAPI(UsdPhysics.MeshCollisionAPI)
+        prim.RemoveAPI(UsdPhysics.CollisionAPI)
+        if "inner_finger" in str(mesh.GetPath()):
+            continue  # finger -> no mesh collider (jaw box added separately)
         ce_attr = prim.GetAttribute("physics:collisionEnabled")
         approx_attr = prim.GetAttribute("physics:approximation")
         UsdPhysics.CollisionAPI.Apply(mesh.GetPrim())
         if ce_attr and ce_attr.Get() is not None:
             mesh.CreateAttribute("physics:collisionEnabled", Sdf.ValueTypeNames.Bool).Set(ce_attr.Get())
-        # The finger colliders are L-shaped: a single convexHull fills the concave gripping
-        # notch (it ends up pinching at the lower bracket, not the jaw), so the object is never
-        # gripped. convexDecomposition keeps the jaw + bracket as separate convex pieces so the
-        # actual jaw faces pinch. The base keeps its original (convexHull) approximation.
         approx = approx_attr.Get() if (approx_attr and approx_attr.Get() is not None) else "convexHull"
-        if "inner_finger" in str(mesh.GetPath()):
-            approx = finger_approximation
-        if approx == "sdf":
-            # SDF keeps the exact finger shape (convexHull crushes at the bracket;
-            # convexDecomposition misses the thin jaw face). PhysX needs the approximation
-            # token set to "sdf" (NOT "none" -> that falls back to convexHull), plus the SDF
-            # resolution via PhysxSDFMeshCollisionAPI.
-            UsdPhysics.MeshCollisionAPI.Apply(mesh.GetPrim()).CreateApproximationAttr("sdf")
-            sdf_api = PhysxSchema.PhysxSDFMeshCollisionAPI.Apply(mesh.GetPrim())
-            sdf_api.CreateSdfResolutionAttr(256)
-        else:
-            UsdPhysics.MeshCollisionAPI.Apply(mesh.GetPrim()).CreateApproximationAttr(approx)
-        prim.RemoveAPI(UsdPhysics.MeshCollisionAPI)
-        prim.RemoveAPI(UsdPhysics.CollisionAPI)
+        UsdPhysics.MeshCollisionAPI.Apply(mesh.GetPrim()).CreateApproximationAttr(approx)
         meshes.append(mesh.GetPrim())
         moved += 1
 
@@ -141,6 +133,53 @@ def relocate_collision_to_mesh(usd_path: str, friction: float | None = None,
 
     ps.GetRootLayer().Save()
     return moved
+
+
+# Jaw gripping-pad boxes, measured from the upper-jaw region of the finger collision mesh
+# (body-local frame): inner gripping face at x=+/-0.0235, pad spans Y +/-0.0075, Z 0.023..0.051.
+# These are clean box proxies that collide reliably where the convex/SDF mesh colliders failed.
+_JAW_BOXES = {
+    "left_inner_finger": ((-0.0332, 0.0, 0.0369), (0.0097, 0.0075, 0.0137)),
+    "right_inner_finger": ((0.0332, 0.0, 0.0369), (0.0097, 0.0075, 0.0137)),
+}
+
+
+def add_jaw_box_colliders(stage, friction: float | None) -> int:
+    """Add a clean box collider at each finger's gripping pad (replaces the mesh collider).
+
+    Box-box contact is generated reliably, unlike the L-finger's concave mesh (convexHull /
+    convexDecomposition / SDF all failed to grip). The box sits on the inner gripping face of
+    the upper jaw so the two jaws pinch an object between them.
+    """
+    from pxr import Gf, UsdGeom
+
+    mat = None
+    if friction is not None:
+        mat = UsdShade.Material.Define(stage, "/linear_gripper/JawPhysicsMaterial")
+        papi = UsdPhysics.MaterialAPI.Apply(mat.GetPrim())
+        papi.CreateStaticFrictionAttr(friction)
+        papi.CreateDynamicFrictionAttr(friction)
+
+    n = 0
+    for body, (center, half) in _JAW_BOXES.items():
+        body_prim = stage.GetPrimAtPath(f"/linear_gripper/{body}")
+        if not body_prim or not body_prim.IsValid():
+            print(f"  WARNING: finger body /linear_gripper/{body} not found; skipping jaw box.")
+            continue
+        cube = UsdGeom.Cube.Define(stage, f"/linear_gripper/{body}/JawCollider")
+        cube.GetSizeAttr().Set(1.0)
+        xf = UsdGeom.Xformable(cube.GetPrim())
+        xf.AddTranslateOp().Set(Gf.Vec3d(*center))
+        xf.AddScaleOp().Set(Gf.Vec3f(2 * half[0], 2 * half[1], 2 * half[2]))  # unit cube -> box
+        UsdGeom.Imageable(cube).CreateVisibilityAttr(UsdGeom.Tokens.invisible)
+        UsdPhysics.CollisionAPI.Apply(cube.GetPrim())
+        if mat is not None:
+            UsdShade.MaterialBindingAPI.Apply(cube.GetPrim()).Bind(
+                mat, bindingStrength=UsdShade.Tokens.weakerThanDescendants, materialPurpose="physics"
+            )
+        n += 1
+    print(f"Added {n} jaw box collider(s) (friction={friction}).")
+    return n
 
 
 def author_mimic() -> None:
@@ -183,7 +222,10 @@ def author_mimic() -> None:
     # hasher detects the colliders -- without de-instancing (keeps it fast).
     n = relocate_collision_to_mesh(args.usd, friction=args.finger_friction,
                                    finger_approximation=args.finger_collision)
-    print(f"Relocated CollisionAPI onto {n} mesh prim(s) (converter put it on Xform wrappers).")
+    print(f"Relocated CollisionAPI onto {n} mesh prim(s) (base only; finger mesh collision disabled).")
+
+    # Add clean jaw box colliders on the fingers (the mesh colliders can't grip the L-shape).
+    add_jaw_box_colliders(stage, args.finger_friction)
 
     stage.GetRootLayer().Save()
     print(f"Applied mimic on '{args.mimic_joint}' (axis {args.axis}) -> reference '{args.driver_joint}', "
