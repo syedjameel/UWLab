@@ -80,41 +80,48 @@ def main() -> None:
 
     d = gripper.joint_names.index("finger_joint")
     rfj = gripper.joint_names.index("right_finger_joint") if "right_finger_joint" in gripper.joint_names else None
-    slab0 = slab.data.root_pos_w[0].clone()
+    lf = gripper.body_names.index("left_inner_finger")
+    rf = gripper.body_names.index("right_inner_finger")
+    base = gripper.body_names.index("robotiq_base_link")
 
-    target = gripper.data.default_joint_pos.clone()  # start OPEN (0)
-    gravity_on = False
-    for step in range(360):
-        # close after a short settle
-        if step == 20:
-            target[0, d] = args.close_value
-        gripper.set_joint_position_target(target)
-        gripper.write_data_to_sim()
-        if step == args.gravity_step and not gravity_on:
-            slab.root_physx_view.set_disable_gravities(torch.zeros(1, dtype=torch.bool), torch.arange(1))
-            gravity_on = True
-        sim.step()
-        gripper.update(1 / 120.0)
-        slab.update(1 / 120.0)
-        if step % 30 == 0 or step in (19, 21, args.gravity_step):
-            fj = float(gripper.data.joint_pos[0, d])
-            rj = float(gripper.data.joint_pos[0, rfj]) if rfj is not None else float("nan")
-            sp = slab.data.root_pos_w[0]
-            disp = float((sp - slab0).norm())
-            tag = "(closing)" if step >= 20 else "(open)"
-            print(f"  step {step:3d} {tag:9s} finger_joint={fj:+.4f} right={rj:+.4f}  slab_disp={disp*1000:5.1f}mm  slab_z={float(sp[2]):.3f}")
+    # Report where the finger BODIES sit relative to the base when fully OPEN (joint=0), so we
+    # see the real jaw geometry (closing axis + height range).
+    sim.step(); gripper.update(1 / 120.0)
+    bz = float(gripper.data.body_link_pos_w[0, base, 2])
+    print("\n=== gripper geometry (OPEN, base-relative, m) ===")
+    for name, idx in [("left_inner_finger", lf), ("right_inner_finger", rf)]:
+        p = gripper.data.body_link_pos_w[0, idx] - gripper.data.body_link_pos_w[0, base]
+        print(f"  {name:18s} body origin (base frame) = ({float(p[0]):+.4f}, {float(p[1]):+.4f}, {float(p[2]):+.4f})")
 
-    fj = float(gripper.data.joint_pos[0, d])
-    disp = float((slab.data.root_pos_w[0] - slab0).norm())
-    print("\n==================== VERDICT ====================")
-    if fj > args.close_value - 0.003:
-        print(f"JAWS MISSED: finger_joint closed fully to {fj:.4f} with no resistance -> slab not between the jaws.")
-        print("  -> fix gripper positioning (finger_offset / approach / which axis the slab spans).")
-    elif disp < 0.02:
-        print(f"GRIPPED: finger_joint stopped at {fj:.4f} (pinching) and slab stayed put (disp {disp*1000:.1f}mm).")
-    else:
-        print(f"CONTACTED BUT EJECTED: finger_joint stopped at {fj:.4f} but slab moved {disp*1000:.1f}mm.")
-        print("  -> jaws hit the slab off-center / too hard, or grip is unstable.")
+    # Sweep the slab height (finger_offset) and, at each, close the jaws and see where they stop.
+    offsets = [0.04, 0.05, 0.06, 0.07, 0.08, 0.09, 0.10, 0.11, 0.12, 0.13, 0.14]
+    print("\n=== sweep: slab at z=base+offset, close jaws, where does finger_joint stop? ===")
+    print("  offset   finger_joint_stop   slab_disp   verdict")
+    for off in offsets:
+        # reset gripper OPEN and slab at this height
+        qopen = torch.zeros_like(gripper.data.joint_pos)
+        gripper.write_joint_state_to_sim(qopen, torch.zeros_like(qopen))
+        sp = torch.tensor([[0.0, 0.0, bz + off, 1.0, 0.0, 0.0, 0.0]], device=slab.device)
+        slab.write_root_pose_to_sim(sp)
+        slab.write_root_velocity_to_sim(torch.zeros((1, 6), device=slab.device))
+        for _ in range(5):
+            sim.step(); gripper.update(1 / 120.0); slab.update(1 / 120.0)
+        slab_start = slab.data.root_pos_w[0].clone()
+        target = torch.zeros_like(gripper.data.joint_pos)
+        target[0, d] = args.close_value
+        for _ in range(150):
+            gripper.set_joint_position_target(target); gripper.write_data_to_sim()
+            sim.step(); gripper.update(1 / 120.0); slab.update(1 / 120.0)
+        fj = float(gripper.data.joint_pos[0, d])
+        disp = float((slab.data.root_pos_w[0] - slab_start).norm())
+        if fj > args.close_value - 0.004:
+            v = "MISSED (closed fully)"
+        elif disp < 0.02:
+            v = "GRIPPED (held)"
+        else:
+            v = f"contacted but slab moved {disp*1000:.0f}mm"
+        print(f"  {off:.3f}     {fj:.4f}             {disp*1000:5.1f}mm     {v}")
+    print("\nWhere finger_joint stops SHORT and slab is held = the real grip height -> set finger_offset there.")
 
 
 if __name__ == "__main__":

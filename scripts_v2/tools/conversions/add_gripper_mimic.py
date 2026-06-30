@@ -108,15 +108,25 @@ def relocate_collision_to_mesh(usd_path: str, friction: float | None = None,
 
     # Bake friction onto the colliders. The grasp-sampling env does NOT randomize friction --
     # it relies on the friction in the gripper USD. Without it the object slides out of the
-    # jaws and falls (0% grasp success). The reference 2F-85 fingertips use 0.8.
+    # jaws and falls. The reference 2F-85 fingertips use 0.8. IMPORTANT: the material must live
+    # INSIDE each collider body's subtree (/colliders/<body>/...), because each body references
+    # /colliders/<body> -- a material at /colliders root is "outside the reference scope" and
+    # PhysX silently ignores the binding.
     if friction is not None and meshes:
-        mat = UsdShade.Material.Define(ps, "/colliders/GripperPhysicsMaterial")
-        papi = UsdPhysics.MaterialAPI.Apply(mat.GetPrim())
-        papi.CreateStaticFrictionAttr(friction)
-        papi.CreateDynamicFrictionAttr(friction)
+        made = {}
         for m in meshes:
+            parts = str(m.GetPath()).split("/")
+            # path: /colliders/<body>/<shape>/node.../mesh  -> body root = /colliders/<body>
+            body_root = "/".join(parts[:3])
+            if body_root not in made:
+                mat = UsdShade.Material.Define(ps, f"{body_root}/PhysicsMaterial")
+                papi = UsdPhysics.MaterialAPI.Apply(mat.GetPrim())
+                papi.CreateStaticFrictionAttr(friction)
+                papi.CreateDynamicFrictionAttr(friction)
+                made[body_root] = mat
             binding = UsdShade.MaterialBindingAPI.Apply(m)
-            binding.Bind(mat, bindingStrength=UsdShade.Tokens.weakerThanDescendants, materialPurpose="physics")
+            binding.Bind(made[body_root], bindingStrength=UsdShade.Tokens.weakerThanDescendants,
+                         materialPurpose="physics")
         print(f"  Bound friction={friction} physics material to {len(meshes)} collider mesh(es).")
 
     ps.GetRootLayer().Save()
