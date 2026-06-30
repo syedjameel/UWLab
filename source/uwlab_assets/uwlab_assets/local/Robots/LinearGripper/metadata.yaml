@@ -13,9 +13,10 @@
 
 # TCP / grasp frame relative to robotiq_base_link (grasp point between the jaws, along +Z).
 gripper_offset:
-  pos: [0.0, 0.0, 0.10]
+  pos: [0.0, 0.0, 0.13]
   quat: [1.0, 0.0, 0.0, 0.0]
-finger_offset: 0.10          # base origin -> vertical-jaw pad center, along +Z approach
+finger_offset: 0.13          # base origin -> fingertip pad band (jaw inner face is closest to
+                             # center near the tip ~z0.13; ~z0.10 is the notch where it is farthest)
 finger_clearance: 0.05
 maximum_aperture: 0.13       # usable jaw opening (inner-face gap at OPEN ~0.137; slight margin)
 gripper_approach_direction: [0, 0, 1]   # fingers reach +Z; standoff backs off along -Z

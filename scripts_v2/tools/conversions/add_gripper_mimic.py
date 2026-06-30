@@ -34,6 +34,8 @@ parser.add_argument("--gearing", type=float, default=-1.0, help="Mimic gearing (
 parser.add_argument("--offset", type=float, default=0.0, help="Mimic offset.")
 parser.add_argument("--finger-friction", type=float, default=0.8,
                     help="Static/dynamic friction baked onto the gripper colliders (2F-85 fingertips use 0.8).")
+parser.add_argument("--finger-collision", type=str, default="convexDecomposition",
+                    help="Collision approximation for the L-shaped fingers (convexHull fills the grip notch).")
 parser.add_argument("--max-joint-velocity", type=float, default=130.0,
                     help="physxJoint:maxJointVelocity for both jaws (URDF default 0.05 throttles the mimic).")
 parser.add_argument("--test", action="store_true", help="After authoring, drive the joint in sim to verify coupling.")
@@ -56,7 +58,8 @@ def _find_joint(stage, name):
     raise RuntimeError(f"joint '{name}' not found")
 
 
-def relocate_collision_to_mesh(usd_path: str, friction: float | None = None) -> int:
+def relocate_collision_to_mesh(usd_path: str, friction: float | None = None,
+                               finger_approximation: str = "convexDecomposition") -> int:
     """Move CollisionAPI onto the child Mesh in the collider PROTOTYPE, preserving instancing.
 
     Isaac's URDF importer applies PhysicsCollisionAPI/MeshCollisionAPI on an Xform wrapper
@@ -90,8 +93,14 @@ def relocate_collision_to_mesh(usd_path: str, friction: float | None = None) -> 
         UsdPhysics.CollisionAPI.Apply(mesh.GetPrim())
         if ce_attr and ce_attr.Get() is not None:
             mesh.CreateAttribute("physics:collisionEnabled", Sdf.ValueTypeNames.Bool).Set(ce_attr.Get())
-        if approx_attr and approx_attr.Get() is not None:
-            UsdPhysics.MeshCollisionAPI.Apply(mesh.GetPrim()).CreateApproximationAttr(approx_attr.Get())
+        # The finger colliders are L-shaped: a single convexHull fills the concave gripping
+        # notch (it ends up pinching at the lower bracket, not the jaw), so the object is never
+        # gripped. convexDecomposition keeps the jaw + bracket as separate convex pieces so the
+        # actual jaw faces pinch. The base keeps its original (convexHull) approximation.
+        approx = approx_attr.Get() if (approx_attr and approx_attr.Get() is not None) else "convexHull"
+        if "inner_finger" in str(mesh.GetPath()):
+            approx = finger_approximation
+        UsdPhysics.MeshCollisionAPI.Apply(mesh.GetPrim()).CreateApproximationAttr(approx)
         prim.RemoveAPI(UsdPhysics.MeshCollisionAPI)
         prim.RemoveAPI(UsdPhysics.CollisionAPI)
         meshes.append(mesh.GetPrim())
@@ -152,7 +161,8 @@ def author_mimic() -> None:
 
     # Relocate CollisionAPI onto the Mesh prims (in the prototype layer) so the OmniReset
     # hasher detects the colliders -- without de-instancing (keeps it fast).
-    n = relocate_collision_to_mesh(args.usd, friction=args.finger_friction)
+    n = relocate_collision_to_mesh(args.usd, friction=args.finger_friction,
+                                   finger_approximation=args.finger_collision)
     print(f"Relocated CollisionAPI onto {n} mesh prim(s) (converter put it on Xform wrappers).")
 
     stage.GetRootLayer().Save()

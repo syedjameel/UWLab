@@ -2,9 +2,9 @@
 # sysid / calibrated_joints / link_inertials are the UR5e ARM calibration, copied
 # verbatim from the 2F-85 asset (same arm) -- consumed by kinematics.py (OSC control).
 gripper_offset:
-  pos: [0.0, 0.0, 0.1]
+  pos: [0.0, 0.0, 0.13]
   quat: [1.0, 0.0, 0.0, 0.0]
-finger_offset: 0.1
+finger_offset: 0.13
 finger_clearance: 0.05
 maximum_aperture: 0.13
 gripper_approach_direction: [0, 0, 1]
