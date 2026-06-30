@@ -32,15 +32,19 @@ parser.add_argument("--driver-joint", type=str, default="finger_joint", help="Re
 parser.add_argument("--axis", type=str, default="transX", help="Mimic axis token (e.g. transX, rotZ).")
 parser.add_argument("--gearing", type=float, default=-1.0, help="Mimic gearing (sign verified by --test).")
 parser.add_argument("--offset", type=float, default=0.0, help="Mimic offset.")
-parser.add_argument("--finger-friction", type=float, default=0.8,
-                    help="Static/dynamic friction baked onto the gripper colliders (2F-85 fingertips use 0.8).")
+parser.add_argument("--finger-friction", type=float, default=100.0,
+                    help="Static/dynamic friction baked onto the gripping fingers. The reference 2F-85 binds "
+                         "PhysicsMaterial (friction=100, combineMode=max) ON THE left/right_inner_finger LINK "
+                         "prims -- NOT the 0.8 fingertip_material. 0.8 lets the object slip; 100 grips "
+                         "(verified: grip holds under gravity only with the link-bound 100 material).")
 parser.add_argument("--finger-collision", type=str, default="sdf",
                     help="Collision for the L-shaped fingers: 'sdf' (exact, recommended), or convexHull/"
                          "convexDecomposition (both fail to represent the concave jaw face).")
 parser.add_argument("--max-joint-velocity", type=float, default=130.0,
                     help="maxJointVelocity for the MIMIC jaw (high so it follows the driver rigidly).")
-parser.add_argument("--close-velocity", type=float, default=0.5,
-                    help="maxJointVelocity for the DRIVER jaw = gentle close speed (m/s); too fast flings the object.")
+parser.add_argument("--close-velocity", type=float, default=130.0,
+                    help="maxJointVelocity for the DRIVER jaw. Reference finger_joint uses 130; 0.5 throttled the "
+                         "driver (verified the grip holds at 130 in the configured 0.06-0.08 finger_offset band).")
 parser.add_argument("--test", action="store_true", help="After authoring, drive the joint in sim to verify coupling.")
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
@@ -207,7 +211,15 @@ def add_jaw_box_colliders(stage, friction: float | None) -> int:
         UsdPhysics.CollisionAPI.Apply(mesh.GetPrim())
         UsdPhysics.MeshCollisionAPI.Apply(mesh.GetPrim()).CreateApproximationAttr(UsdPhysics.Tokens.convexHull)
         if mat is not None:
+            # Bind on the jaw collider mesh AND on the finger LINK prim. The reference 2F-85 binds
+            # its grip material on the left/right_inner_finger LINK (not the collision mesh); a
+            # mesh-only binding inside the (previously instanced) /collisions subtree did not take
+            # effect (object slipped regardless of friction value). Binding on the link is what
+            # actually makes the high friction reach the contact.
             UsdShade.MaterialBindingAPI.Apply(mesh.GetPrim()).Bind(
+                mat, bindingStrength=UsdShade.Tokens.weakerThanDescendants, materialPurpose="physics"
+            )
+            UsdShade.MaterialBindingAPI.Apply(body_prim).Bind(
                 mat, bindingStrength=UsdShade.Tokens.weakerThanDescendants, materialPurpose="physics"
             )
         n += 1
