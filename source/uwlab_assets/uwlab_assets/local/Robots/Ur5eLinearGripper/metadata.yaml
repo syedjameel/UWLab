@@ -1,10 +1,14 @@
 # UR5e + linear gripper metadata. Gripper grasp fields = THIS gripper's geometry;
 # sysid / calibrated_joints / link_inertials are the UR5e ARM calibration, copied
 # verbatim from the 2F-85 asset (same arm) -- consumed by kinematics.py (OSC control).
+# gripper_offset/finger_offset MUST match LinearGripper/metadata.yaml (the grasp-sampling
+# gripper) -- the reset/reward/observation code reads gripper_offset from THIS robot file to
+# place the object at the TCP. The verified grip zone is base-z ~0.06-0.08 (an object at the
+# old 0.13 fingertip slides DOWN to ~0.07), so the TCP is 0.07, NOT the 0.13 fingertip.
 gripper_offset:
-  pos: [0.0, 0.0, 0.13]
+  pos: [0.0, 0.0, 0.07]
   quat: [1.0, 0.0, 0.0, 0.0]
-finger_offset: 0.13
+finger_offset: 0.07
 finger_clearance: 0.05
 maximum_aperture: 0.13
 gripper_approach_direction: [0, 0, 1]

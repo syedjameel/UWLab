@@ -77,14 +77,14 @@ UR5E_LINEAR_ARTICULATION = ArticulationCfg(
 )
 
 # Gripper actuator: drive ONLY the finger_joint (the mimic makes right_finger_joint follow).
-# Prismatic position drive (N/m, N). Stiffness is deliberately LOW: a stiff/fast close slams
-# the jaws shut and FLINGS a light object out (verified -- stiffness>=200 ejects the slab,
-# stiffness 50 grips it: finger_joint stops on the object instead of closing fully).
+# Prismatic position drive (N/m, N). Gains mirror the reference 2F-85 gripper actuator
+# (stiffness 17, damping 5, effort 60) now that the friction-100 link material makes the grip
+# robust to low normal force; a stiff/fast close otherwise FLINGS a light object out.
 _LINEAR_GRIPPER_ACTUATOR = ImplicitActuatorCfg(
     joint_names_expr=["finger_joint"],
-    stiffness=50.0,
+    stiffness=17.0,
     damping=5.0,
-    effort_limit_sim=120.0,
+    effort_limit_sim=60.0,
 )
 
 # Gripper-only articulation for grasp sampling (mirrors ROBOTIQ_2F85): the sampler teleports
@@ -101,6 +101,9 @@ LINEAR_GRIPPER = ArticulationCfg(
         articulation_props=sim_utils.ArticulationRootPropertiesCfg(
             enabled_self_collisions=False, solver_position_iteration_count=36, solver_velocity_iteration_count=0
         ),
+        # Normalize total gripper mass to 0.5 kg, exactly like the reference ROBOTIQ_2F85 spawn
+        # (our baked link masses sum to ~1.1 kg; a lighter gripper matches the 2F-85 dynamics).
+        mass_props=sim_utils.MassPropertiesCfg(mass=0.5),
     ),
     init_state=ArticulationCfg.InitialStateCfg(
         pos=(0, 0, 0.1), rot=(1, 0, 0, 0), joint_pos=LINEAR_GRIPPER_DEFAULT_JOINT_POS
