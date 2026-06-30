@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from isaaclab.utils import configclass
 
+from uwlab_assets.robots.ur5e_linear_gripper.actions import LINEAR_GRIPPER_BINARY_ACTIONS
 from uwlab_assets.robots.ur5e_robotiq_gripper.actions import ROBOTIQ_GRIPPER_BINARY_ACTIONS
 
 from ...mdp.actions.actions_cfg import RelCartesianOSCActionCfg
@@ -67,3 +68,22 @@ class Ur5eRobotiq2f85SysidOSCAction:
 
     arm = UR5E_ROBOTIQ_2F85_RELATIVE_OSC_UNSCALED
     gripper = ROBOTIQ_GRIPPER_BINARY_ACTIONS
+
+
+# Linear-gripper action variants: IDENTICAL arm OSC (same UR5e arm + wrist_3_link IK body),
+# only the binary gripper sub-action differs (LINEAR_GRIPPER_BINARY_ACTIONS drives finger_joint
+# in meters; the PhysX mimic makes right_finger_joint follow).
+@configclass
+class Ur5eLinearGripperRelativeOSCAction:
+    """Pre-train / train gains: analytical OSC + linear-gripper binary action."""
+
+    arm = UR5E_ROBOTIQ_2F85_RELATIVE_OSC
+    gripper = LINEAR_GRIPPER_BINARY_ACTIONS
+
+
+@configclass
+class Ur5eLinearGripperRelativeOSCEvalAction:
+    """Eval / sim2real gains: high-Kp OSC + linear-gripper binary action."""
+
+    arm = UR5E_ROBOTIQ_2F85_RELATIVE_OSC_EVAL
+    gripper = LINEAR_GRIPPER_BINARY_ACTIONS
