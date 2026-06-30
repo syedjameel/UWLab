@@ -34,8 +34,9 @@ parser.add_argument("--gearing", type=float, default=-1.0, help="Mimic gearing (
 parser.add_argument("--offset", type=float, default=0.0, help="Mimic offset.")
 parser.add_argument("--finger-friction", type=float, default=0.8,
                     help="Static/dynamic friction baked onto the gripper colliders (2F-85 fingertips use 0.8).")
-parser.add_argument("--finger-collision", type=str, default="convexDecomposition",
-                    help="Collision approximation for the L-shaped fingers (convexHull fills the grip notch).")
+parser.add_argument("--finger-collision", type=str, default="sdf",
+                    help="Collision for the L-shaped fingers: 'sdf' (exact, recommended), or convexHull/"
+                         "convexDecomposition (both fail to represent the concave jaw face).")
 parser.add_argument("--max-joint-velocity", type=float, default=130.0,
                     help="physxJoint:maxJointVelocity for both jaws (URDF default 0.05 throttles the mimic).")
 parser.add_argument("--test", action="store_true", help="After authoring, drive the joint in sim to verify coupling.")
@@ -100,7 +101,14 @@ def relocate_collision_to_mesh(usd_path: str, friction: float | None = None,
         approx = approx_attr.Get() if (approx_attr and approx_attr.Get() is not None) else "convexHull"
         if "inner_finger" in str(mesh.GetPath()):
             approx = finger_approximation
-        UsdPhysics.MeshCollisionAPI.Apply(mesh.GetPrim()).CreateApproximationAttr(approx)
+        if approx == "sdf":
+            # SDF keeps the exact finger shape (convexHull crushes at the bracket;
+            # convexDecomposition misses the thin jaw face). Triangle mesh + PhysX SDF.
+            UsdPhysics.MeshCollisionAPI.Apply(mesh.GetPrim()).CreateApproximationAttr("none")
+            sdf_api = PhysxSchema.PhysxSDFMeshCollisionAPI.Apply(mesh.GetPrim())
+            sdf_api.CreateSdfResolutionAttr(256)
+        else:
+            UsdPhysics.MeshCollisionAPI.Apply(mesh.GetPrim()).CreateApproximationAttr(approx)
         prim.RemoveAPI(UsdPhysics.MeshCollisionAPI)
         prim.RemoveAPI(UsdPhysics.CollisionAPI)
         meshes.append(mesh.GetPrim())
