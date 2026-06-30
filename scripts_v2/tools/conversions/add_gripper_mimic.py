@@ -38,7 +38,9 @@ parser.add_argument("--finger-collision", type=str, default="sdf",
                     help="Collision for the L-shaped fingers: 'sdf' (exact, recommended), or convexHull/"
                          "convexDecomposition (both fail to represent the concave jaw face).")
 parser.add_argument("--max-joint-velocity", type=float, default=130.0,
-                    help="physxJoint:maxJointVelocity for both jaws (URDF default 0.05 throttles the mimic).")
+                    help="maxJointVelocity for the MIMIC jaw (high so it follows the driver rigidly).")
+parser.add_argument("--close-velocity", type=float, default=0.5,
+                    help="maxJointVelocity for the DRIVER jaw = gentle close speed (m/s); too fast flings the object.")
 parser.add_argument("--test", action="store_true", help="After authoring, drive the joint in sim to verify coupling.")
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
@@ -138,9 +140,14 @@ def relocate_collision_to_mesh(usd_path: str, friction: float | None = None,
 # Jaw gripping-pad boxes, measured from the upper-jaw region of the finger collision mesh
 # (body-local frame): inner gripping face at x=+/-0.0235, pad spans Y +/-0.0075, Z 0.023..0.051.
 # These are clean box proxies that collide reliably where the convex/SDF mesh colliders failed.
+# Box spans the FULL vertical jaw at the inner gripping face (body-local x=+/-0.0235), filling
+# the mid-jaw "notch" (where the real face pulls back to -0.0355 and would not grip), and uses
+# the wide jaw width (Y +/-0.019). A tip-only box (narrow Y, only the fingertip) grips but the
+# object slides out; the full-height wide pad holds it. Body-local: x[-0.043,-0.0235],
+# y[-0.019,0.019], z[-0.0295,0.0505] -> base-z 0.064..0.144.
 _JAW_BOXES = {
-    "left_inner_finger": ((-0.0332, 0.0, 0.0369), (0.0097, 0.0075, 0.0137)),
-    "right_inner_finger": ((0.0332, 0.0, 0.0369), (0.0097, 0.0075, 0.0137)),
+    "left_inner_finger": ((-0.0333, 0.0, 0.0105), (0.0098, 0.019, 0.040)),
+    "right_inner_finger": ((0.0333, 0.0, 0.0105), (0.0098, 0.019, 0.040)),
 }
 
 
@@ -166,6 +173,13 @@ def add_jaw_box_colliders(stage, friction: float | None) -> int:
         papi = UsdPhysics.MaterialAPI.Apply(mat.GetPrim())
         papi.CreateStaticFrictionAttr(friction)
         papi.CreateDynamicFrictionAttr(friction)
+        # CRITICAL: PhysX combines the two contacting materials' frictions, and here it resolves
+        # to the OBJECT's (low) friction -- so a high jaw friction has NO effect and a light
+        # object slides straight down out of the grip (verified: jaw 0.5 vs 2.0 -> identical
+        # slip). frictionCombineMode="max" makes the contact use the JAW's high friction
+        # regardless of the object's, so the grip holds against gravity.
+        pxmat = PhysxSchema.PhysxMaterialAPI.Apply(mat.GetPrim())
+        pxmat.CreateFrictionCombineModeAttr("max")
 
     n = 0
     for body, (center, half) in _JAW_BOXES.items():
@@ -227,15 +241,18 @@ def author_mimic() -> None:
             removed_drive = True
     print(f"Removed DriveAPI from mimic joint '{args.mimic_joint}': {removed_drive}")
 
-    # The URDF's velocity="0.05" m/s caps physxJoint:maxJointVelocity at 0.05 on BOTH jaws,
-    # which throttles the mimic jaw so it can't keep up with the driver (lag). The reference
-    # 2F-85 uses 130. Raise it on both jaws so the mimic follows rigidly (it's a safety cap;
-    # the drive/actuator sets the real closing speed).
-    for jp in (mimic_prim, driver_prim):
-        mv = jp.GetAttribute("physxJoint:maxJointVelocity")
-        if mv:
-            mv.Set(args.max_joint_velocity)
-    print(f"Set physxJoint:maxJointVelocity = {args.max_joint_velocity} on both jaw joints.")
+    # Per-jaw velocity caps decouple "gentle close" from "rigid mimic":
+    #  * DRIVER jaw -> a LOW cap (--close-velocity) so the actuator closes gently and does not
+    #    slam/FLING a light object out (a fast close ejects it even with the right grip force).
+    #  * MIMIC jaw  -> a HIGH cap (--max-joint-velocity) so it can move fast enough to follow the
+    #    driver rigidly (a low cap on the mimic makes it lag badly). The URDF's 0.05 throttled both.
+    dmv = driver_prim.GetAttribute("physxJoint:maxJointVelocity")
+    mmv = mimic_prim.GetAttribute("physxJoint:maxJointVelocity")
+    if dmv:
+        dmv.Set(args.close_velocity)
+    if mmv:
+        mmv.Set(args.max_joint_velocity)
+    print(f"Set maxJointVelocity: driver={args.close_velocity} (gentle close), mimic={args.max_joint_velocity} (follow).")
 
     # Relocate CollisionAPI onto the Mesh prims (in the prototype layer) so the OmniReset
     # hasher detects the colliders -- without de-instancing (keeps it fast).

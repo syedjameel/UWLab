@@ -34,6 +34,8 @@ parser.add_argument("--slab-y", type=float, default=0.040)
 parser.add_argument("--slab-z", type=float, default=0.020)
 parser.add_argument("--close-value", type=float, default=0.068)
 parser.add_argument("--stiffness", type=float, default=50.0)  # gentle close; high stiffness ejects the slab
+parser.add_argument("--effort", type=float, default=120.0, help="effort_limit_sim (N): low cap = gentle, force-limited grip.")
+parser.add_argument("--slab-friction", type=float, default=0.5, help="object friction (diagnostic).")
 parser.add_argument("--gravity-step", type=int, default=150, help="Step at which to enable gravity on the slab.")
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
@@ -64,7 +66,7 @@ def main() -> None:
                 rigid_props=sim_utils.RigidBodyPropertiesCfg(disable_gravity=True),
             ),
             init_state=ArticulationCfg.InitialStateCfg(pos=(0, 0, 0.5)),  # lift base so jaws are in the air
-            actuators={"g": ImplicitActuatorCfg(joint_names_expr=["finger_joint"], stiffness=args.stiffness, damping=50.0, effort_limit_sim=120.0)},
+            actuators={"g": ImplicitActuatorCfg(joint_names_expr=["finger_joint"], stiffness=args.stiffness, damping=50.0, effort_limit_sim=args.effort)},
         )
     )
     # A box slab as the object, placed on the gripper's +Z axis, between the jaws.
@@ -75,7 +77,7 @@ def main() -> None:
                 size=(args.slab_x, args.slab_y, args.slab_z),
                 rigid_props=sim_utils.RigidBodyPropertiesCfg(disable_gravity=True),
                 collision_props=sim_utils.CollisionPropertiesCfg(),
-                physics_material=sim_utils.RigidBodyMaterialCfg(static_friction=0.5, dynamic_friction=0.5),
+                physics_material=sim_utils.RigidBodyMaterialCfg(static_friction=args.slab_friction, dynamic_friction=args.slab_friction),
                 mass_props=sim_utils.MassPropertiesCfg(mass=0.05),
             ),
             init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, 0.5 + args.finger_offset)),
@@ -101,7 +103,7 @@ def main() -> None:
     # Sweep the slab height (finger_offset) and, at each, close the jaws and see where they stop.
     offsets = [0.04, 0.05, 0.06, 0.07, 0.08, 0.09, 0.10, 0.11, 0.12, 0.13, 0.14]
     print("\n=== sweep: slab at z=base+offset, close jaws, where does finger_joint stop? ===")
-    print("  offset   finger_joint_stop   slab_disp   verdict")
+    print("  offset   fj_stop      close_disp  grav_drop  verdict")
     root_pose = torch.tensor([[0.0, 0.0, 0.5, 1.0, 0.0, 0.0, 0.0]], device=gripper.device)
     zero_vel = torch.zeros((1, 6), device=gripper.device)
     for off in offsets:
@@ -125,14 +127,29 @@ def main() -> None:
             sim.step(); gripper.update(1 / 120.0); slab.update(1 / 120.0)
         fj = float(gripper.data.joint_pos[0, d])
         disp = float((slab.data.root_pos_w[0] - slab_start).norm())
+        # Now turn ON gravity for the slab and hold for 1s -- does the grip survive gravity, or
+        # does the object slip/fall out? (This is what grasp sampling actually requires.)
+        held_pos = slab.data.root_pos_w[0].clone()
+        slab.root_physx_view.set_disable_gravities(
+            torch.zeros((1,), dtype=torch.bool, device=slab.device), torch.arange(1, device=slab.device))
+        for _ in range(120):
+            gripper.write_root_pose_to_sim(root_pose)
+            gripper.write_root_velocity_to_sim(zero_vel)
+            gripper.set_joint_position_target(target); gripper.write_data_to_sim()
+            sim.step(); gripper.update(1 / 120.0); slab.update(1 / 120.0)
+        grav_drop = float((slab.data.root_pos_w[0] - held_pos).norm())
+        slab.root_physx_view.set_disable_gravities(
+            torch.ones((1,), dtype=torch.bool, device=slab.device), torch.arange(1, device=slab.device))
         if fj > args.close_value - 0.004:
             v = "MISSED (closed fully)"
-        elif disp < 0.02:
-            v = "GRIPPED (held)"
+        elif disp > 0.02:
+            v = f"EJECTED ({disp*1000:.0f}mm)"
+        elif grav_drop > 0.02:
+            v = f"slipped under gravity ({grav_drop*1000:.0f}mm)"
         else:
-            v = f"contacted but slab moved {disp*1000:.0f}mm"
-        print(f"  {off:.3f}     {fj:.4f}             {disp*1000:5.1f}mm     {v}")
-    print("\nWhere finger_joint stops SHORT and slab is held = the real grip height -> set finger_offset there.")
+            v = "GRIPPED + held under gravity"
+        print(f"  {off:.3f}     {fj:.4f}        {disp*1000:5.1f}mm    {grav_drop*1000:5.1f}mm   {v}")
+    print("\nGRIPPED + held under gravity across a height band = good grip. Tune --stiffness.")
 
 
 if __name__ == "__main__":

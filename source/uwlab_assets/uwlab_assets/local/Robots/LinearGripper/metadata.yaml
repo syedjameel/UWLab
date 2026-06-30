@@ -13,10 +13,11 @@
 
 # TCP / grasp frame relative to robotiq_base_link (grasp point between the jaws, along +Z).
 gripper_offset:
-  pos: [0.0, 0.0, 0.13]
+  pos: [0.0, 0.0, 0.07]
   quat: [1.0, 0.0, 0.0, 0.0]
-finger_offset: 0.13          # base origin -> fingertip pad band (jaw inner face is closest to
-                             # center near the tip ~z0.13; ~z0.10 is the notch where it is farthest)
+finger_offset: 0.07          # grasp zone: base-z ~0.064-0.08 is where the jaw box reliably HOLDS
+                             # the object under gravity (verified test_gripper_grasp). The fingertip
+                             # (z~0.13) grips but the object slides down the jaw to this lower lip.
 finger_clearance: 0.05
 maximum_aperture: 0.13       # usable jaw opening (inner-face gap at OPEN ~0.137; slight margin)
 gripper_approach_direction: [0, 0, 1]   # fingers reach +Z; standoff backs off along -Z
