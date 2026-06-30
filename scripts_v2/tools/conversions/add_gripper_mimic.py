@@ -103,8 +103,10 @@ def relocate_collision_to_mesh(usd_path: str, friction: float | None = None,
             approx = finger_approximation
         if approx == "sdf":
             # SDF keeps the exact finger shape (convexHull crushes at the bracket;
-            # convexDecomposition misses the thin jaw face). Triangle mesh + PhysX SDF.
-            UsdPhysics.MeshCollisionAPI.Apply(mesh.GetPrim()).CreateApproximationAttr("none")
+            # convexDecomposition misses the thin jaw face). PhysX needs the approximation
+            # token set to "sdf" (NOT "none" -> that falls back to convexHull), plus the SDF
+            # resolution via PhysxSDFMeshCollisionAPI.
+            UsdPhysics.MeshCollisionAPI.Apply(mesh.GetPrim()).CreateApproximationAttr("sdf")
             sdf_api = PhysxSchema.PhysxSDFMeshCollisionAPI.Apply(mesh.GetPrim())
             sdf_api.CreateSdfResolutionAttr(256)
         else:
