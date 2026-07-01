@@ -16,8 +16,11 @@ judged):
   * approach_world_z : world Z component of the gripper's approach axis. ~ -1 = top-down
     (stable on a flat object), ~ 0 = horizontal/side (slips/pivots on a peg or slab edge).
   * grip_width       : driver finger_joint at timeout (0 = open/missed, mid = closed on object).
-  * obj_disp         : |object_pos - object_pos_at_episode_start| (how far the object was
-    knocked/dragged; the success check fails it past max_pos_deviation).
+  * obj_jaw_lat      : lateral distance object->gripper approach line (small = between the jaws).
+  * obj_disp_early   : object displacement just before gravity (large = knocked away on the close).
+  * grip_disp        : gripper-base drift over the episode (large = unanchored gripper drifting).
+  * obj_disp         : |object_pos - object_pos_at_episode_start| at timeout (fails past
+    max_pos_deviation).
   * obj_linvel       : object linear speed at timeout (success needs it near 0 = settled).
   * success          : whether the env's recorder exported this episode as a successful grasp.
 
@@ -73,11 +76,14 @@ def _print_compare(path_a: str, path_b: str) -> None:
         print(f"  success: {succ}/{ev}  ({rate:.1f}% )")
         print(f"  approach_world_z (-1=top-down, 0=side):{_fmt(d['approach_world_z'])}")
         print(f"  grip_width finger_joint:               {_fmt(d['grip_width'])}")
+        print(f"  obj_jaw_lat (m, small=between jaws):    {_fmt(d.get('obj_jaw_lat', []))}")
+        print(f"  obj_disp_early (m, knocked on close):   {_fmt(d.get('obj_disp_early', []))}")
+        print(f"  grip_disp (m, gripper base drift):      {_fmt(d.get('grip_disp', []))}")
         print(f"  obj_disp from start (m):               {_fmt(d['obj_disp'])}")
         print(f"  obj_linvel at timeout (m/s):           {_fmt(d['obj_linvel'])}")
     print("\n---------------------------------------------------------")
     print("Read: if our approach_world_z ~ 0 while 2F-85 ~ -1, ours grasps side-on (unstable).")
-    print("If our obj_disp >> 2F-85, ours knocks/drags the object (bad grasp line or scale).")
+    print("If our grip_disp is large, the free gripper drifts; if obj_disp >> 2F-85, it drops the object.")
     print("=========================================================\n")
 
 

@@ -3,20 +3,22 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Apply a PhysX mimic joint to the linear gripper so the two jaws are RIGIDLY coupled.
+"""Prepare the standalone linear-gripper USD for grasp sampling: fix the jaw coupling, relocate
+the collisions onto clean jaw-box proxies, and bake in finger friction.
 
-The OmniReset paper (A.3.3) requires grippers be modeled with mimic joints, not
-independent joints: independent joints behave as a compliant spring-damper the policy
-exploits unphysically (no sim2real transfer). The URDF importer drops the URDF <mimic>,
-so we author a PhysX mimic joint matching the reference 2F-85 USD exactly:
-on the passive joint -> physxMimicJoint:<axis>:{gearing, offset} + referenceJoint rel.
+Jaw coupling -- use --dual-drive (RECOMMENDED, and what the current pipeline uses): keep BOTH
+jaws' position DriveAPI and author NO mimic, so the grasp-sampling actuator drives both jaws to
+one binary target. The PhysX prismatic mimic is unreliable even standalone (the soft driver
+outruns the free follower and the solver pins both jaws at 0 -> the gripper never grips, and the
+recorder logs finger_joint=0). The legacy mimic path (default, no --dual-drive) authors a
+physxMimicJoint on the follower matching the reference 2F-85 USD (gearing +1.0 for our frame; the
+old -1.0 demanded q_right=-q_finger, below the follower's lower limit 0, which froze the driver).
 
 Run in-app (server or local leisaac)::
 
     ./uwlab.sh -p scripts_v2/tools/conversions/add_gripper_mimic.py \
         --usd source/uwlab_assets/uwlab_assets/local/Robots/LinearGripper/linear_gripper.usd \
-        --mimic-joint right_finger_joint --driver-joint finger_joint \
-        --axis transX --gearing -1.0 --test
+        --mimic-joint right_finger_joint --driver-joint finger_joint --dual-drive
 """
 
 from __future__ import annotations

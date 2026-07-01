@@ -28,7 +28,7 @@ from isaaclab.assets.articulation import ArticulationCfg
 
 from uwlab_assets import UWLAB_LOCAL_ASSETS_DIR
 
-# The linear gripper exposes one driver joint + one mimic; both start at 0 (= OPEN).
+# The linear gripper has two jaw joints (driver + follower); both start at 0 (= OPEN).
 LINEAR_GRIPPER_DEFAULT_JOINT_POS = {
     "finger_joint": 0.0,
     "right_finger_joint": 0.0,
@@ -86,12 +86,12 @@ UR5E_LINEAR_ARTICULATION = ArticulationCfg(
 # standalone now DUAL-DRIVES both jaws to the same binary target (mimic stripped from the USD,
 # exactly like the full robot), giving a symmetric, stable close.
 #
-# STIFFNESS 200 (not the reference 2F-85's 17): 17 (N/m on our prismatic jaws) is too soft -- the
-# squeeze force at the grip equilibrium is ~0.4 N and the peg slips out under gravity, so no grasp
-# passes the stability check (0 exported). 200/damping 20 gives a firm ~6 N clamp that holds the
-# peg. The old ">=200 ejects a light object" finding was for SINGLE-jaw drive (one jaw races in and
-# punts the object); DUAL-drive closes both jaws symmetrically so the forces cancel and it does not
-# fling. effort_limit_sim 60 N caps the squeeze.
+# STIFFNESS 200 (not the reference 2F-85's 17): 17 (N/m on our prismatic jaws) gives only a ~0.4 N
+# squeeze at the grip equilibrium -- a marginal hold. 200/damping 20 gives a firm ~6 N clamp. (The
+# main reason grasps failed to export before was the gripper DRIFT, fixed by the root damping on the
+# LINEAR_GRIPPER spawn below; the firmer clamp is complementary.) The old ">=200 ejects a light
+# object" finding was for SINGLE-jaw drive (one jaw races in and punts the object); dual-drive closes
+# both jaws symmetrically so the forces cancel and it does not fling. effort_limit_sim 60 N caps it.
 _LINEAR_GRIPPER_ACTUATOR = ImplicitActuatorCfg(
     joint_names_expr=["finger_joint", "right_finger_joint"],
     stiffness=200.0,
@@ -121,7 +121,8 @@ _LINEAR_GRIPPER_DUAL_ACTUATOR = ImplicitActuatorCfg(
 )
 
 # Gripper-only articulation for grasp sampling (mirrors ROBOTIQ_2F85): the sampler teleports
-# the gripper alone (no arm). Uses the standalone gripper USD (with the PhysX mimic baked in).
+# the gripper alone (no arm). Uses the standalone gripper USD (dual-drive: both jaws driven,
+# no mimic) plus root damping (below) to stop the free gripper drifting during the grip.
 LINEAR_GRIPPER = ArticulationCfg(
     prim_path="{ENV_REGEX_NS}/RobotiqGripper",
     spawn=sim_utils.UsdFileCfg(

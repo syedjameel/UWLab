@@ -16,8 +16,8 @@ What differs from the 2F-85 and why:
   ``wrist_3_link`` IK body), only the binary gripper sub-action differs.
 * gripper joint regex on the grasp-dataset reset event: the 2F-85 uses
   ``["finger_joint", ".*right.*", ".*left.*"]`` (its many passive joints); the linear
-  gripper has exactly ``finger_joint`` (driver) + ``right_finger_joint`` (PhysX mimic), and
-  ``.*left.*`` matches NOTHING -> would raise. Replaced with the explicit two joint names.
+  gripper has exactly ``finger_joint`` (driver) + ``right_finger_joint`` (follower, dual-
+  driven), and ``.*left.*`` matches NOTHING -> would raise. Replaced with the explicit names.
 
 The link names (``robotiq_base_link``, ``wrist_3_link``) are reused by the linear gripper
 (renamed to the 2F-85 contract), so all body_name references are inherited unchanged.
@@ -85,8 +85,8 @@ class LinearGripperGraspSamplingCfg(Robotiq2f85GraspSamplingCfg):
     def __post_init__(self):
         # Swap the gripper-only robot and the binary action before the base configures sim.
         self.scene.robot = ur5e_linear_gripper.LINEAR_GRIPPER.replace(prim_path="{ENV_REGEX_NS}/Robot")
-        # Dual-drive both jaws (the prismatic mimic pins the gripper at 0; see ur5e_linear_gripper.py).
-        self.actions = ur5e_linear_gripper.LinearGripperDualBinaryGripperAction()
+        # Binary action drives BOTH jaws (the prismatic mimic pins the gripper at 0; see actions.py).
+        self.actions = ur5e_linear_gripper.LinearGripperBinaryGripperAction()
         super().__post_init__()
 
 

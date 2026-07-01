@@ -5,9 +5,9 @@
 
 """Controlled grasp test: put a slab between the jaws, close, and see if it's held.
 
-Grasp sampling shows the object ejected/dropped before gravity. This isolates the grip:
-spawn the gripper + a box at finger_offset on the gripper's +Z axis (between the jaws),
-close the gripper, and report:
+Isolates the GRIP itself from the grasp-sampling scene (the base is pinned every step, so this
+does NOT exercise the free-gripper drift). Spawn the gripper + a box at finger_offset on the
+gripper's +Z axis (between the jaws), close BOTH jaws (dual-drive), and report:
   * where finger_joint stops (0.068 = jaws closed all the way -> they MISSED the slab;
     < 0.068 = they're pinching it),
   * whether the slab stays put (held) or moves/falls (ejected/dropped),
