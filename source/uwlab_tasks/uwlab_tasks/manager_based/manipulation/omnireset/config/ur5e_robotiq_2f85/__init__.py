@@ -118,6 +118,105 @@ gym.register(
     },
 )
 
+# ---- UR10e + linear-gripper RESET STATES variants (same tasks, UR10e arm) ----
+# No UR10e grasp-sampling task: grasp sampling is gripper-only (arm-independent), so
+# OmniReset-LinearGripper-GraspSampling-v0 serves both arms.
+gym.register(
+    id="OmniReset-UR10eLinearGripper-ObjectAnywhereEEAnywhere-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": (
+            f"{__name__}.ur10e_linear_gripper_cfg:Ur10eLinearGripperObjectAnywhereEEAnywhereResetStatesCfg"
+        )
+    },
+)
+
+gym.register(
+    id="OmniReset-UR10eLinearGripper-ObjectRestingEEGrasped-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": (
+            f"{__name__}.ur10e_linear_gripper_cfg:Ur10eLinearGripperObjectRestingEEGraspedResetStatesCfg"
+        )
+    },
+)
+
+gym.register(
+    id="OmniReset-UR10eLinearGripper-ObjectAnywhereEEGrasped-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": (
+            f"{__name__}.ur10e_linear_gripper_cfg:Ur10eLinearGripperObjectAnywhereEEGraspedResetStatesCfg"
+        )
+    },
+)
+
+gym.register(
+    id="OmniReset-UR10eLinearGripper-ObjectPartiallyAssembledEEAnywhere-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": (
+            f"{__name__}.ur10e_linear_gripper_cfg:Ur10eLinearGripperObjectPartiallyAssembledEEAnywhereResetStatesCfg"
+        )
+    },
+)
+
+gym.register(
+    id="OmniReset-UR10eLinearGripper-ObjectPartiallyAssembledEEGrasped-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": (
+            f"{__name__}.ur10e_linear_gripper_cfg:Ur10eLinearGripperObjectPartiallyAssembledEEGraspedResetStatesCfg"
+        )
+    },
+)
+
+# ---- UR10e + linear-gripper RL STATE variants ----
+gym.register(
+    id="OmniReset-UR10eLinearGripper-RelCartesianOSC-State-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.ur10e_linear_gripper_cfg:Ur10eLinearGripperRelCartesianOSCTrainCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_cfg:Base_PPORunnerCfg",
+    },
+)
+
+gym.register(
+    id="OmniReset-UR10eLinearGripper-RelCartesianOSC-State-Finetune-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.ur10e_linear_gripper_cfg:Ur10eLinearGripperRelCartesianOSCFinetuneCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_cfg:Base_PPORunnerCfg",
+    },
+)
+
+gym.register(
+    id="OmniReset-UR10eLinearGripper-RelCartesianOSC-State-Play-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.ur10e_linear_gripper_cfg:Ur10eLinearGripperRelCartesianOSCEvalCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_cfg:Base_PPORunnerCfg",
+    },
+)
+
+gym.register(
+    id="OmniReset-UR10eLinearGripper-RelCartesianOSC-State-Finetune-Play-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.ur10e_linear_gripper_cfg:Ur10eLinearGripperRelCartesianOSCFinetuneEvalCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_cfg:Base_PPORunnerCfg",
+    },
+)
+
 # Register reset states environments
 gym.register(
     id="OmniReset-UR5eRobotiq2f85-ObjectAnywhereEEAnywhere-v0",

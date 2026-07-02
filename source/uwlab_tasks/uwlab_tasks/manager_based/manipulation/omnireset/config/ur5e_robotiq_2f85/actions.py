@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from isaaclab.utils import configclass
 
+from uwlab_assets import UWLAB_LOCAL_ASSETS_DIR
 from uwlab_assets.robots.ur5e_linear_gripper.actions import LINEAR_GRIPPER_BINARY_ACTIONS
 from uwlab_assets.robots.ur5e_robotiq_gripper.actions import ROBOTIQ_GRIPPER_BINARY_ACTIONS
 
@@ -118,4 +119,59 @@ class Ur5eLinearGripperRelativeOSCEvalAction:
     """
 
     arm = UR5E_ROBOTIQ_2F85_RELATIVE_OSC_EVAL
+    gripper = LINEAR_GRIPPER_BINARY_ACTIONS
+
+
+# ---------------------------------------------------------------------------------------
+# UR10e + linear gripper
+# ---------------------------------------------------------------------------------------
+# The OSC's analytical kinematics/mass-matrix are data-driven: calibration_dir points them at
+# the UR10e's calibrated_joints/link_inertials (nominal from the URDF, FK cross-checked to
+# <0.5 mm against the Isaac articulation). Left as None they would silently use the UR5e's.
+_UR10E_CALIBRATION_DIR = f"{UWLAB_LOCAL_ASSETS_DIR}/Robots/UR10e"
+
+# UR10e torque limits (URDF): the UR10e is a much stronger arm than the UR5e (150/28).
+_UR10E_TORQUE_LIMIT = (330.0, 330.0, 150.0, 56.0, 56.0, 56.0)
+
+# Train OSC: same gains as the UR5e linear-gripper train OSC (Kp 200 trans / 3 rot, rot
+# damping_ratio 0.2 for the vibration fix -- the gripper causing it is the same one). The
+# heavier UR10e may need stiffer gains; retune at P6 starting from these.
+UR10E_LINEAR_GRIPPER_RELATIVE_OSC = RelCartesianOSCActionCfg(
+    asset_name="robot",
+    joint_names=["shoulder.*", "elbow.*", "wrist.*"],
+    body_name="wrist_3_link",
+    scale_xyz_axisangle=(0.02, 0.02, 0.02, 0.02, 0.02, 0.2),
+    motion_stiffness=(200.0, 200.0, 200.0, 3.0, 3.0, 3.0),
+    motion_damping_ratio=(3.0, 3.0, 3.0, 0.2, 0.2, 0.2),
+    torque_limit=_UR10E_TORQUE_LIMIT,
+    calibration_dir=_UR10E_CALIBRATION_DIR,
+)
+
+# Eval / sim2real gains (mirrors the 2F-85 eval OSC; same rotational-vibration caveat as the
+# UR5e linear-gripper eval action -- revisit the rot gains when eval/finetune is reached).
+UR10E_LINEAR_GRIPPER_RELATIVE_OSC_EVAL = RelCartesianOSCActionCfg(
+    asset_name="robot",
+    joint_names=["shoulder.*", "elbow.*", "wrist.*"],
+    body_name="wrist_3_link",
+    scale_xyz_axisangle=(0.01, 0.01, 0.002, 0.02, 0.02, 0.2),
+    motion_stiffness=(1000.0, 1000.0, 1000.0, 50.0, 50.0, 50.0),
+    motion_damping_ratio=(1.0, 1.0, 1.0, 1.0, 1.0, 1.0),
+    torque_limit=_UR10E_TORQUE_LIMIT,
+    calibration_dir=_UR10E_CALIBRATION_DIR,
+)
+
+
+@configclass
+class Ur10eLinearGripperRelativeOSCAction:
+    """Pre-train / train gains: UR10e analytical OSC + linear-gripper binary action."""
+
+    arm = UR10E_LINEAR_GRIPPER_RELATIVE_OSC
+    gripper = LINEAR_GRIPPER_BINARY_ACTIONS
+
+
+@configclass
+class Ur10eLinearGripperRelativeOSCEvalAction:
+    """Eval / sim2real gains: high-Kp UR10e OSC + linear-gripper binary action."""
+
+    arm = UR10E_LINEAR_GRIPPER_RELATIVE_OSC_EVAL
     gripper = LINEAR_GRIPPER_BINARY_ACTIONS
