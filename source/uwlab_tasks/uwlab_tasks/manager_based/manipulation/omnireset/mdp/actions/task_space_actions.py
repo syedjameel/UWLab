@@ -145,8 +145,11 @@ class RelCartesianOSCAction(ActionTerm):
         joint_pos = self._asset.data.joint_pos[:, self._joint_ids]
         joint_vel = self._asset.data.joint_vel[:, self._joint_ids]
 
-        # Analytical Jacobian (base_link frame, matching EE pose frame)
-        jacobian = compute_jacobian_analytical(joint_pos, device=str(self.device))
+        # Analytical Jacobian (base_link frame, matching EE pose frame). calibration_dir=None
+        # -> UR5e default; set on the cfg to drive a different arm (e.g. UR10e) from its own metadata.
+        jacobian = compute_jacobian_analytical(
+            joint_pos, device=str(self.device), usd_dir=self.cfg.calibration_dir
+        )
 
         # EE velocity from J @ dq (consistent with analytical Jacobian)
         ee_vel = torch.bmm(jacobian, joint_vel.unsqueeze(-1)).squeeze(-1)  # (N, 6)
