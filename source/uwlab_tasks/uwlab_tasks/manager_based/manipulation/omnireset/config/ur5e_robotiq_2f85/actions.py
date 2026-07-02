@@ -70,22 +70,30 @@ class Ur5eRobotiq2f85SysidOSCAction:
     gripper = ROBOTIQ_GRIPPER_BINARY_ACTIONS
 
 
-# Linear-gripper train OSC: same as the 2F-85 train OSC BUT rotational stiffness 3.0 -> 0.1.
-# The OSC is a mass-less Cartesian PD (kinematics/task_space_actions: "No mass matrix"), so its
-# damping assumes unit end-effector inertia. Our gripper is physically LARGE (~200 mm base, 100 mm
-# fingers) -> big rotational inertia at the wrist that the (2F-85-hardcoded, arm-only) model never
-# compensates, so the soft rotational hold (Kp 3) rings and the whole gripper visibly VIBRATES.
-# Dropping rotational Kp to 0.1 makes the orientation hold fully compliant (it floats instead of
-# fighting) -> vibration gone (validated by re-visualizing reset states). This suits the training
-# philosophy anyway (soft/compliant rotation for contact-rich insertion). The compact 2F-85 does
-# not need this, so its OSC is untouched.
+# Linear-gripper train OSC: same as the 2F-85 train OSC BUT rotational damping_ratio 1.0 -> 0.2
+# (rotational stiffness Kp stays 3.0, like the 2F-85).
+#
+# ROOT CAUSE of the "vibration": the OSC is a mass-less Cartesian PD (task_space_actions: "No mass
+# matrix") with kd = 2*sqrt(kp)*damping_ratio. Our gripper (stiff dual-drive jaws + large inertia)
+# produces NOISY wrist velocities; the derivative (kd) term AMPLIFIES that velocity noise into arm
+# jitter -> visible vibration. It scales with kd, NOT with under-damping: a sweep showed jitter
+# 0.02 -> 59 -> 487 mrad/s as rot damping went 1 -> ... -> 8 at Kp 3 (more damping = WORSE). The
+# compact/soft 2F-85 gripper has clean velocities, so it is fine at the stock gains.
+#
+# The earlier "fix" (rot Kp -> 0.1) killed the jitter only by killing kd, but it ALSO killed the
+# rotational STIFFNESS, so the OSC lost orientation authority and the policy could only grasp at
+# whatever angle it drifted into (weird, non-top-down grasps). The correct fix keeps firm rot Kp=3
+# (control) but LOW damping_ratio 0.2 -> kd~0.69 (same low kd as the steady Kp=0.1 case) -> ZERO
+# vibration AND more orientation authority than the 2F-85's stock gains (validated: jitter 0.00
+# mrad/s, +33% control vs Kp3/dr1). Use rot damping ~0.15 with a higher Kp (e.g. 10) if even more
+# top-down authority is wanted. Requires RE-TRAINING (the old policy learned the weird angles).
 UR5E_LINEAR_GRIPPER_RELATIVE_OSC = RelCartesianOSCActionCfg(
     asset_name="robot",
     joint_names=["shoulder.*", "elbow.*", "wrist.*"],
     body_name="wrist_3_link",
     scale_xyz_axisangle=(0.02, 0.02, 0.02, 0.02, 0.02, 0.2),
-    motion_stiffness=(200.0, 200.0, 200.0, 0.1, 0.1, 0.1),
-    motion_damping_ratio=(3.0, 3.0, 3.0, 1.0, 1.0, 1.0),
+    motion_stiffness=(200.0, 200.0, 200.0, 3.0, 3.0, 3.0),
+    motion_damping_ratio=(3.0, 3.0, 3.0, 0.2, 0.2, 0.2),
     torque_limit=(150.0, 150.0, 150.0, 28.0, 28.0, 28.0),
 )
 

@@ -34,6 +34,8 @@ Registered gym ids (mirroring the 2F-85 ones):
 
 from __future__ import annotations
 
+import math
+
 import uwlab_assets.robots.ur5e_linear_gripper as ur5e_linear_gripper
 
 from isaaclab.managers import SceneEntityCfg
@@ -55,7 +57,7 @@ from .rl_state_cfg import (
     Ur5eRobotiq2f85RelCartesianOSCTrainCfg,
 )
 
-# The linear gripper's actuated joints: finger_joint (driver) + right_finger_joint (PhysX mimic).
+# The linear gripper's actuated joints: finger_joint (driver) + right_finger_joint (follower).
 _LINEAR_GRIPPER_JOINTS = ["finger_joint", "right_finger_joint"]
 
 
@@ -73,6 +75,17 @@ def _apply_linear_gripper(cfg, robot, action) -> None:
     ev = getattr(cfg.events, "reset_end_effector_pose_from_grasp_dataset", None)
     if ev is not None:
         ev.params["gripper_cfg"] = SceneEntityCfg("robot", joint_names=_LINEAR_GRIPPER_JOINTS)
+    # EEAnywhere reset variants sample robotiq_base_link orientation from pose_range_b. The 2F-85's
+    # ranges point ITS approach axis (+X) down; OUR approach axis is +Z (fingers reach +Z), so the
+    # SAME pitch (pi/4, 3pi/4) never points our gripper top-down (all 34-60 deg slanted, 0% down).
+    # +Z is 90 deg from +X, so shift pitch by +pi/2 (pi/4,3pi/4 -> 3pi/4,5pi/4): our +Z approach then
+    # explores top-down IDENTICALLY to the 2F-85 (validated 45% vs 46% top-down). Copy the dict first
+    # so we never mutate the shared 2F-85 pose_range_b.
+    ee = getattr(cfg.events, "reset_end_effector_pose", None)
+    if ee is not None and "pose_range_b" in ee.params and "pitch" in ee.params["pose_range_b"]:
+        pr = dict(ee.params["pose_range_b"])
+        pr["pitch"] = (3.0 * math.pi / 4.0, 5.0 * math.pi / 4.0)
+        ee.params["pose_range_b"] = pr
 
 
 # ---------------------------------------------------------------------------------------
