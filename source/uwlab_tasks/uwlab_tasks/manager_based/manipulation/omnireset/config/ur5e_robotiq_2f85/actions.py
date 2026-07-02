@@ -133,19 +133,24 @@ _UR10E_CALIBRATION_DIR = f"{UWLAB_LOCAL_ASSETS_DIR}/Robots/UR10e"
 # UR10e torque limits (URDF): the UR10e is a much stronger arm than the UR5e (150/28).
 _UR10E_TORQUE_LIMIT = (330.0, 330.0, 150.0, 56.0, 56.0, 56.0)
 
-# Train OSC: the UR5e linear-gripper train gains with rotational Kp doubled 3 -> 6. The OSC
-# is a mass-less Cartesian PD, so authority scales with Kp / effective inertia; the UR10e's
-# wrist links are ~2x the UR5e's, and at Kp 3 its measured rotational authority was ~2/3 of
-# the UR5e's (median pitch response 23 vs 30 deg over a 40-step command). Kp 6 restores it
-# (~39 deg) with zero hold jitter (the rot damping_ratio 0.2 vibration fix carries over --
-# kd stays low). Translation keeps Kp 200: the UR10e already matches the UR5e there (the
-# higher torque limit compensates the mass). Sweep data: P6 diagnostic, 2026-07-02.
+# Train OSC: same gains as the UR5e linear-gripper train OSC (rot Kp 3, damping_ratio 0.2).
+#
+# Rot Kp MUST stay at 3: raising it to 6 (to close the UR10e's free-space rotational
+# authority gap, ~2/3 of the UR5e's at Kp 3) made the wrist UNSTABLE IN CONTACT -- the
+# moment the stiff dual-drive jaws (1500 N/m) close on an object, the mass-less rotational
+# PD enters a high-frequency limit cycle: wrist_3 velocity swings at its +/-pi limit while
+# the held object chatters at ~3.5 rad/s, so EVERY EEGrasped reset fails the stability
+# check (~250x slower recording). At Kp 3 the same close is dead quiet (dq ~0.003). The
+# instability is purely the gain: verified by A/B with only Kp changed; the UR10e analytical
+# Jacobian matches a finite-difference of the sim to 3 decimals on every column. Lesson: any
+# OSC gain change must be validated IN CONTACT (jaws closed on an object), not just with
+# free-space hold-jitter/authority probes.
 UR10E_LINEAR_GRIPPER_RELATIVE_OSC = RelCartesianOSCActionCfg(
     asset_name="robot",
     joint_names=["shoulder.*", "elbow.*", "wrist.*"],
     body_name="wrist_3_link",
     scale_xyz_axisangle=(0.02, 0.02, 0.02, 0.02, 0.02, 0.2),
-    motion_stiffness=(200.0, 200.0, 200.0, 6.0, 6.0, 6.0),
+    motion_stiffness=(200.0, 200.0, 200.0, 3.0, 3.0, 3.0),
     motion_damping_ratio=(3.0, 3.0, 3.0, 0.2, 0.2, 0.2),
     torque_limit=_UR10E_TORQUE_LIMIT,
     calibration_dir=_UR10E_CALIBRATION_DIR,

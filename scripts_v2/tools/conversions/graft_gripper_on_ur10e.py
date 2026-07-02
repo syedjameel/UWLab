@@ -105,6 +105,19 @@ def main() -> None:
     fp.CreateAttribute("physics:breakForce", Sdf.ValueTypeNames.Float).Set(float("inf"))
     fp.CreateAttribute("physics:breakTorque", Sdf.ValueTypeNames.Float).Set(float("inf"))
 
+    # 4b) give the URDF importer's massless frame links a small mass. The importer leaves the
+    #     URDF's pure-frame links (base, base_link, flange, tool0 -- no inertial) at mass 0.0;
+    #     zero-mass links in a PhysX articulation are ill-conditioned (the calibrated UR5e cloud
+    #     asset has no such links -- they were merged away). Asset hygiene: 0.01 kg is negligible
+    #     against the 28.7 kg arm and keeps the mass matrix well-posed.
+    for name in ("base", "base_link", "flange", "tool0"):
+        prim = stage.GetPrimAtPath(f"{ROOT}/{name}")
+        if prim and prim.IsValid():
+            api = UsdPhysics.MassAPI(prim) if prim.HasAPI(UsdPhysics.MassAPI) else UsdPhysics.MassAPI.Apply(prim)
+            if not api.GetMassAttr().Get():
+                api.GetMassAttr().Set(0.01)
+                print(f"  frame link {name}: mass 0.0 -> 0.01 kg")
+
     # 5) flatten (inlines the gripper + its meshes) and export a self-contained USD.
     flat = stage.Flatten()
     frfj = flat.GetPrimAtPath(f"{gpath}/joints/right_finger_joint")  # Sdf.PrimSpec (Flatten -> Sdf.Layer)
