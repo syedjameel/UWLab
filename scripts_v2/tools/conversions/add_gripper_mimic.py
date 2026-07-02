@@ -153,17 +153,20 @@ def relocate_collision_to_mesh(usd_path: str, friction: float | None = None,
     return moved
 
 
-# Jaw gripping-pad boxes, measured from the upper-jaw region of the finger collision mesh
-# (body-local frame): inner gripping face at x=+/-0.0235, pad spans Y +/-0.0075, Z 0.023..0.051.
-# These are clean box proxies that collide reliably where the convex/SDF mesh colliders failed.
-# Box spans the FULL vertical jaw at the inner gripping face (body-local x=+/-0.0235), filling
-# the mid-jaw "notch" (where the real face pulls back to -0.0355 and would not grip), and uses
-# the wide jaw width (Y +/-0.019). A tip-only box (narrow Y, only the fingertip) grips but the
-# object slides out; the full-height wide pad holds it. Body-local: x[-0.043,-0.0235],
-# y[-0.019,0.019], z[-0.0295,0.0505] -> base-z 0.064..0.144.
+# Jaw gripping-pad boxes on each finger's inner gripping FACE (body-local x=+/-0.0235). These are
+# clean box proxies that collide reliably where the convex/SDF mesh colliders failed. The FULL jaw
+# HEIGHT (Z half 0.040) holds the object -- a short box lets it slide out.
+#
+# The box Y must match the finger's actual front GRIPPING FACE, which is a narrow tab Y +/-0.0065.
+# The pad body FLARES to +/-0.019 BEHIND the face, but the object only ever touches the front tab.
+# A wider box (Y +/-0.019, or the flare) is INVISIBLE yet pokes ~10-13mm past the visible tab, so a
+# diagonally-held object rests on that invisible ledge and floats off the rendered fingertip (a
+# flush/flat grasp hides it). Y +/-0.0065 sits flush with the visible tab (hidden inside the flare
+# behind it) and still holds (validated: grips + holds under gravity across the grip zone). Body-
+# local: x[-0.043,-0.0235], z[-0.0295,0.0505] -> base-z 0.064..0.144.
 _JAW_BOXES = {
-    "left_inner_finger": ((-0.0333, 0.0, 0.0105), (0.0098, 0.019, 0.040)),
-    "right_inner_finger": ((0.0333, 0.0, 0.0105), (0.0098, 0.019, 0.040)),
+    "left_inner_finger": ((-0.0333, 0.0, 0.0105), (0.0098, 0.0065, 0.040)),
+    "right_inner_finger": ((0.0333, 0.0, 0.0105), (0.0098, 0.0065, 0.040)),
 }
 
 
