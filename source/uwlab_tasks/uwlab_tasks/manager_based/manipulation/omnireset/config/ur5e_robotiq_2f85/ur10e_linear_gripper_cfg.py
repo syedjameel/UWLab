@@ -41,7 +41,11 @@ import uwlab_assets.robots.ur10e_linear_gripper as ur10e_linear_gripper
 
 from isaaclab.utils import configclass
 
-from .actions import Ur10eLinearGripperRelativeOSCAction, Ur10eLinearGripperRelativeOSCEvalAction
+from .actions import (
+    Ur10eLinearGripperRelativeOSCAction,
+    Ur10eLinearGripperRelativeOSCEvalAction,
+    Ur10eLinearGripperSysidOSCAction,
+)
 from .linear_gripper_cfg import _apply_linear_gripper
 from .reset_states_cfg import (
     ObjectAnywhereEEAnywhereResetStatesCfg,
@@ -56,6 +60,27 @@ from .rl_state_cfg import (
     Ur5eRobotiq2f85RelCartesianOSCFinetuneEvalCfg,
     Ur5eRobotiq2f85RelCartesianOSCTrainCfg,
 )
+from .sysid_cfg import SysidEnvCfg
+
+
+# ---------------------------------------------------------------------------------------
+# System identification (P8 sim2real: CMA-ES closed-loop replay against real trajectories)
+# ---------------------------------------------------------------------------------------
+@configclass
+class Ur10eLinearGripperSysidEnvCfg(SysidEnvCfg):
+    """UR10e sysid env: same minimal scene/MDP as the UR5e one, UR10e robot + unscaled OSC.
+
+    The robot swap uses the EXPLICIT (DelayedPD) articulation like the base cfg -- the sysid
+    search includes motor delay. No gripper joint-regex fix is needed (the sysid env has no
+    grasp events), so this swaps robot + action directly instead of _apply_linear_gripper.
+    """
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        self.scene.robot = ur10e_linear_gripper.EXPLICIT_UR10E_LINEAR_GRIPPER.replace(
+            prim_path="{ENV_REGEX_NS}/Robot"
+        )
+        self.actions = Ur10eLinearGripperSysidOSCAction()
 
 
 # ---------------------------------------------------------------------------------------

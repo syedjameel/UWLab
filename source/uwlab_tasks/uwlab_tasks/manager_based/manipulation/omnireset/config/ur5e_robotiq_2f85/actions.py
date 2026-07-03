@@ -184,3 +184,25 @@ class Ur10eLinearGripperRelativeOSCEvalAction:
 
     arm = UR10E_LINEAR_GRIPPER_RELATIVE_OSC_EVAL
     gripper = LINEAR_GRIPPER_BINARY_ACTIONS
+
+
+# Unscaled (for sysid scripts) -- mirrors UR5E_ROBOTIQ_2F85_RELATIVE_OSC_UNSCALED with the
+# UR10e torque limits + calibration.
+UR10E_LINEAR_GRIPPER_RELATIVE_OSC_UNSCALED = RelCartesianOSCActionCfg(
+    asset_name="robot",
+    joint_names=["shoulder.*", "elbow.*", "wrist.*"],
+    body_name="wrist_3_link",
+    scale_xyz_axisangle=(1.0, 1.0, 1.0, 1.0, 1.0, 1.0),
+    motion_stiffness=(1000.0, 1000.0, 1000.0, 50.0, 50.0, 50.0),
+    motion_damping_ratio=(1.0, 1.0, 1.0, 1.0, 1.0, 1.0),
+    torque_limit=_UR10E_TORQUE_LIMIT,
+    calibration_dir=_UR10E_CALIBRATION_DIR,
+)
+
+
+@configclass
+class Ur10eLinearGripperSysidOSCAction:
+    """Unscaled arm action (Cartesian delta) + binary gripper. For the UR10e Sysid env."""
+
+    arm = UR10E_LINEAR_GRIPPER_RELATIVE_OSC_UNSCALED
+    gripper = LINEAR_GRIPPER_BINARY_ACTIONS

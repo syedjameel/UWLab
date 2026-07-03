@@ -217,6 +217,14 @@ gym.register(
     },
 )
 
+# UR10e SysID env (P8 sim2real: CMA-ES against real UR10e trajectories)
+gym.register(
+    id="OmniReset-UR10eLinearGripper-Sysid-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={"env_cfg_entry_point": f"{__name__}.ur10e_linear_gripper_cfg:Ur10eLinearGripperSysidEnvCfg"},
+)
+
 # Register reset states environments
 gym.register(
     id="OmniReset-UR5eRobotiq2f85-ObjectAnywhereEEAnywhere-v0",
