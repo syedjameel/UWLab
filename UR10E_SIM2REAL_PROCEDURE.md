@@ -11,9 +11,10 @@ OmniReset paper (`2603.15789v3.pdf` at repo root, esp. Appendix A.3).
 
 - **Robot:** UR10e, IP `192.168.0.100` (ssh `root@`, serial 20185000717), PolyScope 5.25
 - **Sim repo:** `~/work/repos/UWLab`, branch `omnireset/ur10e-linear-gripper` (fork `syedjameel/UWLab`)
-- **Real-robot repo:** `~/work/repos/diffusion_policy` (branch `omnireset`, from
-  WEIRDLabUW/diffusion_policy). **Our UR10e changes there are LOCAL / uncommitted** — see §2.
-  Fork it if they should be versioned.
+- **Real-robot repo:** `~/work/repos/diffusion_policy` — our UR10e changes live on branch
+  **`ur10e-linear-gripper` of the fork `syedjameel/diffusion_policy`** (based on the
+  `omnireset` branch of WEIRDLabUW/diffusion_policy). Colleagues:
+  `git clone -b ur10e-linear-gripper https://github.com/syedjameel/diffusion_policy.git`
 
 ## Status at a glance
 
@@ -65,13 +66,13 @@ gravity 9.82. CAUTION: UR frames ≠ URDF link frames; don't transplant without 
 
 ---
 
-## 2. Real-side UR10e port (diffusion_policy repo — LOCAL changes)
+## 2. Real-side UR10e port (diffusion_policy fork)
 
 ```bash
-cd ~/work/repos && git clone -b omnireset https://github.com/WEIRDLabUW/diffusion_policy.git
+cd ~/work/repos && git clone -b ur10e-linear-gripper https://github.com/syedjameel/diffusion_policy.git
 ```
 
-Changes made (uncommitted, in the clone):
+Changes (commit `3ffb2e6` on the fork's `ur10e-linear-gripper` branch, on top of upstream `omnireset`):
 
 1. **NEW `diffusion_policy/real_world/ur10e_kinematics.py`** — data-swapped copy of
    `ur5e_kinematics.py`:
@@ -263,7 +264,7 @@ OmniReset deployment path is student-teacher distillation to RGB, zero-shot:
 |---|---|
 | Real chirp data | `~/sysid_data_ur10e_real.pt` (laptop) + copy on A100 |
 | Sysid fits | `logs/sysid/<timestamp>/` (A100 → rsync to laptop) |
-| UR10e real-side kinematics | `~/work/repos/diffusion_policy/diffusion_policy/real_world/ur10e_kinematics.py` (LOCAL) |
+| UR10e real-side kinematics | `diffusion_policy/real_world/ur10e_kinematics.py` on `syedjameel/diffusion_policy` branch `ur10e-linear-gripper` |
 | Controller file dump | `~/urcontrol_from_ur10e/` (laptop) |
 | Extracted (nominal) calibration | `~/ur10e_calibration.yaml` |
 | Sysid target metadata | `source/uwlab_assets/.../local/Robots/Ur10eLinearGripper/metadata.yaml` (`sysid:` block = UR5e PLACEHOLDER until §6) |
