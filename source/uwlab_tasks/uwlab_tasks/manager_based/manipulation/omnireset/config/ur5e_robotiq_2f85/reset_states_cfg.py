@@ -18,7 +18,7 @@ from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.utils import configclass
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 
-from uwlab_assets import UWLAB_CLOUD_ASSETS_DIR
+from uwlab_assets import UWLAB_CLOUD_ASSETS_DIR, UWLAB_LOCAL_ASSETS_DIR
 from uwlab_assets.robots.ur5e_robotiq_gripper import IMPLICIT_UR5E_ROBOTIQ_2F85
 
 from uwlab_tasks.manager_based.manipulation.omnireset.config.ur5e_robotiq_2f85.actions import (
@@ -198,8 +198,11 @@ class ObjectAnywhereEEAnywhereEventCfg(ResetStatesBaseEventCfg):
                 "x": (0.3, 0.55),
                 "y": (-0.1, 0.5),
                 "z": (0.0, 0.3),
-                "roll": (-np.pi, np.pi),
-                "pitch": (-np.pi, np.pi),
+                # PCB stays essentially top-up: only a small +/-0.1 rad (~6 deg) roll/pitch
+                # jitter for robustness to placement error; yaw stays free (in-plane spin
+                # is realistic and does not affect success, which checks roll+pitch only).
+                "roll": (-0.1, 0.1),
+                "pitch": (-0.1, 0.1),
                 "yaw": (-np.pi, np.pi),
             },
             "velocity_range": {},
@@ -274,8 +277,11 @@ class ObjectAnywhereEEGraspedEventCfg(ResetStatesBaseEventCfg):
                 "x": (0.3, 0.55),
                 "y": (-0.1, 0.3),
                 "z": (0.0, 0.3),
-                "roll": (-np.pi, np.pi),
-                "pitch": (-np.pi, np.pi),
+                # PCB stays essentially top-up: only a small +/-0.1 rad (~6 deg) roll/pitch
+                # jitter for robustness to placement error; yaw stays free (in-plane spin
+                # is realistic and does not affect success, which checks roll+pitch only).
+                "roll": (-0.1, 0.1),
+                "pitch": (-0.1, 0.1),
                 "yaw": (-np.pi, np.pi),
             },
             "velocity_range": {},
@@ -496,6 +502,10 @@ variants = {
         "cupcake": make_insertive_object(f"{UWLAB_CLOUD_ASSETS_DIR}/Props/Custom/CupCake/cupcake.usd"),
         "cube": make_insertive_object(f"{UWLAB_CLOUD_ASSETS_DIR}/Props/Custom/InsertiveCube/insertive_cube.usd"),
         "rectangle": make_insertive_object(f"{UWLAB_CLOUD_ASSETS_DIR}/Props/Custom/Rectangle/rectangle.usd"),
+        # Local dev asset (PCB slab). Switch to UWLAB_CLOUD_ASSETS_DIR when sharing.
+        "pcb": make_insertive_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/Pcb/pcb.usd"),
+        # Local dev asset (telescoping cover/lid). Switch to UWLAB_CLOUD_ASSETS_DIR when sharing.
+        "cover": make_insertive_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/Cover/cover.usd"),
     },
     "scene.receptive_object": {
         "fbtabletop": make_receptive_object(
@@ -508,6 +518,10 @@ variants = {
         "plate": make_receptive_object(f"{UWLAB_CLOUD_ASSETS_DIR}/Props/Custom/Plate/plate.usd"),
         "cube": make_receptive_object(f"{UWLAB_CLOUD_ASSETS_DIR}/Props/Custom/ReceptiveCube/receptive_cube.usd"),
         "wall": make_receptive_object(f"{UWLAB_CLOUD_ASSETS_DIR}/Props/Custom/Wall/wall.usd"),
+        # Local dev asset (open-top box). Switch to UWLAB_CLOUD_ASSETS_DIR when sharing.
+        "openbox": make_receptive_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/OpenBox/open_box.usd"),
+        # Local dev asset (box with seated PCB; lid task receptive, mating point at the top rim).
+        "boxwithpcb": make_receptive_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/BoxWithPcb/box_with_pcb.usd"),
     },
 }
 

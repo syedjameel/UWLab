@@ -1,0 +1,57 @@
+# UR10e + linear gripper metadata. Gripper grasp fields = the linear gripper's geometry
+# (identical to Ur5eLinearGripper/metadata.yaml -- same gripper, same wrist mount);
+# calibrated_joints / link_inertials are the UR10e ARM values (copied from
+# Robots/UR10e/metadata.yaml, NOMINAL from the URDF) -- consumed by kinematics.py (OSC).
+# gripper_offset is the verified grip-zone TCP (0.07), read by the reset/reward/observation
+# code to place the object at the TCP.
+#
+# sysid: PLACEHOLDER = the UR5e's cloud-calibrated values. Only the Finetune/Finetune-Play
+# tasks read it (randomize_arm_from_sysid); Stage-1 train/eval never do. Replace with a real
+# UR10e calibration (scripts_v2/tools/sim2real) before trusting finetune for sim2real (P8).
+gripper_offset:
+  pos: [0.0, 0.0, 0.07]
+  quat: [1.0, 0.0, 0.0, 0.0]
+finger_offset: 0.07
+finger_clearance: 0.05
+maximum_aperture: 0.13
+gripper_approach_direction: [0, 0, 1]
+grasp_align_axis: [1, 0, 0]
+orientation_sample_axis: [0, 0, 1]
+finger_open_joint_angle: 0.0
+sysid:
+  armature: [3.0026, 1.2213, 1.3881, 0.1773, 0.0825, 0.3825]
+  static_friction: [11.0245, 9.346, 13.0557, 2.9885, 2.7909, 3.4482]
+  dynamic_ratio: [0.8231, 0.858, 0.8167, 0.5906, 0.5904, 0.398]
+  viscous_friction: [32.3425, 17.7669, 21.8401, 3.4105, 2.9387, 3.5182]
+calibrated_joints:
+  xyz:
+  - [0.0, 0.0, 0.1807]
+  - [0.0, 0.0, 0.0]
+  - [-0.6127, 0.0, 0.0]
+  - [-0.57155, 0.0, 0.17415]
+  - [0.0, -0.11985, -2.458164590756244e-11]
+  - [0.0, 0.11655, -2.390480459346185e-11]
+  rpy:
+  - [0.0, 0.0, 0.0]
+  - [1.570796327, 0.0, 0.0]
+  - [0.0, 0.0, 0.0]
+  - [0.0, 0.0, 0.0]
+  - [1.570796327, 0.0, 0.0]
+  - [1.570796326589793, 3.141592653589793, 3.141592653589793]
+link_inertials:
+  masses: [7.778, 12.93, 3.87, 1.96, 1.96, 0.202]
+  coms:
+  - [0.0, 0.0, 0.0]
+  - [-0.306, 0.0, 0.175]
+  - [-0.285775, 0.0, 0.0393]
+  - [0.0, 0.0, 0.0]
+  - [0.0, 0.0, 0.0]
+  - [0.0, 0.0, -0.025]
+  inertias:
+  - [0.03147431257693659, 0.03147431257693659, 0.021875624999999996, 0.0, 0.0, 0.0]
+  - [0.42175380379841093, 0.42175380379841093, 0.03636562499999999, 0.0, 0.0, 0.0]
+  - [0.11079302548902206, 0.11079302548902206, 0.010884375, 0.0, 0.0, 0.0]
+  - [0.005108247956699999, 0.005108247956699999, 0.005512499999999999, 0.0, 0.0, 0.0]
+  - [0.005108247956699999, 0.005108247956699999, 0.005512499999999999, 0.0, 0.0, 0.0]
+  - [0.00014434577559500002, 0.00014434577559500002, 0.00020452500000000002, 0.0,
+    0.0, 0.0]

@@ -1,0 +1,32 @@
+# Grasp-sampling metadata for the linear parallel-jaw gripper (read by the OmniReset grasp
+# sampler via read_metadata_from_usd_directory). Same field set as the reference 2F-85
+# metadata, but the VALUES reflect THIS gripper's geometry (fingers reach +Z, jaws close
+# along X), measured from sim body poses + the body-local collision mesh:
+#
+#   * fingers extend along +Z (approach); the jaw-box grip zone spans base-Z ~0.064..0.144 m
+#   * jaws close along X; inner-face gap ~0.137 m at OPEN (finger_joint=0), ~0.003 m CLOSED
+#   * finger_joint=0 is OPEN (jaws widest); increasing CLOSES (verified in sim)
+#
+# (The TCP/reward `gripper_offset` and the UR5e sysid live in the FULL-ROBOT metadata,
+# Ur5eLinearGripper/metadata.yaml -- the grasp sampler does not read them from here.)
+
+# TOP-DOWN sampling: standoff = base-to-grasp-center distance along the (downward) approach.
+# Put the object near the L-shaped fingertips (jaw grip zone base-Z 0.064-0.144, tip ~0.144):
+# standoffs sweep finger_offset .. finger_offset+finger_clearance = 0.13 .. 0.14.
+finger_offset: 0.13
+finger_clearance: 0.01
+maximum_aperture: 0.13       # usable jaw opening (inner-face gap at OPEN ~0.137; slight margin)
+gripper_approach_direction: [0, 0, 1]   # fingers reach +Z; top-down = this axis points DOWN
+grasp_align_axis: [1, 0, 0]             # jaw closing axis (horizontal when approaching top-down)
+orientation_sample_axis: [1, 0, 0]      # (unused in top-down mode; kept for the antipodal path)
+finger_open_joint_angle: 0.0            # finger_joint value at OPEN
+
+# Grasp sampling: approach the fixed object straight DOWN and close the jaws FLUSH on its
+# vertical side faces (closing axis aligned to the object's face normals, NOT free yaw --
+# free yaw would hit a box's corners, leaving a face gap + an unstable grip that tilts the
+# gripper). Variety = the object's face pairs, position along the face, and +/-6 deg
+# roll/pitch/yaw wobble. Matches the reference 2F-85 top-down antipodal behavior, which the
+# antipodal sampler cannot reproduce for our perpendicular-approach gripper (it orients it
+# side-on). grasp_topdown_roll_pitch_deg bounds the roll/pitch and yaw-wobble magnitude.
+grasp_sample_mode: topdown
+grasp_topdown_roll_pitch_deg: 6.0

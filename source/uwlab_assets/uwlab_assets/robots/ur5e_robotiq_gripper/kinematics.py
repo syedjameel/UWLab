@@ -20,7 +20,6 @@ All functions operate on the 6 arm joints only and output in the REP-103
 base_link frame (180 deg Z rotation from base_link_inertia).
 """
 
-import functools
 import os
 import tempfile
 import torch
@@ -52,12 +51,26 @@ R_180Z = torch.tensor([[-1, 0, 0], [0, -1, 0], [0, 0, 1]], dtype=torch.float32)
 # ============================================================================
 
 
-@functools.lru_cache(maxsize=1)
-def _load_calibration() -> dict[str, torch.Tensor]:
-    """Download (once) and parse calibrated kinematics from the robot metadata."""
-    from .ur5e_robotiq_2f85_gripper import UR5E_ARTICULATION
+# Parsed calibration cached per source dir. (Replaces the old lru_cache(maxsize=1), which
+# would thrash now that usd_dir varies -- this keeps each arm's calibration resident.)
+_CALIBRATION_CACHE: dict[str, dict[str, torch.Tensor]] = {}
 
-    usd_dir = os.path.dirname(UR5E_ARTICULATION.spawn.usd_path)
+
+def _load_calibration(usd_dir: str | None = None) -> dict[str, torch.Tensor]:
+    """Download (once) and parse calibrated kinematics from a robot's ``metadata.yaml``.
+
+    Args:
+        usd_dir: Directory containing ``metadata.yaml`` (``calibrated_joints`` +
+            ``link_inertials``). ``None`` (default) uses the calibrated UR5e asset, so
+            existing UR5e / linear-gripper callers are unchanged. Pass another arm's asset
+            dir (e.g. the UR10e) to drive that arm's analytical OSC.
+    """
+    if usd_dir is None:
+        from .ur5e_robotiq_2f85_gripper import UR5E_ARTICULATION
+
+        usd_dir = os.path.dirname(UR5E_ARTICULATION.spawn.usd_path)
+    if usd_dir in _CALIBRATION_CACHE:
+        return _CALIBRATION_CACHE[usd_dir]
     meta_path = os.path.join(usd_dir, "metadata.yaml")
     local = retrieve_file_path(meta_path, download_dir=tempfile.gettempdir())
     with open(local) as f:
@@ -66,13 +79,15 @@ def _load_calibration() -> dict[str, torch.Tensor]:
         raise RuntimeError(f"metadata.yaml is empty or failed to load: {local} (source: {meta_path})")
     joints = metadata["calibrated_joints"]
     inertials = metadata["link_inertials"]
-    return {
+    cal = {
         "joints_xyz": torch.tensor(joints["xyz"], dtype=torch.float32),
         "joints_rpy": torch.tensor(joints["rpy"], dtype=torch.float32),
         "link_masses": torch.tensor(inertials["masses"], dtype=torch.float32),
         "link_coms": torch.tensor(inertials["coms"], dtype=torch.float32),
         "link_inertias": torch.tensor(inertials["inertias"], dtype=torch.float32),
     }
+    _CALIBRATION_CACHE[usd_dir] = cal
+    return cal
 
 
 # ============================================================================
@@ -116,7 +131,9 @@ def rpy_to_matrix_torch(rpy: torch.Tensor) -> torch.Tensor:
 # ============================================================================
 
 
-def compute_jacobian_analytical(joint_angles: torch.Tensor, device: str = "cuda") -> torch.Tensor:
+def compute_jacobian_analytical(
+    joint_angles: torch.Tensor, device: str = "cuda", usd_dir: str | None = None
+) -> torch.Tensor:
     """Compute geometric Jacobian using calibrated kinematics (batched).
 
     Computes to wrist_3_link frame origin (NOT COM), matching real robot code.
@@ -127,7 +144,7 @@ def compute_jacobian_analytical(joint_angles: torch.Tensor, device: str = "cuda"
         J: (N, 6, 6) Jacobian [linear; angular].
     """
     N = joint_angles.shape[0]
-    cal = _load_calibration()
+    cal = _load_calibration(usd_dir)
     xyz_all = cal["joints_xyz"].to(device)
     rpy_all = cal["joints_rpy"].to(device)
     R_180Z_dev = R_180Z.to(device)
@@ -185,7 +202,9 @@ def compute_jacobian_analytical(joint_angles: torch.Tensor, device: str = "cuda"
 # ============================================================================
 
 
-def compute_mass_matrix_analytical(joint_angles: torch.Tensor, device: str = "cuda") -> torch.Tensor:
+def compute_mass_matrix_analytical(
+    joint_angles: torch.Tensor, device: str = "cuda", usd_dir: str | None = None
+) -> torch.Tensor:
     """Compute 6x6 joint-space mass matrix using CRBA.
 
     Uses the same inertia parameters as real robot for consistency.
@@ -196,7 +215,7 @@ def compute_mass_matrix_analytical(joint_angles: torch.Tensor, device: str = "cu
         M: (N, 6, 6) mass matrix.
     """
     N = joint_angles.shape[0]
-    cal = _load_calibration()
+    cal = _load_calibration(usd_dir)
     xyz_all = cal["joints_xyz"].to(device)
     rpy_all = cal["joints_rpy"].to(device)
     masses = cal["link_masses"].to(device)

@@ -57,3 +57,9 @@ class RelCartesianOSCActionCfg(ActionTermCfg):
 
     torque_limit: tuple[float, float, float, float, float, float] = (150.0, 150.0, 150.0, 28.0, 28.0, 28.0)
     """Per-joint torque limits (clamped after J^T multiplication)."""
+
+    calibration_dir: str | None = None
+    """Directory holding the arm's ``metadata.yaml`` (``calibrated_joints`` + ``link_inertials``)
+    for the analytical Jacobian. ``None`` (default) uses the calibrated UR5e asset -- so the UR5e /
+    linear-gripper tasks are unchanged. Set to another arm's asset dir (e.g. the UR10e) to drive
+    that arm's OSC from its own kinematics."""

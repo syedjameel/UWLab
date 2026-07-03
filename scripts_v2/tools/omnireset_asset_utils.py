@@ -1,0 +1,171 @@
+# Copyright (c) 2024-2025, The UW Lab Project Developers.
+# All rights reserved.
+#
+# SPDX-License-Identifier: BSD-3-Clause
+
+"""Shared helpers for programmatically authoring simple OmniReset task assets.
+
+These utilities author USD assets using *only* ``pxr.UsdPhysics`` (no PhysX-specific
+schemas), so they can run under a plain ``pxr`` install as well as Isaac Sim's python.
+
+Every asset follows the standard OmniReset asset format expected by
+``make_insertive_object`` / ``make_receptive_object`` (see
+``omnireset/config/ur5e_robotiq_2f85/reset_states_cfg.py``):
+
+* a single ``Xform`` root carrying ``UsdPhysics.RigidBodyAPI`` (the default prim),
+* a ``visuals`` subtree of rendered meshes (no physics), and
+* a ``collisions`` subtree of invisible meshes carrying collision APIs.
+
+Rectangular geometry is represented exactly with axis-aligned boxes; collision uses a
+``convexHull`` approximation per box, which is exact for a box and avoids any dependence
+on PhysX SDF cooking. Mass / solver / kinematic flags are intentionally *not* baked here
+because the ``make_*`` spawn configs set them at spawn time.
+"""
+
+from __future__ import annotations
+
+import os
+from collections.abc import Sequence
+
+import yaml
+from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, UsdShade, Vt
+
+# Box corner offsets (unit half-extents) and outward quad faces.
+_CORNERS = [
+    (-1, -1, -1),
+    (1, -1, -1),
+    (1, 1, -1),
+    (-1, 1, -1),
+    (-1, -1, 1),
+    (1, -1, 1),
+    (1, 1, 1),
+    (-1, 1, 1),
+]
+_FACE_COUNTS = [4, 4, 4, 4, 4, 4]
+# Winding is CCW as seen from outside so face normals point OUTWARD. This matters because
+# the grasp sampler reads the visual mesh's trimesh face_normals (process=False, i.e. winding
+# is trusted) to bias toward top faces and cast grasp rays along -normal. Inward normals yield
+# zero grasp candidates. (Verified: for a box centered on the prim, dot(normal, centroid) > 0.)
+_FACE_INDICES = [
+    0, 3, 2, 1,  # -Z
+    4, 5, 6, 7,  # +Z
+    0, 1, 5, 4,  # -Y
+    3, 7, 6, 2,  # +Y
+    0, 4, 7, 3,  # -X
+    1, 2, 6, 5,  # +X
+]
+# Outward normal per face (same face order as _FACE_INDICES), authored explicitly to mirror
+# the reference cube asset (faceVarying, 4 normals per quad face).
+_FACE_NORMAL_DIRS = [(0, 0, -1), (0, 0, 1), (0, -1, 0), (0, 1, 0), (-1, 0, 0), (1, 0, 0)]
+
+
+def create_stage(usd_path: str, root_name: str, friction: float = 0.5) -> tuple[Usd.Stage, UsdGeom.Xform, str]:
+    """Create a Z-up, meter-scale stage with an Xform root that is a rigid body.
+
+    Also authors a ``PhysicsMaterial`` (static/dynamic friction = ``friction``) under the
+    root and returns its path. This mirrors the cloud cube asset and is **required**: the
+    grasp-sampling environment does NOT randomize friction, so it relies on the friction
+    baked into the USD. Without it the gripper cannot hold the object and grasp sampling
+    nearly always fails. (Training/reset envs override friction via events, but grasp
+    sampling does not.)
+
+    Returns ``(stage, root_xform, physics_material_path)``.
+    """
+    os.makedirs(os.path.dirname(os.path.abspath(usd_path)), exist_ok=True)
+    stage = Usd.Stage.CreateNew(usd_path)
+    UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+    UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+
+    root = UsdGeom.Xform.Define(stage, f"/{root_name}")
+    stage.SetDefaultPrim(root.GetPrim())
+    # Mark the root as a single rigid body; the spawn config overrides kinematic flag.
+    UsdPhysics.RigidBodyAPI.Apply(root.GetPrim())
+    # NOTE: deliberately do NOT apply MassAPI. The reference assets (e.g. the cube) author no
+    # mass/density, so the spawn config's mass=0.001 silently fails to apply (a harmless
+    # "could not modify mass" warning) and PhysX auto-computes mass from collision volume x
+    # default density (~tens of grams). Applying MassAPI makes mass=0.001 (1 g) actually take
+    # effect, which is ~80x too light: the grasp-success perturbation force (0.01) then flings
+    # the object (a=F/m) past the stability threshold, so grasps/manipulation fail. Matching the
+    # cube (no MassAPI -> auto-computed mass) is required for stable grasping and training.
+
+    UsdGeom.Scope.Define(stage, f"/{root_name}/visuals")
+    UsdGeom.Scope.Define(stage, f"/{root_name}/collisions")
+
+    # Physics material with friction, matching the reference cube asset.
+    mat_path = f"/{root_name}/PhysicsMaterial"
+    material = UsdShade.Material.Define(stage, mat_path)
+    mat_api = UsdPhysics.MaterialAPI.Apply(material.GetPrim())
+    mat_api.CreateStaticFrictionAttr(friction)
+    mat_api.CreateDynamicFrictionAttr(friction)
+    return stage, root, mat_path
+
+
+def add_box(
+    stage: Usd.Stage,
+    prim_path: str,
+    center: Sequence[float],
+    half_extents: Sequence[float],
+    *,
+    collision: bool,
+    color: Sequence[float] | None = None,
+    top_color: Sequence[float] | None = None,
+    material_path: str | None = None,
+) -> UsdGeom.Mesh:
+    """Author an axis-aligned box mesh.
+
+    Args:
+        center: box center in the root frame (meters).
+        half_extents: box half-sizes along x, y, z (meters).
+        collision: if True author an invisible collider; else a rendered visual mesh.
+        color: optional RGB display color for visual meshes.
+        top_color: if given (visual only), color the +Z (top) face with this RGB instead of
+            ``color``, so the top side is visually identifiable. Authored as a per-face
+            (uniform) displayColor, one entry per face in ``_FACE_INDICES`` order.
+        material_path: if given (collision only), bind this physics material to the collider.
+    """
+    cx, cy, cz = center
+    hx, hy, hz = half_extents
+    points = Vt.Vec3fArray([Gf.Vec3f(cx + sx * hx, cy + sy * hy, cz + sz * hz) for sx, sy, sz in _CORNERS])
+
+    mesh = UsdGeom.Mesh.Define(stage, prim_path)
+    mesh.CreatePointsAttr(points)
+    mesh.CreateFaceVertexCountsAttr(Vt.IntArray(_FACE_COUNTS))
+    mesh.CreateFaceVertexIndicesAttr(Vt.IntArray(_FACE_INDICES))
+    mesh.CreateSubdivisionSchemeAttr(UsdGeom.Tokens.none)
+    mesh.CreateDoubleSidedAttr(True)
+    mesh.CreateExtentAttr(
+        Vt.Vec3fArray([Gf.Vec3f(cx - hx, cy - hy, cz - hz), Gf.Vec3f(cx + hx, cy + hy, cz + hz)])
+    )
+    # Explicit outward face-varying normals (mirrors the reference cube asset).
+    mesh.CreateNormalsAttr(Vt.Vec3fArray([Gf.Vec3f(*n) for n in _FACE_NORMAL_DIRS for _ in range(4)]))
+    mesh.SetNormalsInterpolation(UsdGeom.Tokens.faceVarying)
+
+    if collision:
+        UsdGeom.Imageable(mesh).CreateVisibilityAttr(UsdGeom.Tokens.invisible)
+        UsdPhysics.CollisionAPI.Apply(mesh.GetPrim())
+        mesh_collision = UsdPhysics.MeshCollisionAPI.Apply(mesh.GetPrim())
+        # convexHull is exact for a box and needs no PhysX SDF cooking.
+        mesh_collision.CreateApproximationAttr(UsdPhysics.Tokens.convexHull)
+        if material_path is not None:
+            binding = UsdShade.MaterialBindingAPI.Apply(mesh.GetPrim())
+            material = UsdShade.Material(stage.GetPrimAtPath(material_path))
+            binding.Bind(material, bindingStrength=UsdShade.Tokens.weakerThanDescendants)
+    elif top_color is not None and color is not None:
+        # Per-face (uniform) colors: +Z (face index 1 in _FACE_INDICES) gets top_color.
+        base = Gf.Vec3f(*color)
+        face_colors = [base] * len(_FACE_COUNTS)
+        face_colors[1] = Gf.Vec3f(*top_color)
+        primvar = mesh.CreateDisplayColorPrimvar(UsdGeom.Tokens.uniform)
+        primvar.Set(Vt.Vec3fArray(face_colors))
+    elif color is not None:
+        mesh.CreateDisplayColorAttr(Vt.Vec3fArray([Gf.Vec3f(*color)]))
+
+    return mesh
+
+
+def write_metadata(usd_path: str, metadata: dict) -> str:
+    """Write a ``metadata.yaml`` next to ``usd_path`` and return its path."""
+    out = os.path.join(os.path.dirname(os.path.abspath(usd_path)), "metadata.yaml")
+    with open(out, "w") as f:
+        yaml.safe_dump(metadata, f, default_flow_style=None, sort_keys=False)
+    return out

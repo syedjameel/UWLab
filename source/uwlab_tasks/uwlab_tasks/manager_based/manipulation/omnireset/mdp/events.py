@@ -65,6 +65,13 @@ class grasp_sampling_event(ManagerTermBase):
         self.grasp_align_axis = tuple(metadata.get("grasp_align_axis"))
         self.orientation_sample_axis = tuple(metadata.get("orientation_sample_axis"))
         self.gripper_joint_reset_config = {"finger_joint": metadata.get("finger_open_joint_angle")}
+        # Grasp candidate generation mode. "antipodal" (default, 2F-85) samples mesh antipodal
+        # pairs. "topdown" makes the gripper approach straight DOWN onto the (fixed) object and
+        # sample full yaw + small roll/pitch tilt -- required for a gripper whose approach axis is
+        # perpendicular to its closing axis (our linear gripper), which the antipodal sampler can
+        # only orient side-on. Roll/pitch tilt magnitude (deg) is grasp_topdown_roll_pitch_deg.
+        self.grasp_sample_mode = metadata.get("grasp_sample_mode", "antipodal")
+        self.topdown_roll_pitch_deg = float(metadata.get("grasp_topdown_roll_pitch_deg", 6.0))
 
         # Store environment reference for later use
         self._env = env
@@ -129,11 +136,83 @@ class grasp_sampling_event(ManagerTermBase):
             env.grasp_results = []
 
     def _generate_grasp_candidates(self):
-        """Generate grasp candidates using antipodal grasp sampling."""
+        """Generate grasp candidates (antipodal mesh sampling, or top-down for the linear gripper)."""
         object_asset = self._env.scene[self.object_cfg.name]
         mesh = self._extract_mesh_from_asset(object_asset)
-        grasp_transforms = self._sample_antipodal_grasps(mesh)
-        return grasp_transforms
+        if self.grasp_sample_mode == "topdown":
+            return self._sample_topdown_grasps(mesh)
+        return self._sample_antipodal_grasps(mesh)
+
+    def _sample_topdown_grasps(self, mesh):
+        """Top-down grasp candidates: the gripper's approach axis points straight DOWN onto the
+        object (which stays fixed) and the jaws close FLUSH on the object's vertical side faces --
+        i.e. the closing axis is aligned to the object-frame horizontal axes (X/Y), not an arbitrary
+        yaw. Returns object-local 4x4 transforms (gripper pose in the object frame).
+
+        Why face-aligned and not free yaw: our linear gripper's approach axis (+Z) is perpendicular
+        to its closing axis (X), so the antipodal sampler can only orient it side-on. A top-down grip
+        with *free* yaw makes the flat jaws hit a box's CORNERS at off-axis angles (e.g. the 57 mm
+        diagonal of a 40 mm face) -> a face gap and an unstable grip that torques the free gripper
+        and tilts it. Aligning the closing axis to the object's face normals grips the flat faces
+        flush (no gap, stable), exactly like the reference 2F-85's antipodal top-down grasps. Small
+        roll/pitch and yaw wobble (+/- grasp_topdown_roll_pitch_deg) give variety; different faces +
+        positions along the face give the rest. Object depth is set by the standoff (finger_offset).
+        """
+        approach = np.asarray(self.gripper_approach_direction, dtype=float)
+        approach = approach / (np.linalg.norm(approach) + 1e-9)
+        align = np.asarray(self.grasp_align_axis, dtype=float)
+        align = align / (np.linalg.norm(align) + 1e-9)
+        # Rotation taking the gripper's local approach axis to object -Z (straight down).
+        R_down = trimesh.geometry.align_vectors(approach, np.array([0.0, 0.0, -1.0]))
+        # Azimuth of the gripper's closing axis after the down-flip (before any yaw).
+        c0 = R_down[:3, :3] @ align
+        theta0 = float(np.arctan2(c0[1], c0[0]))
+
+        centroid = np.asarray(mesh.bounding_box.centroid, dtype=float)
+        ext = np.asarray(mesh.extents, dtype=float)
+
+        num_orient = max(1, int(self.num_orientations))
+        num_standoff = max(1, int(self.num_standoff_samples))
+        standoffs = np.linspace(
+            self.finger_offset, self.finger_offset + max(0.0, self.finger_clearance), num_standoff
+        )
+        rp = np.radians(self.topdown_roll_pitch_deg)
+
+        # Face-aligned closing directions: the object-FRAME horizontal axes X and Y (valid because
+        # the task objects are modeled upright, so object X/Y are horizontal and Z is vertical).
+        # Closing along an axis grips the two faces perpendicular to it (jaw gap = that extent).
+        # (close_idx, extent-along-close, perp-idx-for-position-jitter, perp-extent)
+        faces = [(0, ext[0], 1, ext[1]), (1, ext[1], 0, ext[0])]
+        n_pos = max(1, min(60, int(self.num_candidates // (len(faces) * num_orient * num_standoff))))
+
+        transforms = []
+        for close_idx, width, perp_idx, perp_ext in faces:
+            if width > self.gripper_maximum_aperture:
+                continue  # object too wide to grip flush on this face pair
+            target_theta = 0.0 if close_idx == 0 else np.pi / 2.0  # align closing axis to object X or Y
+            for _ in range(num_orient):
+                dyaw = np.random.uniform(-rp, rp)  # small yaw wobble around the face-aligned azimuth
+                roll = np.random.uniform(-rp, rp)
+                pitch = np.random.uniform(-rp, rp)
+                R = (
+                    tra.rotation_matrix(target_theta - theta0 + dyaw, [0, 0, 1])
+                    @ tra.euler_matrix(roll, pitch, 0.0)
+                    @ R_down
+                )
+                approach_world = R[:3, :3] @ approach  # ~ straight down
+                for _ in range(n_pos):
+                    # Grasp center: centered across the gripped faces (close_idx), jittered along the
+                    # face (perp) and slightly in height, so grips vary but stay flush and centered.
+                    gc = centroid.copy()
+                    gc[perp_idx] += np.random.uniform(-0.3, 0.3) * perp_ext
+                    gc[2] += np.random.uniform(-0.2, 0.2) * ext[2]
+                    for standoff in standoffs:
+                        base = gc - approach_world * float(standoff)
+                        T = np.eye(4)
+                        T[:3, :3] = R[:3, :3]
+                        T[:3, 3] = base
+                        transforms.append(T)
+        return transforms
 
     def _extract_mesh_from_asset(self, asset):
         """Extract trimesh from IsaacLab asset."""

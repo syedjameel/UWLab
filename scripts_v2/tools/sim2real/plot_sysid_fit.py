@@ -32,6 +32,13 @@ parser = argparse.ArgumentParser(description="Plot sysid fit")
 parser.add_argument("--checkpoint", type=str, required=True, help="Path to sysid checkpoint .pt")
 parser.add_argument("--real_data", type=str, required=True, help="Path to real data .pt")
 parser.add_argument("--max_steps", type=int, default=None)
+parser.add_argument(
+    "--robot",
+    type=str,
+    default="ur5e",
+    choices=["ur5e", "ur10e"],
+    help="Arm the checkpoint was identified for (must match the sysid run).",
+)
 
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
@@ -47,7 +54,29 @@ from uwlab_assets.robots.ur5e_robotiq_gripper.kinematics import ARM_JOINT_NAMES,
 
 import uwlab_tasks  # noqa: F401  # register gym envs
 from uwlab_tasks.manager_based.manipulation.omnireset.config.ur5e_robotiq_2f85.sysid_cfg import SysidEnvCfg
+from uwlab_tasks.manager_based.manipulation.omnireset.config.ur5e_robotiq_2f85.ur10e_linear_gripper_cfg import (
+    Ur10eLinearGripperSysidEnvCfg,
+)
 from uwlab_tasks.manager_based.manipulation.omnireset.mdp.utils import settle_robot, target_pose_to_action
+
+# Per-robot sysid env + limits (must match the sysid_ur5e_osc.py run that made the checkpoint).
+if args_cli.robot == "ur10e":
+    from uwlab_assets.robots.ur10e_linear_gripper import UR10E_EFFORT_LIMITS, UR10E_VELOCITY_LIMITS
+
+    SYSID_ENV_CFG_CLS = Ur10eLinearGripperSysidEnvCfg
+    SYSID_TASK_ID = "OmniReset-UR10eLinearGripper-Sysid-v0"
+    ARM_EFFORT_LIMITS = UR10E_EFFORT_LIMITS
+    ARM_VELOCITY_LIMITS = UR10E_VELOCITY_LIMITS
+else:
+    from uwlab_assets.robots.ur5e_robotiq_gripper.ur5e_robotiq_2f85_gripper import (
+        UR5E_EFFORT_LIMITS,
+        UR5E_VELOCITY_LIMITS,
+    )
+
+    SYSID_ENV_CFG_CLS = SysidEnvCfg
+    SYSID_TASK_ID = "OmniReset-Ur5eRobotiq2f85-Sysid-v0"
+    ARM_EFFORT_LIMITS = UR5E_EFFORT_LIMITS
+    ARM_VELOCITY_LIMITS = UR5E_VELOCITY_LIMITS
 
 # ============================================================================
 # Parameter application (same as sysid_ur5e_osc.py)
@@ -265,37 +294,21 @@ def main():
     wp_target_pos = wp_target_pos.to(device_str).float()
     wp_target_quat = wp_target_quat.to(device_str).float()
 
-    # Create env (same as sysid_ur5e_osc.py)
-    env_cfg = SysidEnvCfg()
+    # Create env (same as sysid_ur5e_osc.py); cfg class + limits per --robot
+    env_cfg = SYSID_ENV_CFG_CLS()
     env_cfg.scene.num_envs = 1
     env_cfg.scene.env_spacing = 2.0
     delay_max = max(delay, 5)
-    _effort_lim = {
-        "shoulder_pan_joint": 150.0,
-        "shoulder_lift_joint": 150.0,
-        "elbow_joint": 150.0,
-        "wrist_1_joint": 28.0,
-        "wrist_2_joint": 28.0,
-        "wrist_3_joint": 28.0,
-    }
-    _vel_lim = {
-        "shoulder_pan_joint": 1.5708,
-        "shoulder_lift_joint": 1.5708,
-        "elbow_joint": 1.5708,
-        "wrist_1_joint": 3.1415,
-        "wrist_2_joint": 3.1415,
-        "wrist_3_joint": 3.1415,
-    }
     env_cfg.scene.robot.actuators["arm"] = DelayedPDActuatorCfg(
         joint_names_expr=["shoulder.*", "elbow.*", "wrist.*"],
         stiffness=0.0,
         damping=0.0,
-        effort_limit=_effort_lim,
-        velocity_limit=_vel_lim,
+        effort_limit=ARM_EFFORT_LIMITS,
+        velocity_limit=ARM_VELOCITY_LIMITS,
         min_delay=0,
         max_delay=delay_max,
     )
-    env = gym.make("OmniReset-Ur5eRobotiq2f85-Sysid-v0", cfg=env_cfg)
+    env = gym.make(SYSID_TASK_ID, cfg=env_cfg)
     env.reset()
 
     unwrapped = env.unwrapped
