@@ -51,6 +51,12 @@ def main() -> None:
     ap.add_argument("--output",
                     default=os.path.join(_REPO, "source/uwlab_assets/uwlab_assets/local/Robots/Ur10eLinearGripper/ur10e_linear_gripper.usd"))
     ap.add_argument("--standoff", type=float, default=0.049, help="Mount offset along wrist_3 +Z (m).")
+    ap.add_argument("--gripper-mass", type=float, default=0.575,
+                    help="Total gripper mass (kg) to scale the grafted gripper links to. The URDF "
+                         "masses total ~1.1 kg but the REAL assembly weighs 0.575 kg (measured "
+                         "2026-07-03, matches the UR pendant payload) -- the phantom extra ~0.5 kg "
+                         "at the wrist skews the sysid fit (wrist_1 armature pinned at 0) and every "
+                         "dynamic the policy feels. Pass 0 to keep the URDF masses.")
     args = ap.parse_args()
 
     if not os.path.exists(args.arm_usd):
@@ -104,6 +110,27 @@ def main() -> None:
     fp.CreateAttribute("physics:jointEnabled", Sdf.ValueTypeNames.Bool).Set(True)
     fp.CreateAttribute("physics:breakForce", Sdf.ValueTypeNames.Float).Set(float("inf"))
     fp.CreateAttribute("physics:breakTorque", Sdf.ValueTypeNames.Float).Set(float("inf"))
+
+    # 4a) scale the gripper link masses to the real measured total (see --gripper-mass help).
+    #     Inertia tensors scale with mass for a rigid body of fixed geometry, so scale them too.
+    if args.gripper_mass > 0:
+        glinks = ["robotiq_base_link", "left_inner_finger", "right_inner_finger"]
+        masses = {}
+        for name in glinks:
+            prim = stage.GetPrimAtPath(f"{gpath}/{name}")
+            api = UsdPhysics.MassAPI(prim)
+            masses[name] = api.GetMassAttr().Get() or 0.0
+        total = sum(masses.values())
+        if total > 0:
+            scale = args.gripper_mass / total
+            for name in glinks:
+                prim = stage.GetPrimAtPath(f"{gpath}/{name}")
+                api = UsdPhysics.MassAPI(prim)
+                api.GetMassAttr().Set(masses[name] * scale)
+                inertia = api.GetDiagonalInertiaAttr().Get()
+                if inertia:
+                    api.GetDiagonalInertiaAttr().Set(inertia * scale)
+            print(f"  gripper mass: {total:.3f} kg (URDF) -> {args.gripper_mass:.3f} kg (real), scale {scale:.4f}")
 
     # 4b) give the URDF importer's massless frame links a small mass. The importer leaves the
     #     URDF's pure-frame links (base, base_link, flange, tool0 -- no inertial) at mass 0.0;
