@@ -27,7 +27,7 @@ OmniReset paper (`2603.15789v3.pdf` at repo root, esp. Appendix A.3).
 | 5. Fit verification (plot, <2°/joint) | **DONE** — pan 0.32 / lift 1.93 / elbow 1.31 / w1 1.11 / w2 0.34 / w3 0.27° (§5) |
 | 6. Sysid params → metadata.yaml | **DONE** — `Ur10eLinearGripper/metadata.yaml` sysid block = real UR10e values (§6) |
 | 7. Sim hardening before finetune | **DONE** — gripper mass 0.575 kg + wrist ±180° limits both in the graft; **re-record resets before finetune** (14–27% of the old states violate the new wrist limits) (§7) |
-| 8. Stage-2 finetune (ADR) + eval-gain validation in contact | todo (§8) |
+| 8. Stage-2 finetune (ADR) + eval-gain validation in contact | **RUNNING** — launched 2026-07-06 after dataset QC + salvage (§7b); eval gains validated in contact; watch `Curriculum/adr_sysid/scale_progress` → 1.0 (§8.1) |
 | 9. Real deployment path (RGB distillation, cameras, gripper driver) | todo — big items (§9) |
 
 ---
@@ -235,7 +235,62 @@ datasets once (§Pipeline README Step C), then finetune.
 
 ---
 
-## 8. NEXT — Stage-2 finetune (ADR) + eval validation
+## 7b. Dataset QC & salvage tools (added 2026-07-06)
+
+Two CPU-only tools (torch+numpy+yaml, no Isaac — run them on the A100 next to the
+recorder) gate every reset dataset before it feeds a training run:
+
+### `qc_reset_states_ur10e.py` — the gate
+
+```bash
+python scripts_v2/tools/conversions/qc_reset_states_ur10e.py --dataset_dir ./Datasets_ur10e/OmniReset
+# per reset type, one line + FAIL details; end verdict [QC_RESULT] [PASS]/[FAIL]
+```
+
+What each column means and what is / is not a failure:
+
+| check | meaning | gate |
+|---|---|---|
+| `wrist beyond180` | states with any \|wrist\| > 180.1° — **impossible** to reach dynamically on the ±180 USD; they exist because the reset events WRITE IK joint positions directly and nothing re-checks limits. Loading one clamps the wrist mid-teleport (wrong EE pose). | FAIL if > 0 → filter them out |
+| `at180` | states with a wrist exactly AT ±180 (float32 π reads a hair above float64 π — not a violation). These are the old "long way" IK solutions saturating at the new boundary. The gripper is 180°-symmetric, so a wrist parked at ±180 is grip-equivalent; states load fine. On the re-recorded Grasped set this is ~99.8% of states — expected, benign. | reported only |
+| `topdown≤45/30°` | gripper +Z tilt from straight-down (FK on the recorded joints) | ≥85% @45° for Anywhere/Resting grasped types |
+| `fingertip<0` | fingertip point below the support surface (inherited EEAnywhere sampler artifact; for Resting grips it's the tip-point approximation near the tabletop) | reported only |
+| `grip q` (min/median/max of `finger_joint`) | **grip semantics are per-type**: AnywhereEEGrasped holds the pcb mid-air at the canonical width (~0.0487); RestingEEGrasped mostly grips the on-table pcb across its ~2 mm THICKNESS (→ ~0.067–0.068 — do NOT read that as closed-on-air); PartiallyAssembledEEGrasped mixes width and exposed-edge thickness grips. `0.0000` = the OPEN default = the grasp event never engaged. | Anywhere: median ≈ 0.0487; Near Goal: median ≥ 0.03 |
+| `jaw asym` | \|finger − right_finger\| (dual-drive symmetry) | p99 ≤ 1.5 mm (Anywhere type) |
+| `open-jaw states` (Near Goal only) | fraction with `finger_joint < 0.02` — see the salvage note below | FAIL if median grip < 0.03 |
+
+### `filter_reset_states.py` — the salvage (no re-recording)
+
+```bash
+# drop beyond-limit states (states recorded within ±180 load identically on the new USD)
+python scripts_v2/tools/conversions/filter_reset_states.py --in-place \
+  --input .../resets_ObjectAnywhereEEAnywhere.pt --drop-wrist-beyond
+# drop never-engaged open-jaw "grasped" states
+python scripts_v2/tools/conversions/filter_reset_states.py --in-place \
+  --input .../resets_ObjectPartiallyAssembledEEGrasped.pt --min-grip 0.03
+```
+
+`--in-place` keeps a `.bak` next to the file; without it a `.filtered.pt` is written.
+Re-run the QC afterwards — it must PASS before training.
+
+### What the 2026-07-06 re-record QC actually found (for the record)
+
+* **Reaching**: 12/10611 states beyond ±180 (worst 207°) — the direct-write corner case
+  above, filtered out.
+* **Grasped / Near Object**: clean; ~99.8% / ~20% at-limit (benign saturation).
+* **Near Goal**: **66% open-jaw** — `check_reset_state_success` has NO jaws-on-object
+  condition, so whenever the in-box grasp IK fails (much more often under the ±180 limits,
+  which removed the long-way wrist solutions those grasps used), the event leaves the
+  gripper open and the stable hover is accepted anyway. Those states are effectively
+  `ObjectPartiallyAssembledEE**Anywhere**` — a type deliberately NOT in the training mix.
+  Filtered 2500 → ~850 genuine grips and launched with that. This is also WHY Near Goal
+  records so slowly: real in-box grips are the hardest states to stabilize; hovers pad the
+  accept count. **Known gap / future fix**: add a jaws-on-object success condition to the
+  recorder so C4 recording time only buys real grips, then re-record a full-size set.
+
+---
+
+## 8. RUNNING — Stage-2 finetune (ADR) + eval validation
 
 The full A100 sequence (after `git pull fork omnireset/ur10e-linear-gripper` — needs
 **b861f06 or later**: the 2026-07-06 audit fixed a DelayedPD buffer sizing that would
@@ -286,6 +341,60 @@ python scripts_v2/tools/conversions/qc_reset_states_ur10e.py \
 but watch the tensorboard success curve in the first hour — it should recover to Stage-1
 levels before the friction ramp starts. If it stays low, the fallback is a fresh Stage-1 run
 on the new USD/datasets (Pipeline README Step D) and finetuning from that instead.
+(Observed 2026-07-06: recovery to >92% on all four tasks within 4 iterations.)
+
+### 8.1 What `scale_progress` is — and when the finetune is DONE
+
+Stage 1 trained on an *idealized* robot: zero joint friction, zero armature, zero motor
+delay, soft OSC gains, large action steps. The real UR10e is none of those things. The
+finetune's single job is to walk the policy from that ideal robot to the measured one
+**without ever breaking it** — and `scale_progress` (call it `p`) is the position on that
+walk, from 0 (ideal) to 1 (the identified robot).
+
+**One knob, four channels.** Two curriculum terms share the same controller and climb
+together (tensorboard: `Curriculum/adr_sysid/scale_progress`,
+`Curriculum/action_scale/scale_progress`, each with its `mean_success_rate`):
+
+| channel | at p = 0 | at p = 1 (per env, re-drawn every reset) |
+|---|---|---|
+| joint friction + armature | 0 (ideal) | the §6 sysid values × U(0.8, 1.2) per joint |
+| motor delay | 0 | drawn from {0, 1, 2} physics steps @ 120 Hz (ceiling = round(p·2)) |
+| OSC gains | train Kp 200/3 | eval Kp 1000/50 × U(0.8, 1.2), damping_ratio → 1 |
+| action scale | (0.02…, 0.2) | (0.01, 0.01, **0.002**, 0.02, 0.02, 0.2) — z cut 10× so contact = pressing gently |
+
+Intuition for the coupling: a sticky, delayed robot needs FIRM control (soft gains stall in
+the friction dead zones), and firm control needs SMALL commanded steps (or contact turns
+into ramming). So dynamics hardness, controller stiffness, and step size must rise
+*together* — that is why one scalar drives all of it.
+
+**The controller is bang-bang on success rate**, updated every 200 env steps (≈ every
+handful of training iterations, independent of num_envs):
+
+* mean success > 0.95 → `p += 0.01`
+* mean success < 0.90 → `p -= 0.01`
+* in between → hold
+* warmup latch: `p` stays 0 until success first reaches 0.95 (the resume recovery), then
+  the latch never re-engages.
+
+Like adding weight to the bar only after a clean lift. Consequences worth knowing:
+
+* **Success hovering in the 0.90–0.95 band during the ramp is the mechanism working**, not
+  a regression — the controller deliberately surfs that band. Only `p` ratcheting
+  down repeatedly / success pinned below 0.90 means the run hit a wall.
+* Timeline: 100 increments × ~200 gated env steps ⇒ **≥ ~800 training iterations if
+  success never dips; realistically several hours**. Expect dips and partial retreats.
+* Milestone at **p ≈ 0.75**: the delay ceiling first reaches 2 — the exact point the
+  pre-audit code crashed (`ValueError: max time lag > history length`, fixed 74910d0).
+  Sailing past it confirms the fix in vivo.
+
+**"Done" = `p` pinned at 1.0 with success holding ~0.95.** At that point every episode
+runs at the full measured dynamics, stiff eval gains, and eval action scale — i.e. the
+exact distribution the `Finetune-Play` eval task freezes (`randomize_*_fixed` at p = 1,
+delay pinned to the measured 0). Practical checkpoint rule: let it *sit* at p = 1 for a
+few hundred more iterations so most recent gradient steps come from the terminal
+distribution, then take the latest checkpoint. If `p` plateaus below 1.0 oscillating,
+note WHERE — the value tells you which dynamics level breaks the policy — and consider
+longer training before reaching for config changes.
 
 The finetune curriculum ramps dynamics toward the §6 sysid values, raises OSC gains, and
 shrinks the action scale (paper A.3.6/A.3.9). **The Finetune-Play stiff eval gains (rot
