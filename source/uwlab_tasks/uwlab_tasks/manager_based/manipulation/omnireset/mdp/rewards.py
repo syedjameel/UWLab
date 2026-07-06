@@ -104,6 +104,12 @@ class ProgressContext(ManagerTermBase):
         self.position_aligned = torch.zeros((env.num_envs), dtype=torch.bool, device=env.device)
         self.euler_xy_distance = torch.zeros((env.num_envs), device=env.device)
         self.xyz_distance = torch.zeros((env.num_envs), device=env.device)
+        # Optional yaw gate (default off = paper-faithful, yaw ignored). Enabled for asymmetric pairs
+        # whose downstream stage needs a canonical yaw (e.g. box-assembly Stage A: a rectangular tray
+        # placed on a target, whose yaw must match the ±15° band the next stages spawn it in). Folded
+        # to 180-deg symmetry (rectangular parts) so 0 and 180 deg both count as aligned.
+        self.check_yaw = False
+        self.yaw_distance = torch.zeros((env.num_envs), device=env.device)
         self.success = torch.zeros((self._env.num_envs), dtype=torch.bool, device=self._env.device)
         self.continuous_success_counter = torch.zeros((self._env.num_envs), dtype=torch.int32, device=self._env.device)
 
@@ -120,7 +126,10 @@ class ProgressContext(ManagerTermBase):
         insertive_asset_cfg: SceneEntityCfg,
         receptive_asset_cfg: SceneEntityCfg,
         command_context: str = "task_command",
+        check_yaw: bool = False,
+        yaw_tol: float = 0.0524,  # ~3 deg; only used when check_yaw=True
     ) -> torch.Tensor:
+        self.check_yaw = check_yaw
         task_command: TaskCommand = env.command_manager.get_term(command_context)
         success_position_threshold = task_command.success_position_threshold
         success_orientation_threshold = task_command.success_orientation_threshold
@@ -138,12 +147,17 @@ class ProgressContext(ManagerTermBase):
                 insertive_asset_alignment_quat_w,
             )
         )
-        # yaw could be different
-        e_x, e_y, _ = math_utils.euler_xyz_from_quat(insertive_asset_in_receptive_asset_frame_quat)
+        # paper-faithful: roll+pitch only (yaw ignored). check_yaw=True adds a yaw gate for asymmetric
+        # pairs that need a canonical handoff orientation.
+        e_x, e_y, e_z = math_utils.euler_xyz_from_quat(insertive_asset_in_receptive_asset_frame_quat)
         self.euler_xy_distance[:] = math_utils.wrap_to_pi(e_x).abs() + math_utils.wrap_to_pi(e_y).abs()
+        # yaw distance folded to 180-deg symmetry: wrap_to_pi(2*yaw)/2 -> distance to nearest of {0, pi}
+        self.yaw_distance[:] = (math_utils.wrap_to_pi(2.0 * math_utils.wrap_to_pi(e_z)) / 2.0).abs()
         self.xyz_distance[:] = torch.norm(insertive_asset_in_receptive_asset_frame_pos, dim=1)
         self.position_aligned[:] = self.xyz_distance < success_position_threshold
         self.orientation_aligned[:] = self.euler_xy_distance < success_orientation_threshold
+        if check_yaw:
+            self.orientation_aligned[:] = self.orientation_aligned & (self.yaw_distance < yaw_tol)
         self.success[:] = self.orientation_aligned & self.position_aligned
 
         # Update continuous success counter
@@ -168,7 +182,13 @@ def dense_success_reward(env: ManagerBasedRLEnv, std: float, context: str = "pro
     # Normalize the distances by std
     angle_diff = torch.exp(-angle_diff / std)
     xyz_distance = torch.exp(-xyz_distance / std)
-    stacked = torch.stack([angle_diff, xyz_distance], dim=0)
+    terms = [angle_diff, xyz_distance]
+    # When the context gates on yaw, shape it too so the policy is pulled toward the canonical yaw
+    # (otherwise yaw only enters via the sparse success gate -> no gradient -> never aligns).
+    if getattr(context_term, "check_yaw", False):
+        yaw_distance: torch.Tensor = getattr(context_term, "yaw_distance")
+        terms.append(torch.exp(-yaw_distance / std))
+    stacked = torch.stack(terms, dim=0)
     return torch.mean(stacked, dim=0)
 
 

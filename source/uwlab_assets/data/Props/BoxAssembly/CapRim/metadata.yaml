@@ -1,0 +1,10 @@
+# Box-assembly cover (lid) -- NO-KNOB ablation (2026-06-26). Identical plate+skirt to Cap, with the
+# centered grip knob deleted. The geometry BELOW the plate is unchanged, so the mating offsets are
+# identical to Cap/metadata.yaml: plate bottom at local z=-0.0015 rests on the object top (box z=0.023),
+# cap origin at box z=+0.0245 -> assembled_offset z = -0.0245; skirt/flare bottom at z=-0.0215.
+assembled_offset:
+  pos: [0.0, 0.0, -0.0245]
+  quat: [1.0, 0.0, 0.0, 0.0]   # wxyz; authored already in closed orientation
+bottom_offset:
+  pos: [0.0, 0.0, 0.0215]
+  quat: [1.0, 0.0, 0.0, 0.0]

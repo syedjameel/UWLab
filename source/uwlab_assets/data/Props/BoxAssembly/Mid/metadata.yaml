@@ -1,0 +1,11 @@
+# Box-assembly inner object. Insertive only (Pair B: mid->bottom).
+# Seats on the tray cavity floor: cavity floor top is z=0.005 in the bottom frame,
+# mid base is at z=0 in the mid frame, so the assembled mid origin sits at bottom z=0.005.
+# With bottom's mating frame at its own origin (identity), mid's offset must be (0,0,-0.005).
+assembled_offset:
+  pos: [0.0, 0.0, -0.005]
+  quat: [1.0, 0.0, 0.0, 0.0]   # wxyz
+# mid base is at the object origin (compute: minZ = 0.0).
+bottom_offset:
+  pos: [0.0, 0.0, 0.0]
+  quat: [1.0, 0.0, 0.0, 0.0]

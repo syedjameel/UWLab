@@ -1,0 +1,13 @@
+# Pair A fixed table-center goal. Receptive (kinematic) marker; its pose IS the goal.
+# Mating frame at its own origin (identity), so the bottom (insertive) is placed at the
+# target pose, i.e. centered on the table-center marker.
+assembled_offset:
+  pos: [0.0, 0.0, 0.0]
+  quat: [1.0, 0.0, 0.0, 0.0]   # wxyz
+# Thin marker; origin at its center (negligible).
+bottom_offset:
+  pos: [0.0, 0.0, 0.0]
+  quat: [1.0, 0.0, 0.0, 0.0]
+success_thresholds:
+  position: 0.005
+  orientation: 0.05
