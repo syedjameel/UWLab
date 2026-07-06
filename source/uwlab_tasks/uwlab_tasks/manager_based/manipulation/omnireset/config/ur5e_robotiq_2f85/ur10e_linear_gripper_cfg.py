@@ -153,8 +153,9 @@ class Ur10eLinearGripperRelCartesianOSCTrainCfg(Ur5eRobotiq2f85RelCartesianOSCTr
 class Ur10eLinearGripperRelCartesianOSCFinetuneCfg(Ur5eRobotiq2f85RelCartesianOSCFinetuneCfg):
     """Stage 2 finetune: explicit actuator + curriculum (base sets EXPLICIT 2F-85; we override last).
 
-    NOTE: the sysid block in Ur10eLinearGripper/metadata.yaml is a PLACEHOLDER (UR5e values)
-    until a real UR10e calibration is run (P8) -- do not trust finetune for sim2real before that.
+    The sysid block in Ur10eLinearGripper/metadata.yaml holds the REAL identified UR10e
+    values (chirp + CMA-ES, 2026-07-05; per-joint fit <2 deg) -- the ADR curriculum ramps
+    the dynamics toward this robot's measured behavior.
     """
 
     def __post_init__(self):
@@ -162,6 +163,10 @@ class Ur10eLinearGripperRelCartesianOSCFinetuneCfg(Ur5eRobotiq2f85RelCartesianOS
         _apply_linear_gripper(
             self, ur10e_linear_gripper.EXPLICIT_UR10E_LINEAR_GRIPPER, Ur10eLinearGripperRelativeOSCAction()
         )
+        # Measured motor delay (sysid 2026-07-05) is 8 ms = 1 physics step at this env's
+        # 120 Hz. The inherited delay_range (0, 1) puts reality at the range BOUNDARY;
+        # (0, 2) brackets it (paper Table 2 uses {0,1,2}). UR10e-only override.
+        self.events.randomize_arm_sysid.params["delay_range"] = (0, 2)
 
 
 @configclass
@@ -184,3 +189,6 @@ class Ur10eLinearGripperRelCartesianOSCFinetuneEvalCfg(Ur5eRobotiq2f85RelCartesi
         _apply_linear_gripper(
             self, ur10e_linear_gripper.EXPLICIT_UR10E_LINEAR_GRIPPER, Ur10eLinearGripperRelativeOSCEvalAction()
         )
+        # Eval at the MEASURED motor delay (sysid: 8 ms = 1 step @ 120 Hz), not a draw
+        # from the inherited (0, 1) range -- eval should mirror the real robot.
+        self.events.randomize_arm_sysid.params["delay_range"] = (1, 1)
