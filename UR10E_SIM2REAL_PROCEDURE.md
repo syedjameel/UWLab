@@ -26,7 +26,7 @@ OmniReset paper (`2603.15789v3.pdf` at repo root, esp. Appendix A.3).
 | 4. CMA-ES sysid fit | **DONE** — 3 rounds; round 3 accepted (§4) |
 | 5. Fit verification (plot, <2°/joint) | **DONE** — pan 0.32 / lift 1.93 / elbow 1.31 / w1 1.11 / w2 0.34 / w3 0.27° (§5) |
 | 6. Sysid params → metadata.yaml | **DONE** — `Ur10eLinearGripper/metadata.yaml` sysid block = real UR10e values (§6) |
-| 7. Sim hardening before finetune | gripper mass **DONE** (graft `--gripper-mass 0.575`); wrist ±180° limits todo (§7) |
+| 7. Sim hardening before finetune | **DONE** — gripper mass 0.575 kg + wrist ±180° limits both in the graft; **re-record resets before finetune** (14–27% of the old states violate the new wrist limits) (§7) |
 | 8. Stage-2 finetune (ADR) + eval-gain validation in contact | todo (§8) |
 | 9. Real deployment path (RGB distillation, cameras, gripper driver) | todo — big items (§9) |
 
@@ -206,11 +206,16 @@ conventions.
    --arm-wiggle`) and ideally redo §4-5 for a cleaner fit.
 2. **Wrist joint limits ±360° → ±180° in sim** (paper A.3.1; NOT in the released assets —
    verified). Prevents the policy exploiting extreme wrist rotations that trigger real
-   safety stops. Author in `graft_gripper_on_ur10e.py`. NOTE: recorded reset states with
-   |wrist q| > 180° become invalid → re-record resets afterward (cheap on the A100).
+   safety stops. **DONE**: the graft now sets ±180 by default (`--wrist-limit`, 0 keeps the
+   URDF's ±360); build+step smoke passed. Measured impact on the existing A100 datasets:
+   13.6% (Reaching), 26.6% (Grasped), 23.6% (Near Object), 15.6% (Near Goal) of states have
+   |wrist| > 180° → **the four reset datasets MUST be re-recorded** after regenerating the
+   USD on the A100 (loading a violating state clamps joints mid-teleport). The sysid fit is
+   NOT affected (chirp wrists stay within ±110°, limits don't change dynamics away from
+   limits).
 
-Both change dynamics/data ⇒ do them BEFORE Stage-2 finetune, re-record resets once, and
-(if masses changed) re-run Stage-1 briefly or let the finetune adapt.
+Both are in the graft now ⇒ regenerate the USD on the A100, re-record the four reset
+datasets once (§Pipeline README Step C), then finetune.
 
 ---
 
