@@ -362,3 +362,35 @@ gym.register(
         "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_cfg:Base_DAggerRunnerCfg",
     },
 )
+
+
+# ==== UR10e + linear-gripper box-assembly PAPER stages (A/B/C end-to-end pipeline) ====
+gym.register(
+    id="OmniReset-Ur10eLinearGripper-BoxCenterPaper-State-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.ur10e_linear_gripper_cfg:Ur10eLinearGripperBoxCenterPaperTrainCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_cfg:Base_PPORunnerCfg",
+    },
+)
+
+gym.register(
+    id="OmniReset-Ur10eLinearGripper-ObjectInBoxPaper-State-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.ur10e_linear_gripper_cfg:Ur10eLinearGripperObjectInBoxPaperTrainCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_cfg:Base_PPORunnerCfg",
+    },
+)
+
+gym.register(
+    id="OmniReset-Ur10eLinearGripper-CoverCloseRimPaper-State-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.ur10e_linear_gripper_cfg:Ur10eLinearGripperCoverCloseRimPaperTrainCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_cfg:Base_PPORunnerCfg",
+    },
+)

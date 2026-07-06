@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import math
+import os
 from dataclasses import MISSING
 
 import isaaclab.sim as sim_utils
@@ -21,7 +23,7 @@ from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.utils import configclass
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 
-from uwlab_assets import UWLAB_CLOUD_ASSETS_DIR, UWLAB_LOCAL_ASSETS_DIR
+from uwlab_assets import UWLAB_ASSETS_DATA_DIR, UWLAB_CLOUD_ASSETS_DIR, UWLAB_LOCAL_ASSETS_DIR
 from uwlab_assets.robots.ur5e_robotiq_gripper import EXPLICIT_UR5E_ROBOTIQ_2F85, IMPLICIT_UR5E_ROBOTIQ_2F85
 
 from uwlab_tasks.manager_based.manipulation.omnireset.config.ur5e_robotiq_2f85.actions import (
@@ -765,3 +767,110 @@ class Ur5eRobotiq2f85RelCartesianOSCFinetuneEvalCfg(Ur5eRobotiq2f85RlStateCfg):
     def __post_init__(self):
         super().__post_init__()
         self.scene.robot = EXPLICIT_UR5E_ROBOTIQ_2F85.replace(prim_path="{ENV_REGEX_NS}/Robot")
+
+
+# ---------------------------------------------------------------------------------------------------
+# Box-assembly PAPER-faithful per-pair training configs (local assets + locally-generated reset
+# datasets). Each pair is one OmniReset insertive->receptive policy, trained independently and
+# sequenced at deploy by an outer state machine. train.py cannot inject dataset_dir via Hydra, so the
+# local Datasets/OmniReset path is baked in here (the shipped UWLAB_CLOUD_ASSETS_DIR default is
+# remote). The reset datasets are supplied as artifacts (grasp/reset-state generation is intentionally
+# out of this PR); state training only *loads* them via reset_from_reset_states (MultiResetManager).
+# ---------------------------------------------------------------------------------------------------
+LOCAL_OMNIRESET_DATASET = f"{UWLAB_ASSETS_DATA_DIR}/Datasets/OmniReset"
+# UR10e + linear-gripper reset datasets live in a SEPARATE dir so they don't collide with the 2F-85
+# reset states (same pair dirs, but the reset states encode the ROBOT -- an 8-joint UR10e-linear vs a
+# 12-joint 2F-85 -- so they must not overwrite each other). The UR10e Paper stage cfgs repoint
+# reset_from_reset_states.dataset_dir here (see ur10e_linear_gripper_cfg._repoint_ur10e_resets).
+LOCAL_UR10E_DATASET = f"{UWLAB_ASSETS_DATA_DIR}/Datasets_ur10e/OmniReset"
+
+
+def _apply_paper_faithful_pair(cfg, insertive_usd: str, receptive_usd: str):
+    """Apply the OmniReset paper recipe VERBATIM to a box-assembly object pair: swap the
+    insertive/receptive objects, point the reset loader at the local dataset dir, and keep only the
+    reset types whose .pt exists on disk (renormalizing the mix). Generic ProgressContext success and
+    the standard 4-path reset curriculum are inherited unchanged (cf. cube/peg/cupcake in the paper)."""
+    cfg.scene.insertive_object = make_insertive_object(insertive_usd)
+    cfg.scene.receptive_object = make_receptive_object(receptive_usd)
+    ev = cfg.events.reset_from_reset_states
+    ev.params["dataset_dir"] = LOCAL_OMNIRESET_DATASET
+    pair = task_mdp.utils.compute_pair_dir(insertive_usd, receptive_usd)
+    keep_t, keep_p = [], []
+    for rt, p in zip(ev.params["reset_types"], ev.params["probs"]):
+        if os.path.exists(f"{LOCAL_OMNIRESET_DATASET}/Resets/{pair}/resets_{rt}.pt"):
+            keep_t.append(rt)
+            keep_p.append(p)
+    if keep_t:
+        s = sum(keep_p)
+        ev.params["reset_types"] = keep_t
+        ev.params["probs"] = [p / s for p in keep_p]
+
+    # Reset-replay grip consistency: the box-assembly reset datasets were recorded with the gripper-pad
+    # and insertive-object friction in a realistic rubber-on-plastic range so the grasped object stays
+    # held from t=0. Base friction lets it slip out of the reset grip at episode start (OOD). Scoped to
+    # these box-assembly Paper stages only -- the shared BaseEventCfg and all other tasks are untouched.
+    for _term in ("robot_material", "insertive_object_material"):
+        _ev = getattr(cfg.events, _term, None)
+        if _ev is not None:
+            _ev.params["static_friction_range"] = (1.0, 2.0)
+            _ev.params["dynamic_friction_range"] = (0.9, 1.9)
+
+
+@configclass
+class Ur5eRobotiq2f85BoxCenterPaperTrainCfg(Ur5eRobotiq2f85RelCartesianOSCTrainCfg):
+    """Paper-faithful Stage A: box -> table-center target (generic ProgressContext, 2-object scene).
+
+    Adds a YAW gate (yaw_tol=3deg, 180deg-symmetric) on top of the paper roll+pitch/position success.
+    Stage A's box (a rectangular tray) is the receptive base of Stages B and C, which spawn it at yaw
+    in +-15deg only; the paper success ignores yaw, so without this A would hand off an arbitrarily
+    yawed box that B/C never trained on. The yaw gate forces a canonical handoff orientation. B/C keep
+    the default (check_yaw=False) paper success.
+    """
+
+    def __post_init__(self):
+        super().__post_init__()
+        _apply_paper_faithful_pair(
+            self,
+            f"{UWLAB_ASSETS_DATA_DIR}/Props/BoxAssembly/Bottom/bottom.usd",
+            f"{UWLAB_ASSETS_DATA_DIR}/Props/BoxAssembly/TableCenterTarget/target.usd",
+        )
+        self.rewards.progress_context.params["check_yaw"] = True
+        self.rewards.progress_context.params["yaw_tol"] = math.radians(3.0)
+
+
+@configclass
+class Ur5eRobotiq2f85ObjectInBoxPaperTrainCfg(Ur5eRobotiq2f85RelCartesianOSCTrainCfg):
+    """Paper-faithful Stage B: object -> box cavity (single-pair, generic ProgressContext)."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        _apply_paper_faithful_pair(
+            self,
+            f"{UWLAB_ASSETS_DATA_DIR}/Props/BoxAssembly/Mid/mid.usd",
+            f"{UWLAB_ASSETS_DATA_DIR}/Props/BoxAssembly/Bottom/bottom.usd",
+        )
+
+
+@configclass
+class Ur5eRobotiq2f85CoverCloseRimPaperTrainCfg(Ur5eRobotiq2f85RelCartesianOSCTrainCfg):
+    """Paper-faithful Stage C with the EDGE-RIM cover (knob-free lid gripped on its perimeter rim).
+
+    Generic ProgressContext success (cap-vs-box). Unlike A/B, cover-close adds the context scene
+    entities via ``augment_box_assembly(scene_only=True)`` -- for pair C that declares ``ctx_object``
+    (the object, restored INSIDE the box) and ``ctx_target`` from the recorded reset dataset
+    (MultiResetManager replay). The cap must close a box that already holds the object (which pokes
+    ~3mm above the rim), matching the real assembly; without augment the box spawns empty.
+    """
+
+    def __post_init__(self):
+        super().__post_init__()
+        _apply_paper_faithful_pair(
+            self,
+            f"{UWLAB_ASSETS_DATA_DIR}/Props/BoxAssembly/CapRim/caprim.usd",
+            f"{UWLAB_ASSETS_DATA_DIR}/Props/BoxAssembly/Bottom/bottom.usd",
+        )
+        from uwlab_tasks.manager_based.manipulation.omnireset.config.ur5e_robotiq_2f85.box_assembly_aug import (
+            augment_box_assembly,
+        )
+
+        augment_box_assembly(self, scene_only=True)

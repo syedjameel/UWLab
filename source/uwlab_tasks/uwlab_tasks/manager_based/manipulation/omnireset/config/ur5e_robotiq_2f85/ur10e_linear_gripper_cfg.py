@@ -39,6 +39,8 @@ from __future__ import annotations
 
 import uwlab_assets.robots.ur10e_linear_gripper as ur10e_linear_gripper
 
+import uwlab_tasks.manager_based.manipulation.omnireset.mdp as task_mdp
+
 from isaaclab.utils import configclass
 
 from .actions import (
@@ -55,12 +57,39 @@ from .reset_states_cfg import (
     ObjectRestingEEGraspedResetStatesCfg,
 )
 from .rl_state_cfg import (
+    LOCAL_UR10E_DATASET,
+    Ur5eRobotiq2f85BoxCenterPaperTrainCfg,
+    Ur5eRobotiq2f85CoverCloseRimPaperTrainCfg,
+    Ur5eRobotiq2f85ObjectInBoxPaperTrainCfg,
     Ur5eRobotiq2f85RelCartesianOSCEvalCfg,
     Ur5eRobotiq2f85RelCartesianOSCFinetuneCfg,
     Ur5eRobotiq2f85RelCartesianOSCFinetuneEvalCfg,
     Ur5eRobotiq2f85RelCartesianOSCTrainCfg,
 )
 from .sysid_cfg import SysidEnvCfg
+
+
+def _repoint_ur10e_resets(cfg) -> None:
+    """Repoint the RL reset-state loader at the UR10e-linear reset datasets (separate from the 2F-85's,
+    since reset states encode the robot). Re-filter the reset-type mix to the types present on disk."""
+    import os as _os
+
+    ev = getattr(cfg.events, "reset_from_reset_states", None)
+    if ev is None:
+        return
+    ev.params["dataset_dir"] = LOCAL_UR10E_DATASET
+    pair = task_mdp.utils.compute_pair_dir(
+        cfg.scene.insertive_object.spawn.usd_path, cfg.scene.receptive_object.spawn.usd_path
+    )
+    keep_t, keep_p = [], []
+    for rt, p in zip(ev.params["reset_types"], ev.params["probs"]):
+        if _os.path.exists(f"{LOCAL_UR10E_DATASET}/Resets/{pair}/resets_{rt}.pt"):
+            keep_t.append(rt)
+            keep_p.append(p)
+    if keep_t:
+        s = sum(keep_p)
+        ev.params["reset_types"] = keep_t
+        ev.params["probs"] = [p / s for p in keep_p]
 
 
 # ---------------------------------------------------------------------------------------
@@ -184,3 +213,51 @@ class Ur10eLinearGripperRelCartesianOSCFinetuneEvalCfg(Ur5eRobotiq2f85RelCartesi
         _apply_linear_gripper(
             self, ur10e_linear_gripper.EXPLICIT_UR10E_LINEAR_GRIPPER, Ur10eLinearGripperRelativeOSCEvalAction()
         )
+
+
+# ---------------------------------------------------------------------------------------
+# Box-assembly PAPER stages (UR10e + linear gripper): the 3 end-to-end pipeline stages.
+#   Stage A = box -> table-center target       (BoxCenterPaper)
+#   Stage B = object -> box cavity             (ObjectInBoxPaper)
+#   Stage C = caprim cover -> box (obj inside) (CoverCloseRimPaper; edge-rim knob-free lid)
+# Each subclasses the 2F-85 Paper stage cfg and swaps ONLY the robot + action to the UR10e
+# linear gripper via _apply_linear_gripper (which also fixes the gripper joint-regex on the
+# grasp-dataset reset event and shifts the EE-orientation pitch band by +pi/2 for the +Z
+# approach axis). Object pairs, rewards, success, datasets are inherited unchanged.
+# NOTE (P6): reset EE/object placement ranges are UR5e-tuned (~0.85 m reach); the UR10e reaches
+# ~1.3 m -- re-validate the reset ranges before large-scale reset-state generation.
+# ---------------------------------------------------------------------------------------
+@configclass
+class Ur10eLinearGripperBoxCenterPaperTrainCfg(Ur5eRobotiq2f85BoxCenterPaperTrainCfg):
+    """Stage A (UR10e + linear gripper): box -> table-center target."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        _apply_linear_gripper(
+            self, ur10e_linear_gripper.IMPLICIT_UR10E_LINEAR_GRIPPER, Ur10eLinearGripperRelativeOSCAction()
+        )
+        _repoint_ur10e_resets(self)
+
+
+@configclass
+class Ur10eLinearGripperObjectInBoxPaperTrainCfg(Ur5eRobotiq2f85ObjectInBoxPaperTrainCfg):
+    """Stage B (UR10e + linear gripper): object -> box cavity."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        _apply_linear_gripper(
+            self, ur10e_linear_gripper.IMPLICIT_UR10E_LINEAR_GRIPPER, Ur10eLinearGripperRelativeOSCAction()
+        )
+        _repoint_ur10e_resets(self)
+
+
+@configclass
+class Ur10eLinearGripperCoverCloseRimPaperTrainCfg(Ur5eRobotiq2f85CoverCloseRimPaperTrainCfg):
+    """Stage C (UR10e + linear gripper): edge-rim (caprim) cover -> box with object inside."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        _apply_linear_gripper(
+            self, ur10e_linear_gripper.IMPLICIT_UR10E_LINEAR_GRIPPER, Ur10eLinearGripperRelativeOSCAction()
+        )
+        _repoint_ur10e_resets(self)
