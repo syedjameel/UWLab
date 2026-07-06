@@ -507,6 +507,38 @@ class check_reset_state_success(ManagerTermBase):
             & time_out
         )
 
+        # Opt-in diagnostic (mirrors check_grasp_success): UWLAB_GRASP_DEBUG=1 prints which
+        # condition rejects candidates, once per episode round (at the timeout step). Extends the
+        # upstream block with this term's extra gates (in_workspace / grasp_contact / held_joint).
+        if os.environ.get("UWLAB_GRASP_DEBUG") and time_out.any():
+            n = env.num_envs
+            print(
+                f"[reset dbg] not_abnormal={int((~abnormal_gripper_state).sum())}/{n} "
+                f"orient_down={int(gripper_orientation_within_range.sum())} "
+                f"stable={int(stability_reached.sum())} "
+                f"not_far={int((~excessive_pose_deviation).sum())} "
+                f"above_ground={int((~pos_below_threshold).sum())} "
+                f"in_workspace={int((~out_of_workspace).sum())} "
+                f"grasp_contact={int(grasp_contact_ok.sum())} "
+                f"held_joint={int(held_joint_ok.sum())} "
+                f"coll_free={int(collision_free.sum())} -> success={int(reset_success.sum())}",
+                flush=True,
+            )
+            # Per-asset velocity detail for the stability condition (median over envs of the
+            # quantity compared against the threshold).
+            for asset, cfg_ in zip(self.assets_to_check, self.object_cfgs + [self.robot_cfg]):
+                if isinstance(asset, Articulation):
+                    v = asset.data.joint_vel.abs().sum(dim=1)
+                    print(f"[reset dbg]   {cfg_.name} joint|v|sum (<5.0): med={v.median():.3f} max={v.max():.3f}")
+                elif isinstance(asset, RigidObject):
+                    lv = asset.data.body_lin_vel_w.abs().sum(dim=2).sum(dim=1)
+                    av = asset.data.body_ang_vel_w.abs().sum(dim=2).sum(dim=1)
+                    print(
+                        f"[reset dbg]   {cfg_.name} lin|v|sum (<0.1): med={lv.median():.4f} max={lv.max():.4f} "
+                        f"ang|v|sum (<1.0): med={av.median():.3f} max={av.max():.3f}",
+                        flush=True,
+                    )
+
         if self.assembly_success_prob is not None:
             ins_pos_w, ins_quat_w = self.insertive_asset_offset.apply(self.insertive_asset)
             rec_pos_w, rec_quat_w = self.receptive_asset_offset.apply(self.receptive_asset)
