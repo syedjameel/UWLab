@@ -167,6 +167,12 @@ class Ur10eLinearGripperRelCartesianOSCFinetuneCfg(Ur5eRobotiq2f85RelCartesianOS
         # 120 Hz. The inherited delay_range (0, 1) puts reality at the range BOUNDARY;
         # (0, 2) brackets it (paper Table 2 uses {0,1,2}). UR10e-only override.
         self.events.randomize_arm_sysid.params["delay_range"] = (0, 2)
+        # The actuator's max_delay sizes its DelayBuffers (history_length = max_delay);
+        # set_time_lag(2) on the inherited max_delay=1 buffers raises ValueError the first
+        # time the ADR curriculum reaches scale_progress >= 0.75 and an env draws delay 2
+        # -- i.e. hours into the finetune. Must be >= delay_range[1]. (The sysid script
+        # handles the same invariant by rebuilding the actuator with max_delay=--delay_max.)
+        self.scene.robot.actuators["arm"].max_delay = 2
 
 
 @configclass
