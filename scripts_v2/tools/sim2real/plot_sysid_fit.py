@@ -190,9 +190,12 @@ JOINT_NAMES_SHORT = ["Shoulder Pan", "Shoulder Lift", "Elbow", "Wrist 1", "Wrist
 
 
 def plot_overlay(real_joints, sim_joints, dt, save_path="sysid_fit.png"):
-    """Plot sim vs real joint positions."""
+    """Plot sim vs real joint positions, with per-joint and total RMSE in the titles
+    (paper Fig. 13 style)."""
     T = real_joints.shape[0]
     time_axis = np.arange(T) * dt
+    error_deg = np.degrees(sim_joints - real_joints)
+    total_rmse = np.sqrt(np.mean(error_deg**2))
 
     fig, axes = plt.subplots(3, 2, figsize=(16, 10), sharex=True)
     axes = axes.flatten()
@@ -201,14 +204,15 @@ def plot_overlay(real_joints, sim_joints, dt, save_path="sysid_fit.png"):
         ax = axes[j]
         ax.plot(time_axis, np.degrees(real_joints[:, j]), "b-", linewidth=1.0, label="Real", alpha=0.8)
         ax.plot(time_axis, np.degrees(sim_joints[:, j]), "r-", linewidth=1.0, label="Sim", alpha=0.8)
-        ax.set_title(JOINT_NAMES_SHORT[j], fontsize=11)
+        rmse_j = np.sqrt(np.mean(error_deg[:, j] ** 2))
+        ax.set_title(f"{JOINT_NAMES_SHORT[j]}  (RMSE={rmse_j:.2f}°)", fontsize=11)
         ax.set_ylabel("deg")
         ax.legend(loc="upper right", fontsize=8)
         ax.grid(True, alpha=0.3)
 
     axes[-2].set_xlabel("Time (s)")
     axes[-1].set_xlabel("Time (s)")
-    fig.suptitle("Sysid Fit: Sim vs Real Joint Trajectories", fontsize=13)
+    fig.suptitle(f"Sysid Fit: Sim vs Real  (Total RMSE={total_rmse:.2f}°)", fontsize=13)
     fig.tight_layout()
     fig.savefig(save_path, dpi=150)
     print(f"Saved overlay plot: {save_path}")
@@ -257,7 +261,9 @@ def main():
     best_params = ckpt["best_params"]
     best_score = ckpt["best_score"]
     ckpt_args = ckpt.get("args", {})
-    print(f"  Score (MSE): {best_score:.6f}  RMSE: {np.degrees(np.sqrt(best_score)):.4f}°")
+    # NOTE: sqrt(score) is the optimizer's pooled objective, NOT a joint RMSE -- it can
+    # exceed every per-joint RMSE. Judge fits by the per-joint values printed/plotted below.
+    print(f"  CMA-ES score: {best_score:.6f}  (sqrt = {np.degrees(np.sqrt(best_score)):.4f}°, not a joint RMSE)")
     print(f"  Checkpoint args: sim_dt={ckpt_args.get('sim_dt', 'N/A')}")
 
     # Print best params
