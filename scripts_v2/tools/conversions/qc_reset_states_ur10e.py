@@ -123,12 +123,24 @@ def main():
                 f"(min {fingers.min():.4f} max {fingers.max():.4f}) -- joint order assumption broken?"
             )
 
-        # wrist limits
+        # wrist limits -- two distinct categories:
+        #  * BEYOND the limit (tolerance 0.1 deg): impossible in steady state on the +-180
+        #    USD -> recorded on a stale USD; loading clamps the wrist mid-teleport. FAIL.
+        #  * exactly AT the limit: the old "long way" IK solutions now saturate at the
+        #    boundary (float32 pi reads a hair above float64 pi -- not a violation). These
+        #    load fine; the pile-up size is reported for awareness.
         wrists = jp[:, 3:6]
-        n_viol = int((np.abs(wrists) > np.pi).any(axis=1).sum())
+        tol = np.radians(0.1)
+        beyond = (np.abs(wrists) > np.pi + tol).any(axis=1)
+        at_limit = (~beyond) & (np.abs(wrists) > np.pi - tol).any(axis=1)
+        n_beyond = int(beyond.sum())
+        n_at = int(at_limit.sum())
         worst = np.degrees(np.abs(wrists).max())
-        if n_viol > 0:
-            fails.append(f"{n_viol}/{N} states have |wrist| > 180 deg (worst {worst:.1f}) -- STALE recording")
+        if n_beyond > 0:
+            fails.append(
+                f"{n_beyond}/{N} states BEYOND |wrist|=180 deg (worst {worst:.1f}) -- recorded on a "
+                f"stale (+-360) USD; these clamp on load"
+            )
 
         # FK-based checks (robot root ~ identity in these scenes, but apply it anyway)
         w3_pos_b, w3_z_b = fk_wrist3(jp[:, ARM_COLS], fixed)
@@ -146,7 +158,8 @@ def main():
         below_worst = float(fingertip_z.min())
 
         line = (
-            f"[QC] {rtype:<38s} N={N:<6d} wrist>180: {n_viol} (worst {worst:6.1f} deg)  "
+            f"[QC] {rtype:<38s} N={N:<6d} wrist beyond180: {n_beyond} / at180: {n_at} "
+            f"(worst {worst:6.1f} deg)  "
             f"topdown<=45/30 deg: {topdown45:5.1f}%/{topdown30:5.1f}%  "
             f"fingertip<0: {below_pct:4.1f}% (worst {below_worst:+.3f} m)"
         )
@@ -169,6 +182,19 @@ def main():
                     fails.append(f"median finger_joint {np.median(fj):.4f} not a pcb-width grip (~0.0487)")
             if rtype == "ObjectRestingEEGrasped" and np.median(fj) < 0.045:
                 fails.append(f"median finger_joint {np.median(fj):.4f} -- jaws not closed on anything?")
+            if rtype == "ObjectPartiallyAssembledEEGrasped":
+                # Near Goal is defined as pcb partially inserted AND GRIPPED (deep-dive
+                # doc). check_reset_state_success has no jaws-on-object condition, so when
+                # the in-box grasp IK fails (e.g. under the +-180 wrist limits) the event
+                # leaves the gripper OPEN and the stable hover still gets accepted --
+                # degenerate states that dilute the near-success reward density.
+                open_pct = float((fj < 0.02).mean()) * 100
+                line += f"  open-jaw states: {open_pct:.0f}%"
+                if np.median(fj) < 0.03:
+                    fails.append(
+                        f"median finger_joint {np.median(fj):.4f}: most Near Goal states are NOT "
+                        f"gripping ({open_pct:.0f}% open) -- grasp engagement failing during recording"
+                    )
             if rtype in ("ObjectAnywhereEEGrasped", "ObjectRestingEEGrasped") and topdown45 < 85:
                 fails.append(f"top-down fraction {topdown45:.0f}% < 85% for a grasped type")
         print(line)
