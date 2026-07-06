@@ -413,32 +413,72 @@ Real-robot teleop sanity check of the OSC (after adapting for the custom gripper
 
 ---
 
-## 9. NEXT — real deployment path (the big remaining items)
+## 9. NEXT — real deployment path (PLANNED 2026-07-06, start here tomorrow)
 
 The state-based expert **cannot run on the real robot** (it observes object poses). The
-OmniReset deployment path is student-teacher distillation to RGB, zero-shot:
+OmniReset deployment path is student-teacher distillation to RGB, zero-shot.
 
-1. **Custom gripper real-world driver.** The stack drives a 2F-85 via its URCap
-   (`real_env.py` / `rtde_interpolation_controller.py`); our linear gripper needs its own
-   open/close interface wired in. Engineering item, no upstream reference.
-2. **Wrist camera mount.** The repo's `2f85_d415_mount.stl` is 2F-85-specific — design one
-   for the linear gripper (paper: wrist D415 + front D435 + side D455, all USB 3.2;
-   40 ms end-to-end latency budget, 60 ms degrades badly).
-3. **Camera calibration** (per-camera): diffusion_policy `0_camera_calibrate.py`,
-   `1_camera_get_rgb.py`, `2_get_isaacsim_extrinsics.py` (ArUco 6x6_50 ID 12, 150 mm,
-   marker offset to base default [0.24, 0, 0]) → UWLab
-   `scripts_v2/tools/sim2real/align_cameras.py --camera front_camera --real_image ...
-   --joint_angles ...` (press `p` for pos/rot/focal) → paste into
-   `config/ur5e_robotiq_2f85/data_collection_rgb_cfg.py` (a UR10e variant of that cfg
-   still needs to be created, same subclass-and-swap pattern).
-4. **RGB data collection + distillation** (A100/H200): 80k expert trajectories under the
-   Table-2 randomizations (~24 GPU-h to collect), ResNet-18 + MLP student, 5-frame stack,
-   KL-matching + pose-reconstruction aux loss, end-to-end encoder, ~350k iters (~2 days).
-   Expect RGB sim success ≈ 50–60% of the expert's — real transfer is better than that
-   number suggests (paper Table 1: peg 85% real).
-5. **Real eval practicalities** (paper A.4): fix the receptive object (openbox) to the
-   table with command strips — sim treats it as static; compliant silicone mat; consistent
-   stage lighting; stuck-detection auto-recovery (no joint motion >2 s → open gripper 1 s).
+**Decisions made (2026-07-06):**
+- **Deployment machine: the RTX 4090 PC** — cameras (3× D405 on USB3), gripper serial,
+  ResNet inference, AND the 500 Hz RTDE loop all on that one box. This is the clean path
+  to the <40 ms end-to-end budget (a LAN hop between camera PC and control PC would eat
+  5–15 ms + jitter). To install there: `diffusion_policy` fork (ur10e-linear-gripper
+  branch, `robodiff_real` env) + robot subnet access (192.168.0.x).
+- **Cameras: 3× RealSense D405.** Wrist = ideal (D405 sweet spot is 7–50 cm). Front/side
+  at ~0.8–1.1 m are OUTSIDE the design range — RGB-only is what we use, so acceptable, but
+  eyeball sharpness during calibration before committing.
+- **RGB sim scene strategy: do NOT model our room.** The authors' RGB cfg is an abstract
+  STAGE — three flat "curtain" planes (left/back/right) around the table — with per-episode
+  texture/color randomization of every visible surface (curtains, table, objects, fingers,
+  wrist mount) + camera pose/focal jitter. We keep that stage in sim and make the REAL
+  workspace roughly match its geometry (backdrop panels around the table); randomization
+  covers appearance. The real lab becomes "just another sample".
+
+**Work items, in order** (A can start immediately; the finetune does not block A–E):
+
+1. **A — Linear-gripper driver** (small). Source: `RC10_control/rc10_api/gripper.py`
+   (serial `Open\n`/`Close\n`, sign convention `state<=0 -> close` — identical to
+   `real_env.py`'s `action[6]<0 -> close`; drop-in match). Plan: new
+   `diffusion_policy/real_world/linear_gripper.py` hardened for the 500 Hz process
+   (transition-only writes, serial-exception safety so a USB hiccup can't kill the torque
+   loop, commanded-Open on activation since there is no encoder, `--gripper_device` arg);
+   `rtde_interpolation_controller.py` gets a `gripper` selector (`robotiq`|`linear`|`none`)
+   replacing `RobotiqGripper.activate()/move()` on the linear path; plumb through
+   `real_env.py` + teleop/eval scripts. NO gripper feedback needed: the stack observes
+   `last_gripper_action` (commanded), never encoder values — true for the 2F-85 too.
+   Validation: measure real open↔close travel time vs sim (~0.1–0.2 s); if much slower,
+   tune the sim jaw velocity limit to match before the NEXT training round.
+2. **B — Wrist camera mount** (hardware). D405 on the linear gripper. Requirements: rigid;
+   fingers + grip zone in view at 7–30 cm; cable strain relief for wrist rotation; rough
+   viewpoint like the sim wrist cam (mounted on `robotiq_base_link`, offset ~(0.018,
+   −0.004, −0.069), looking at the grip zone) — exact placement NOT critical (calibration +
+   pose randomization absorb it). Sim side afterwards: add a simple proxy box for the mount
+   to the graft (front/side cameras see it; its texture gets randomized like the authors').
+3. **C — Camera rig + calibration** (front/side can start before the mount exists). Mount
+   rigidly ~where the sim cfg puts them (front ~1.1 m out, side ~0.8 m lateral). Per
+   camera: ArUco coarse extrinsic (6x6_50 ID 12, 150 mm; `0/1/2_camera_*.py`) →
+   `align_cameras.py` interactive overlay refine (press `p` → pos/rot/focal). Precision
+   target is only ~cm/degree: the per-episode camera randomization (±2–3 cm pose, focal
+   ranges) absorbs the residual. Deliverable: three (pos, rot, focal) tuples.
+4. **D — UR10e RGB data-collection cfg**. `ur10e` variant of `data_collection_rgb_cfg.py`,
+   same subclass-and-swap as the state cfgs (robot → EXPLICIT UR10e, action → UR10e eval
+   OSC; it inherits `FinetuneEvalEventCfg`, so the fixed-sysid + delay-0 pins carry over).
+   Set camera baselines from C, recenter the randomization ranges on our values, re-parent
+   the wrist camera to our mount transform, sanity-check curtain/table geometry against
+   the physical stage, register the gym id. Buildable with placeholder poses before C
+   finishes.
+5. **E — Physical stage prep** (paper A.4): backdrop panels ~where the sim curtains sit;
+   **command-strip the openbox to the table** (sim treats it as static); compliant mat;
+   consistent lighting; verify real table/mount geometry vs the sim scene (work surface
+   ~level with z=0, robot base on its plate ~1.3 cm above).
+6. **F — Distillation** (A100, AFTER the finetune converges): optionally 1–2 more finetune
+   seeds + `eval_robustness.py` selection (noise robustness predicts real transfer); then
+   80k expert episodes under the RGB randomization (~24 GPU-h), ResNet-18 + MLP student,
+   5-frame stack @ 10 Hz, KL-matching + pose-reconstruction aux loss, ~350k iters
+   (~2 days). Expect student sim success ≈ 50–60% of the expert — normal; real transfer is
+   better than that number suggests (paper: peg 85% real).
+7. **G — Real eval extras** (paper A.4): stuck-detection auto-recovery (no joint motion
+   >2 s → open gripper 1 s, not counted as failure).
 
 ---
 
