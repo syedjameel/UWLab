@@ -39,6 +39,13 @@ parser.add_argument(
     choices=["ur5e", "ur10e"],
     help="Arm the checkpoint was identified for (must match the sysid run).",
 )
+parser.add_argument(
+    "--delay",
+    type=int,
+    default=None,
+    help="Override the checkpoint's motor delay (physics steps @ the sysid rate). Use to "
+    "sweep the delay over a frozen armature/friction fit (one process per value).",
+)
 
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
@@ -144,7 +151,10 @@ def closed_loop_replay(
     default_joint_vel = robot.data.default_joint_vel.clone()
     default_joint_pos[:, arm_joint_ids] = initial_joint_pos.unsqueeze(0)
     default_joint_vel[:] = 0.0
-    env.reset()
+    # NO env.reset() here: main resets before apply_params. Resetting after apply_params
+    # would re-randomize the DelayedPD time lags (Articulation.reset -> actuator.reset
+    # draws randint(min_delay, max_delay)), silently replaying at a RANDOM delay instead
+    # of the checkpoint's -- the source of the old "+-0.2 deg run-to-run variance".
     settle_robot(robot, sim, default_joint_pos, default_joint_vel, arm_joint_ids, sim_dt, headless=headless)
 
     sim_positions, sim_velocities, sim_ee_positions = [], [], []
@@ -275,7 +285,13 @@ def main():
     print(f"\n  {'Joint':<20s} {'Armature':>10s} {'SFric':>10s} {'DRatio':>10s} {'VFric':>10s}")
     for i, name in enumerate(JOINT_NAMES_SHORT):
         print(f"  {name:<20s} {arm[i]:10.4f} {sfric[i]:10.4f} {dratio[i]:10.4f} {vfric[i]:10.4f}")
-    print(f"  Motor delay: {delay} steps")
+    if args.delay is not None:
+        delay = args.delay
+        best_params = np.array(best_params, dtype=np.float64).copy()
+        best_params[24] = float(delay)
+        print(f"  Motor delay: {delay} steps (OVERRIDDEN via --delay)")
+    else:
+        print(f"  Motor delay: {delay} steps")
 
     # Load real data
     print(f"\nLoading real data: {args.real_data}")
@@ -369,10 +385,11 @@ def main():
     print(f"  Checkpoint metric:       score={best_score:.6f}  RMSE={np.degrees(np.sqrt(best_score)):.4f}°")
     print("=" * 60)
 
-    # Plot
+    # Plot (suffix sweep runs so per-delay outputs don't overwrite each other)
     out_dir = os.path.dirname(args.checkpoint) if os.path.dirname(args.checkpoint) else "."
-    plot_overlay(real_joints, sim_joints, dt, save_path=os.path.join(out_dir, "sysid_fit.png"))
-    plot_error(real_joints, sim_joints, dt, save_path=os.path.join(out_dir, "sysid_fit_error.png"))
+    suffix = f"_delay{args.delay}" if args.delay is not None else ""
+    plot_overlay(real_joints, sim_joints, dt, save_path=os.path.join(out_dir, f"sysid_fit{suffix}.png"))
+    plot_error(real_joints, sim_joints, dt, save_path=os.path.join(out_dir, f"sysid_fit_error{suffix}.png"))
 
 
 if __name__ == "__main__":
