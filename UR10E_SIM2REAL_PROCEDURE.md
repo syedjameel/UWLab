@@ -288,10 +288,15 @@ levels before the friction ramp starts. If it stays low, the fallback is a fresh
 on the new USD/datasets (Pipeline README Step D) and finetuning from that instead.
 
 The finetune curriculum ramps dynamics toward the §6 sysid values, raises OSC gains, and
-shrinks the action scale (paper A.3.6/A.3.9). **Before trusting the Finetune-Play task:
-validate its stiff eval OSC gains (rot Kp 50) IN CONTACT** — jaws closed on the pcb, watch
-wrist joint velocity. This is the P6 lesson: free-space probes pass while contact
-limit-cycles (see the comment block in `config/ur5e_robotiq_2f85/actions.py`).
+shrinks the action scale (paper A.3.6/A.3.9). **The Finetune-Play stiff eval gains (rot
+Kp 50) were validated IN CONTACT on 2026-07-06** (P6-pattern probe, jaws closed on the pcb,
+10 reset draws with the full fixed-sysid randomization: rot Kp drawn 40–57, delay pinned 0):
+worst wrist |dq| 0.0017 rad/s, worst held-pcb angular velocity 0.35 rad/s — the P6 failure
+signature was ~3.1/3.5 rad/s. The identified joint friction is what damps the massless PD
+here; P6's instability was on the frictionless Stage-1 setup. Note this validates the
+curriculum ENDPOINT — intermediate (partial-gain, partial-friction) points are guarded by
+the ADR back-off, and the endpoint is what deploys. Probe:
+`scripts_v2/tools/conversions/probe_eval_gains_in_contact.py` (untracked, re-creatable).
 
 Real-robot teleop sanity check of the OSC (after adapting for the custom gripper):
 `diffusion_policy demo_real_robot.py -o <dir> --robot_ip 192.168.0.100`
