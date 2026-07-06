@@ -129,7 +129,7 @@ File format (consumed by the sim-side fit): `joint_positions (T,6)`, `joint_torq
 
 ---
 
-## 4. CMA-ES sysid fit — RUNNING (A100)
+## 4. CMA-ES sysid fit — DONE (round 3 accepted)
 
 Fits 25 params (armature×6, static_friction×6, dynamic_ratio×6, viscous_friction×6,
 motor_delay×1) by closed-loop replay of the chirp in the UR10e Sysid env
@@ -156,16 +156,32 @@ the Sysid env doesn't set the giant PhysX buffers, so no trims are needed anywhe
    phantom sim gripper mass (URDF 1.1 kg vs real 0.575 kg).
 3. **Round 3** (same bounds, after the graft's `--gripper-mass 0.575` fix): accepted —
    pan 0.32 / lift 1.93 / elbow 1.31 / w1 1.11 / w2 0.34 / w3 0.27°, no bound saturation,
-   params stable vs round 2. Run: `logs/sysid/20260705_120940`. Delay: 4 steps @ 500 Hz (8 ms).
+   params stable vs round 2. Run: `logs/sysid/20260705_120940`.
+
+**Delay correction (2026-07-06 audit, commit 510248a):** the round-1..3 "identified delay"
+was never actually simulated — both `sysid_ur5e_osc.py` and `plot_sysid_fit.py` reset the
+env AFTER applying the delay, and `Articulation.reset()` re-randomizes the DelayedPD
+buffers. Every CMA-ES candidate was scored at a *random* delay (the reported `delay=4` is
+optimizer drift around the initial mean), and every verification plot replayed at a random
+delay in {0..5} — that was the known "±0.2° run-to-run variance". The 24 armature/friction
+params are unaffected (they persist through reset and validated <2°/joint at any drawn
+delay). Both scripts now reset-then-apply, and `plot_sysid_fit.py --delay N` sweeps the
+delay over a frozen fit. **Measured**: RMSE rises monotonically with delay — total 1.019°
+at delay 0 vs 1.485° at delay 8 (w1 is the sensitive joint: 0.89° → 2.37°). The residual
+delay paired with the round-3 params is **0 steps @ 500 Hz (< 2 ms)**; the true fit quality
+is pan 0.30 / lift 1.87 / elbow 1.29 / w1 0.89 / w2 0.34 / w3 0.26° (total 1.02°), better
+than the accepted numbers, which were measured at an accidental delay≈2. Config outcome:
+Finetune DR keeps the paper's delay {0,1,2} @ 120 Hz; Finetune-Play pins delay 0.
 
 Lesson: the printed `RMSE: X°` (= sqrt of the pooled CMA-ES score) is NOT a per-joint RMSE and
 can exceed all of them — judge fits by the per-joint titles in `sysid_fit_error.png`. Also
 check every parameter against BOTH bound ends; saturation = wrong bounds or wrong model, not a
-bad optimizer.
+bad optimizer. And when a replay's variance gets attributed to "random draw" noise, check the
+draw isn't replacing the very parameter you think you set.
 
 ---
 
-## 5. NEXT — verify the fit (laptop, after copying checkpoints back)
+## 5. DONE — verify the fit (laptop, after copying checkpoints back)
 
 ```bash
 # copy from A100:  rsync -av haka01:UWLab/logs/sysid/ logs/sysid/
@@ -181,7 +197,7 @@ is 0.575 kg but the sim carries ~1.1 kg — and redo the fit after aligning the 
 
 ---
 
-## 6. NEXT — integrate the identified params
+## 6. DONE — integrate the identified params
 
 Paste the best params (from `final_results.pt`: `best_armature`, `best_friction` =
 static_friction, `best_dynamic_ratio`, `best_viscous_friction`) into the `sysid:` block of
@@ -196,7 +212,7 @@ conventions.
 
 ---
 
-## 7. NEXT — sim hardening before finetune (both optional but recommended)
+## 7. DONE — sim hardening before finetune
 
 1. **Align the sim gripper mass to reality.** URDF/USD gripper totals ~1.1 kg vs the real
    0.575 kg (~2x). Gravity is off in sim, but wrist INERTIA shapes the dynamics the policy
@@ -221,7 +237,10 @@ datasets once (§Pipeline README Step C), then finetune.
 
 ## 8. NEXT — Stage-2 finetune (ADR) + eval validation
 
-The full A100 sequence (after `git pull fork omnireset/ur10e-linear-gripper`):
+The full A100 sequence (after `git pull fork omnireset/ur10e-linear-gripper` — needs
+**b861f06 or later**: the 2026-07-06 audit fixed a DelayedPD buffer sizing that would
+crash the finetune hours in when the ADR curriculum reaches delay 2, made the gripper-gain
+DR cover BOTH dual-drive jaws, and added the dataset QC tool):
 
 ```bash
 OBJ="env.scene.insertive_object=pcb env.scene.receptive_object=openbox"
@@ -234,6 +253,12 @@ python scripts_v2/tools/conversions/graft_gripper_on_ur10e.py
 
 # 8b. re-record the four reset datasets (Pipeline README Step C, C1->C4 in order) --
 #     REQUIRED: 14-27% of the old states violate the new wrist limits.
+
+# 8b'. QC the fresh datasets (CPU-only, runs anywhere; expects wrist>180 == 0 everywhere):
+python scripts_v2/tools/conversions/qc_reset_states_ur10e.py \
+  --dataset_dir ./Datasets_ur10e/OmniReset
+#     expect: [QC_RESULT] [PASS]. On the OLD datasets this correctly fails with the
+#     13.6/26.6/23.6/15.6% wrist-violation counts.
 
 # 8c. (optional, paper-recommended) train 2 more Stage-1 seeds, then pick by noise robustness:
 ./uwlab.sh -p scripts_v2/tools/sim2real/eval_robustness.py --headless \
@@ -312,6 +337,6 @@ OmniReset deployment path is student-teacher distillation to RGB, zero-shot:
 | UR10e real-side kinematics | `diffusion_policy/real_world/ur10e_kinematics.py` on `syedjameel/diffusion_policy` branch `ur10e-linear-gripper` |
 | Controller file dump | `~/urcontrol_from_ur10e/` (laptop) |
 | Extracted (nominal) calibration | `~/ur10e_calibration.yaml` |
-| Sysid target metadata | `source/uwlab_assets/.../local/Robots/Ur10eLinearGripper/metadata.yaml` (`sysid:` block = UR5e PLACEHOLDER until §6) |
+| Sysid target metadata | `source/uwlab_assets/.../local/Robots/Ur10eLinearGripper/metadata.yaml` (`sysid:` block = REAL UR10e values since 5cb15a7) |
 | Sim pipeline manual | `UR10E_PIPELINE_README.md` |
 | Paper / official doc | `2603.15789v3.pdf` / uw-lab.github.io → publications → omnireset → sim2real |

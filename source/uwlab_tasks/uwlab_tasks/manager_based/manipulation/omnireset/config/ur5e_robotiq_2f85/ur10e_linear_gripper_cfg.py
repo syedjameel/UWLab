@@ -163,9 +163,14 @@ class Ur10eLinearGripperRelCartesianOSCFinetuneCfg(Ur5eRobotiq2f85RelCartesianOS
         _apply_linear_gripper(
             self, ur10e_linear_gripper.EXPLICIT_UR10E_LINEAR_GRIPPER, Ur10eLinearGripperRelativeOSCAction()
         )
-        # Measured motor delay (sysid 2026-07-05) is 8 ms = 1 physics step at this env's
-        # 120 Hz. The inherited delay_range (0, 1) puts reality at the range BOUNDARY;
-        # (0, 2) brackets it (paper Table 2 uses {0,1,2}). UR10e-only override.
+        # Motor delay: the CMA-ES "identified delay=4" was never actually simulated (the
+        # scripts reset AFTER applying it, re-randomizing the buffers; fixed 2026-07-06).
+        # Re-measured by sweeping delay 0..8 over the frozen 24-param fit: RMSE rises
+        # monotonically from delay 0 (total 1.02 deg) -> the residual delay PAIRED WITH
+        # the metadata sysid params is 0 steps @ 500 Hz (< 2 ms). (0, 2) here = the paper
+        # Table 2 range {0,1,2} @ this env's 120 Hz; reality sits at the low end, which is
+        # structurally unavoidable for a nonnegative quantity, and the range brackets any
+        # real latency growth from above. UR10e-only override.
         self.events.randomize_arm_sysid.params["delay_range"] = (0, 2)
         # The actuator's max_delay sizes its DelayBuffers (history_length = max_delay);
         # set_time_lag(2) on the inherited max_delay=1 buffers raises ValueError the first
@@ -195,6 +200,10 @@ class Ur10eLinearGripperRelCartesianOSCFinetuneEvalCfg(Ur5eRobotiq2f85RelCartesi
         _apply_linear_gripper(
             self, ur10e_linear_gripper.EXPLICIT_UR10E_LINEAR_GRIPPER, Ur10eLinearGripperRelativeOSCEvalAction()
         )
-        # Eval at the MEASURED motor delay (sysid: 8 ms = 1 step @ 120 Hz), not a draw
-        # from the inherited (0, 1) range -- eval should mirror the real robot.
-        self.events.randomize_arm_sysid.params["delay_range"] = (1, 1)
+        # Eval at the MEASURED residual motor delay: the delay sweep over the frozen
+        # sysid fit (2026-07-06) is monotonically best at 0 steps @ 500 Hz (< 2 ms), so
+        # paired with the metadata sysid params the real arm is delay 0 at this env's
+        # 120 Hz too. Pin 0 rather than draw from the inherited (0, 1) -- eval should
+        # mirror the real robot. (The earlier (1, 1) pin was based on the unmeasured
+        # CMA-ES delay=4 artifact; see the Finetune cfg note.)
+        self.events.randomize_arm_sysid.params["delay_range"] = (0, 0)
