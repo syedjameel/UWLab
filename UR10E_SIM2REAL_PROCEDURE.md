@@ -23,10 +23,10 @@ OmniReset paper (`2603.15789v3.pdf` at repo root, esp. Appendix A.3).
 | 1. Kinematic calibration | **RESOLVED: proceed with NOMINAL** (factory calibration lost — see §1) |
 | 2. Real-side UR10e port (kinematics module, payload, collect script) | **DONE** (§2) |
 | 3. Chirp data collection on the real UR10e | **DONE** → `~/sysid_data_ur10e_real.pt` (§3) |
-| 4. CMA-ES sysid fit | **RUNNING on the A100** (§4) |
-| 5. Fit verification (plot, <2°/joint) | todo (§5) |
-| 6. Sysid params → metadata.yaml | todo (§6) |
-| 7. Sim hardening before finetune (gripper mass, wrist limits) | todo (§7) |
+| 4. CMA-ES sysid fit | **DONE** — 3 rounds; round 3 accepted (§4) |
+| 5. Fit verification (plot, <2°/joint) | **DONE** — pan 0.32 / lift 1.93 / elbow 1.31 / w1 1.11 / w2 0.34 / w3 0.27° (§5) |
+| 6. Sysid params → metadata.yaml | **DONE** — `Ur10eLinearGripper/metadata.yaml` sysid block = real UR10e values (§6) |
+| 7. Sim hardening before finetune | gripper mass **DONE** (graft `--gripper-mass 0.575`); wrist ±180° limits todo (§7) |
 | 8. Stage-2 finetune (ADR) + eval-gain validation in contact | todo (§8) |
 | 9. Real deployment path (RGB distillation, cameras, gripper driver) | todo — big items (§9) |
 
@@ -146,6 +146,22 @@ scp ~/sysid_data_ur10e_real.pt haka01:~/
 Wiring was smoke-tested on the laptop first (8 envs / 2 iters → clean `final_results.pt`).
 NOTE: this script is plain argparse — hydra-style `env.*` overrides are NOT accepted (and
 the Sysid env doesn't set the giant PhysX buffers, so no trims are needed anywhere).
+
+**Fit history (what it took to converge):**
+
+1. **Round 1** (default bounds): pan/lift/elbow SLAMMED the UR5e-sized ceilings (armature 10,
+   friction 20, viscous 20) — sim lift kept ringing after the real joint damped; lift 2.64°.
+2. **Round 2** (`--armature_max 40 --friction_max 60 --viscous_friction_max 80 --delay_max 8`):
+   all ≤ 2° but lift exactly 2.00° and wrist_1 armature pinned at the LOWER bound (~0) — the
+   phantom sim gripper mass (URDF 1.1 kg vs real 0.575 kg).
+3. **Round 3** (same bounds, after the graft's `--gripper-mass 0.575` fix): accepted —
+   pan 0.32 / lift 1.93 / elbow 1.31 / w1 1.11 / w2 0.34 / w3 0.27°, no bound saturation,
+   params stable vs round 2. Run: `logs/sysid/20260705_120940`. Delay: 4 steps @ 500 Hz (8 ms).
+
+Lesson: the printed `RMSE: X°` (= sqrt of the pooled CMA-ES score) is NOT a per-joint RMSE and
+can exceed all of them — judge fits by the per-joint titles in `sysid_fit_error.png`. Also
+check every parameter against BOTH bound ends; saturation = wrong bounds or wrong model, not a
+bad optimizer.
 
 ---
 
