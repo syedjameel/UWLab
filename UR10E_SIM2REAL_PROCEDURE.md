@@ -221,22 +221,46 @@ datasets once (§Pipeline README Step C), then finetune.
 
 ## 8. NEXT — Stage-2 finetune (ADR) + eval validation
 
+The full A100 sequence (after `git pull fork omnireset/ur10e-linear-gripper`):
+
 ```bash
-# (optional, paper-recommended) train 2 more Stage-1 seeds, then pick by noise robustness:
+OBJ="env.scene.insertive_object=pcb env.scene.receptive_object=openbox"
+
+# 8a. regenerate the USD (picks up gripper mass 0.575 + wrist +/-180). The graft's INPUTS
+#     (UR10e/ur10e.usd, LinearGripper/linear_gripper.usd) are unchanged -- do NOT re-run the
+#     Part-1 conversion steps unless this is a fresh checkout.
+python scripts_v2/tools/conversions/graft_gripper_on_ur10e.py
+#     expect BOTH: "gripper mass: 1.100 -> 0.575" and "wrist joint limits -> +/-180 deg"
+
+# 8b. re-record the four reset datasets (Pipeline README Step C, C1->C4 in order) --
+#     REQUIRED: 14-27% of the old states violate the new wrist limits.
+
+# 8c. (optional, paper-recommended) train 2 more Stage-1 seeds, then pick by noise robustness:
 ./uwlab.sh -p scripts_v2/tools/sim2real/eval_robustness.py --headless \
   --task OmniReset-UR10eLinearGripper-RelCartesianOSC-State-Play-v0 \
   --checkpoints <ckpt_seed1.pt> <ckpt_seed2.pt> <ckpt_seed3.pt> \
-  --action_noise 2.0 --eval_steps 1000 --num_envs 4096 \
-  env.scene.insertive_object=pcb env.scene.receptive_object=openbox
+  --action_noise 2.0 --eval_steps 1000 --num_envs 4096 $OBJ
 
-# finetune (A100, 1 GPU; peg-class task per the paper ≈ 8 h):
+# 8d. finetune (A100, 1 GPU; peg-class task per the paper ~= 8 h):
 ./uwlab.sh -p scripts/reinforcement_learning/rsl_rl/train.py \
   --task OmniReset-UR10eLinearGripper-RelCartesianOSC-State-Finetune-v0 \
-  --num_envs 4096 --headless --logger tensorboard \
-  --resume_path <stage1_checkpoint.pt> \
-  env.scene.insertive_object=pcb env.scene.receptive_object=openbox \
+  --num_envs 4096 --headless --logger tensorboard $OBJ \
+  --resume_path logs/rsl_rl/ur5e_robotiq_2f85_omnireset_agent/2026-07-02_21-39-37/model_1100.pt \
   env.events.reset_from_reset_states.params.dataset_dir=./Datasets_ur10e/OmniReset
+
+# 8e. play the finetuned policy (laptop, GUI; note the Finetune-Play task id):
+./uwlab.sh -p scripts/reinforcement_learning/rsl_rl/play.py \
+  --task OmniReset-UR10eLinearGripper-RelCartesianOSC-State-Finetune-Play-v0 \
+  --num_envs 4 $OBJ $TRIMS \
+  env.events.reset_from_reset_states.params.dataset_dir=./Datasets_ur10e/OmniReset \
+  --load_run <finetune run folder> --checkpoint model_<iter>.pt
 ```
+
+**Resume caveat:** the Stage-1 checkpoint was trained on the OLD model (1.1 kg gripper,
+±360° wrists) and old resets. The curriculum's job is exactly to adapt to shifted dynamics,
+but watch the tensorboard success curve in the first hour — it should recover to Stage-1
+levels before the friction ramp starts. If it stays low, the fallback is a fresh Stage-1 run
+on the new USD/datasets (Pipeline README Step D) and finetuning from that instead.
 
 The finetune curriculum ramps dynamics toward the §6 sysid values, raises OSC gains, and
 shrinks the action scale (paper A.3.6/A.3.9). **Before trusting the Finetune-Play task:
