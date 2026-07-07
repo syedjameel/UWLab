@@ -58,6 +58,13 @@ from .ur10e_linear_gripper_cfg import _repoint_ur10e_resets
 # flattened /World/envs/env_{} path template.
 _WRIST_PRIM = "{ENV_REGEX_NS}/Robot/gripper/robotiq_base_link/rgb_wrist_camera"
 _WRIST_TEMPLATE = "/World/envs/env_{}/Robot/gripper/robotiq_base_link/rgb_wrist_camera"
+# Retuned wrist mount for the linear gripper (the upstream numbers are D415-bracket-calibrated in the
+# 2F-85 base frame and look into empty space here). Linear-gripper base frame: +Z -> fingertips
+# (9.4 cm ahead), jaws travel +/-X, +Y up at the rest pose. This pose sits 5.5 cm above / 2 cm ahead
+# of the base looking down the approach axis with a ~25 deg pitch — both jaw tips, the grasped object
+# and the workspace below stay in frame (visually verified on renders, 2026-07-08).
+_WRIST_POS = (0.0, 0.055, 0.02)
+_WRIST_ROT = (0.2164, -0.9763, 0.0, 0.0)
 
 
 def _rebind_wrist_camera(cfg) -> None:
@@ -65,13 +72,18 @@ def _rebind_wrist_camera(cfg) -> None:
 
     OmniReset is a 3-camera setup, so we keep ``scene.wrist_camera``, the ``wrist_rgb`` obs in both the
     policy + data_collection groups, the ``wrist_camera`` entry in the corrupted-camera termination, and
-    the ``randomize_wrist_camera``(+focal) events -- only repointing the prim path / path templates at
-    the grafted gripper base (upstream offset/focal numbers kept as-is; flagged for a later visual
-    retune). Still NULL the 2F-85 wrist-mount + inner-finger appearance DR: those target mesh prims
-    (robotiq_base_link/visuals/D415_to_Robotiq_Mount, left/right_inner_finger/visuals/mesh_1) are absent
-    on the linear gripper -> "No prims found matching"."""
+    the ``randomize_wrist_camera``(+focal) events -- repointing the prim path / path templates at the
+    grafted gripper base and installing the retuned mount pose (``_WRIST_POS``/``_WRIST_ROT``) both on
+    the sensor cfg and as the DR event's base pose. Still NULL the 2F-85 wrist-mount + inner-finger
+    appearance DR: those target mesh prims (robotiq_base_link/visuals/D415_to_Robotiq_Mount,
+    left/right_inner_finger/visuals/mesh_1) are absent on the linear gripper -> "No prims found
+    matching"."""
     cfg.scene.wrist_camera.prim_path = _WRIST_PRIM
+    cfg.scene.wrist_camera.offset.pos = _WRIST_POS
+    cfg.scene.wrist_camera.offset.rot = _WRIST_ROT
     cfg.events.randomize_wrist_camera.params["camera_path_template"] = _WRIST_TEMPLATE
+    cfg.events.randomize_wrist_camera.params["base_position"] = _WRIST_POS
+    cfg.events.randomize_wrist_camera.params["base_rotation"] = _WRIST_ROT
     cfg.events.randomize_wrist_camera_focal_length.params["camera_path_template"] = _WRIST_TEMPLATE
     cfg.events.randomize_wrist_mount_appearance = None
     cfg.events.randomize_inner_finger_appearance = None
