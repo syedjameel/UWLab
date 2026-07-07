@@ -39,6 +39,13 @@ parser.add_argument(
     choices=["ur5e", "ur10e"],
     help="Arm the checkpoint was identified for (must match the sysid run).",
 )
+parser.add_argument(
+    "--delay",
+    type=int,
+    default=None,
+    help="Override the checkpoint's motor delay (physics steps @ the sysid rate). Use to "
+    "sweep the delay over a frozen armature/friction fit (one process per value).",
+)
 
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
@@ -144,7 +151,10 @@ def closed_loop_replay(
     default_joint_vel = robot.data.default_joint_vel.clone()
     default_joint_pos[:, arm_joint_ids] = initial_joint_pos.unsqueeze(0)
     default_joint_vel[:] = 0.0
-    env.reset()
+    # NO env.reset() here: main resets before apply_params. Resetting after apply_params
+    # would re-randomize the DelayedPD time lags (Articulation.reset -> actuator.reset
+    # draws randint(min_delay, max_delay)), silently replaying at a RANDOM delay instead
+    # of the checkpoint's -- the source of the old "+-0.2 deg run-to-run variance".
     settle_robot(robot, sim, default_joint_pos, default_joint_vel, arm_joint_ids, sim_dt, headless=headless)
 
     sim_positions, sim_velocities, sim_ee_positions = [], [], []
@@ -190,9 +200,12 @@ JOINT_NAMES_SHORT = ["Shoulder Pan", "Shoulder Lift", "Elbow", "Wrist 1", "Wrist
 
 
 def plot_overlay(real_joints, sim_joints, dt, save_path="sysid_fit.png"):
-    """Plot sim vs real joint positions."""
+    """Plot sim vs real joint positions, with per-joint and total RMSE in the titles
+    (paper Fig. 13 style)."""
     T = real_joints.shape[0]
     time_axis = np.arange(T) * dt
+    error_deg = np.degrees(sim_joints - real_joints)
+    total_rmse = np.sqrt(np.mean(error_deg**2))
 
     fig, axes = plt.subplots(3, 2, figsize=(16, 10), sharex=True)
     axes = axes.flatten()
@@ -201,14 +214,15 @@ def plot_overlay(real_joints, sim_joints, dt, save_path="sysid_fit.png"):
         ax = axes[j]
         ax.plot(time_axis, np.degrees(real_joints[:, j]), "b-", linewidth=1.0, label="Real", alpha=0.8)
         ax.plot(time_axis, np.degrees(sim_joints[:, j]), "r-", linewidth=1.0, label="Sim", alpha=0.8)
-        ax.set_title(JOINT_NAMES_SHORT[j], fontsize=11)
+        rmse_j = np.sqrt(np.mean(error_deg[:, j] ** 2))
+        ax.set_title(f"{JOINT_NAMES_SHORT[j]}  (RMSE={rmse_j:.2f}°)", fontsize=11)
         ax.set_ylabel("deg")
         ax.legend(loc="upper right", fontsize=8)
         ax.grid(True, alpha=0.3)
 
     axes[-2].set_xlabel("Time (s)")
     axes[-1].set_xlabel("Time (s)")
-    fig.suptitle("Sysid Fit: Sim vs Real Joint Trajectories", fontsize=13)
+    fig.suptitle(f"Sysid Fit: Sim vs Real  (Total RMSE={total_rmse:.2f}°)", fontsize=13)
     fig.tight_layout()
     fig.savefig(save_path, dpi=150)
     print(f"Saved overlay plot: {save_path}")
@@ -257,7 +271,9 @@ def main():
     best_params = ckpt["best_params"]
     best_score = ckpt["best_score"]
     ckpt_args = ckpt.get("args", {})
-    print(f"  Score (MSE): {best_score:.6f}  RMSE: {np.degrees(np.sqrt(best_score)):.4f}°")
+    # NOTE: sqrt(score) is the optimizer's pooled objective, NOT a joint RMSE -- it can
+    # exceed every per-joint RMSE. Judge fits by the per-joint values printed/plotted below.
+    print(f"  CMA-ES score: {best_score:.6f}  (sqrt = {np.degrees(np.sqrt(best_score)):.4f}°, not a joint RMSE)")
     print(f"  Checkpoint args: sim_dt={ckpt_args.get('sim_dt', 'N/A')}")
 
     # Print best params
@@ -269,7 +285,13 @@ def main():
     print(f"\n  {'Joint':<20s} {'Armature':>10s} {'SFric':>10s} {'DRatio':>10s} {'VFric':>10s}")
     for i, name in enumerate(JOINT_NAMES_SHORT):
         print(f"  {name:<20s} {arm[i]:10.4f} {sfric[i]:10.4f} {dratio[i]:10.4f} {vfric[i]:10.4f}")
-    print(f"  Motor delay: {delay} steps")
+    if args.delay is not None:
+        delay = args.delay
+        best_params = np.array(best_params, dtype=np.float64).copy()
+        best_params[24] = float(delay)
+        print(f"  Motor delay: {delay} steps (OVERRIDDEN via --delay)")
+    else:
+        print(f"  Motor delay: {delay} steps")
 
     # Load real data
     print(f"\nLoading real data: {args.real_data}")
@@ -363,10 +385,11 @@ def main():
     print(f"  Checkpoint metric:       score={best_score:.6f}  RMSE={np.degrees(np.sqrt(best_score)):.4f}°")
     print("=" * 60)
 
-    # Plot
+    # Plot (suffix sweep runs so per-delay outputs don't overwrite each other)
     out_dir = os.path.dirname(args.checkpoint) if os.path.dirname(args.checkpoint) else "."
-    plot_overlay(real_joints, sim_joints, dt, save_path=os.path.join(out_dir, "sysid_fit.png"))
-    plot_error(real_joints, sim_joints, dt, save_path=os.path.join(out_dir, "sysid_fit_error.png"))
+    suffix = f"_delay{args.delay}" if args.delay is not None else ""
+    plot_overlay(real_joints, sim_joints, dt, save_path=os.path.join(out_dir, f"sysid_fit{suffix}.png"))
+    plot_error(real_joints, sim_joints, dt, save_path=os.path.join(out_dir, f"sysid_fit_error{suffix}.png"))
 
 
 if __name__ == "__main__":

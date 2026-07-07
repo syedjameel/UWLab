@@ -271,10 +271,10 @@ no `--distributed` for one GPU. Checkpoints land under `logs/rsl_rl/<experiment>
 
 Monitor with `tensorboard --logdir logs/rsl_rl` (success rate + return curves).
 
-> Stage-2 finetune (`...-RelCartesianOSC-State-Finetune-v0`) exists and builds, but its
-> domain randomization reads the **sysid** block from `Ur10eLinearGripper/metadata.yaml`,
-> which is currently a UR5e PLACEHOLDER — do not trust finetune for sim2real until a real
-> UR10e calibration replaces it (P8).
+> Stage-2 finetune (`...-RelCartesianOSC-State-Finetune-v0`) reads the **sysid** block from
+> `Ur10eLinearGripper/metadata.yaml` — since 2026-07-06 those are the REAL identified UR10e
+> values (chirp + CMA-ES; see `UR10E_SIM2REAL_PROCEDURE.md` §4–§6 for provenance and §8 for
+> the exact finetune command with `--resume_path`).
 
 ---
 

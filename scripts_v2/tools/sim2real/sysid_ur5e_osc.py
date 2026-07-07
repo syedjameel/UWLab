@@ -276,9 +276,15 @@ def main():
 
         params_np = cmaes.ask()
         params_tensor = torch.tensor(params_np, device=device, dtype=torch.float32)
-        apply_params_to_envs(robot, params_tensor, arm_joint_ids, num_joints, device)
 
+        # Reset BEFORE applying params: env.reset() -> Articulation.reset() ->
+        # DelayedPDActuator.reset() re-draws RANDOM per-env time lags from
+        # [min_delay, max_delay]. With the old apply-then-reset order every candidate's
+        # motor-delay param was silently replaced by that random draw, so the 25th
+        # parameter was never actually simulated (armature/friction writes persist
+        # through reset; only the delay was clobbered).
         env.reset()
+        apply_params_to_envs(robot, params_tensor, arm_joint_ids, num_joints, device)
         settle_robot(robot, sim, default_joint_pos, default_joint_vel, arm_joint_ids, sim_dt, headless=True)
 
         scores = torch.zeros(N, device=device)

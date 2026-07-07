@@ -51,6 +51,15 @@ def main() -> None:
     ap.add_argument("--output",
                     default=os.path.join(_REPO, "source/uwlab_assets/uwlab_assets/local/Robots/Ur10eLinearGripper/ur10e_linear_gripper.usd"))
     ap.add_argument("--standoff", type=float, default=0.049, help="Mount offset along wrist_3 +Z (m).")
+    ap.add_argument("--gripper-mass", type=float, default=0.575,
+                    help="Total gripper mass (kg) to scale the grafted gripper links to. The URDF "
+                         "masses total ~1.1 kg but the REAL assembly weighs 0.575 kg (measured "
+                         "2026-07-03, matches the UR pendant payload) -- the phantom extra ~0.5 kg "
+                         "at the wrist skews the sysid fit (wrist_1 armature pinned at 0) and every "
+                         "dynamic the policy feels. Pass 0 to keep the URDF masses.")
+    ap.add_argument("--wrist-limit", type=float, default=180.0,
+                    help="Wrist joint limit (deg, symmetric). Default 180 (paper A.3.1 sim2real "
+                         "hardening vs the URDF's 360). Pass 0 to keep the URDF limits.")
     args = ap.parse_args()
 
     if not os.path.exists(args.arm_usd):
@@ -104,6 +113,39 @@ def main() -> None:
     fp.CreateAttribute("physics:jointEnabled", Sdf.ValueTypeNames.Bool).Set(True)
     fp.CreateAttribute("physics:breakForce", Sdf.ValueTypeNames.Float).Set(float("inf"))
     fp.CreateAttribute("physics:breakTorque", Sdf.ValueTypeNames.Float).Set(float("inf"))
+
+    # 4a) scale the gripper link masses to the real measured total (see --gripper-mass help).
+    #     Inertia tensors scale with mass for a rigid body of fixed geometry, so scale them too.
+    if args.gripper_mass > 0:
+        glinks = ["robotiq_base_link", "left_inner_finger", "right_inner_finger"]
+        masses = {}
+        for name in glinks:
+            prim = stage.GetPrimAtPath(f"{gpath}/{name}")
+            api = UsdPhysics.MassAPI(prim)
+            masses[name] = api.GetMassAttr().Get() or 0.0
+        total = sum(masses.values())
+        if total > 0:
+            scale = args.gripper_mass / total
+            for name in glinks:
+                prim = stage.GetPrimAtPath(f"{gpath}/{name}")
+                api = UsdPhysics.MassAPI(prim)
+                api.GetMassAttr().Set(masses[name] * scale)
+                inertia = api.GetDiagonalInertiaAttr().Get()
+                if inertia:
+                    api.GetDiagonalInertiaAttr().Set(inertia * scale)
+            print(f"  gripper mass: {total:.3f} kg (URDF) -> {args.gripper_mass:.3f} kg (real), scale {scale:.4f}")
+
+    # 4a2) reduce the wrist joint limits +/-360 -> +/-180 deg (paper A.3.1 sim2real hardening,
+    #      NOT present in the released assets): prevents the policy exploiting extreme wrist
+    #      rotations that would hit real joint limits / trigger safety stops on hardware.
+    #      Reset states recorded with |wrist q| > 180 deg become invalid -> re-record after
+    #      changing this. Pass --wrist-limit 0 to keep the URDF's +/-360.
+    if args.wrist_limit > 0:
+        for name in ("wrist_1_joint", "wrist_2_joint", "wrist_3_joint"):
+            joint = UsdPhysics.RevoluteJoint(stage.GetPrimAtPath(f"{ROOT}/joints/{name}"))
+            joint.GetLowerLimitAttr().Set(-args.wrist_limit)
+            joint.GetUpperLimitAttr().Set(args.wrist_limit)
+        print(f"  wrist joint limits -> +/-{args.wrist_limit:.0f} deg (was +/-360)")
 
     # 4b) give the URDF importer's massless frame links a small mass. The importer leaves the
     #     URDF's pure-frame links (base, base_link, flange, tool0 -- no inertial) at mass 0.0;

@@ -23,11 +23,11 @@ OmniReset paper (`2603.15789v3.pdf` at repo root, esp. Appendix A.3).
 | 1. Kinematic calibration | **RESOLVED: proceed with NOMINAL** (factory calibration lost — see §1) |
 | 2. Real-side UR10e port (kinematics module, payload, collect script) | **DONE** (§2) |
 | 3. Chirp data collection on the real UR10e | **DONE** → `~/sysid_data_ur10e_real.pt` (§3) |
-| 4. CMA-ES sysid fit | **RUNNING on the A100** (§4) |
-| 5. Fit verification (plot, <2°/joint) | todo (§5) |
-| 6. Sysid params → metadata.yaml | todo (§6) |
-| 7. Sim hardening before finetune (gripper mass, wrist limits) | todo (§7) |
-| 8. Stage-2 finetune (ADR) + eval-gain validation in contact | todo (§8) |
+| 4. CMA-ES sysid fit | **DONE** — 3 rounds; round 3 accepted (§4) |
+| 5. Fit verification (plot, <2°/joint) | **DONE** — pan 0.32 / lift 1.93 / elbow 1.31 / w1 1.11 / w2 0.34 / w3 0.27° (§5) |
+| 6. Sysid params → metadata.yaml | **DONE** — `Ur10eLinearGripper/metadata.yaml` sysid block = real UR10e values (§6) |
+| 7. Sim hardening before finetune | **DONE** — gripper mass 0.575 kg + wrist ±180° limits both in the graft; **re-record resets before finetune** (14–27% of the old states violate the new wrist limits) (§7) |
+| 8. Stage-2 finetune (ADR) + eval-gain validation in contact | **RUNNING** — launched 2026-07-06 after dataset QC + salvage (§7b); eval gains validated in contact; watch `Curriculum/adr_sysid/scale_progress` → 1.0 (§8.1) |
 | 9. Real deployment path (RGB distillation, cameras, gripper driver) | todo — big items (§9) |
 
 ---
@@ -129,7 +129,7 @@ File format (consumed by the sim-side fit): `joint_positions (T,6)`, `joint_torq
 
 ---
 
-## 4. CMA-ES sysid fit — RUNNING (A100)
+## 4. CMA-ES sysid fit — DONE (round 3 accepted)
 
 Fits 25 params (armature×6, static_friction×6, dynamic_ratio×6, viscous_friction×6,
 motor_delay×1) by closed-loop replay of the chirp in the UR10e Sysid env
@@ -147,9 +147,41 @@ Wiring was smoke-tested on the laptop first (8 envs / 2 iters → clean `final_r
 NOTE: this script is plain argparse — hydra-style `env.*` overrides are NOT accepted (and
 the Sysid env doesn't set the giant PhysX buffers, so no trims are needed anywhere).
 
+**Fit history (what it took to converge):**
+
+1. **Round 1** (default bounds): pan/lift/elbow SLAMMED the UR5e-sized ceilings (armature 10,
+   friction 20, viscous 20) — sim lift kept ringing after the real joint damped; lift 2.64°.
+2. **Round 2** (`--armature_max 40 --friction_max 60 --viscous_friction_max 80 --delay_max 8`):
+   all ≤ 2° but lift exactly 2.00° and wrist_1 armature pinned at the LOWER bound (~0) — the
+   phantom sim gripper mass (URDF 1.1 kg vs real 0.575 kg).
+3. **Round 3** (same bounds, after the graft's `--gripper-mass 0.575` fix): accepted —
+   pan 0.32 / lift 1.93 / elbow 1.31 / w1 1.11 / w2 0.34 / w3 0.27°, no bound saturation,
+   params stable vs round 2. Run: `logs/sysid/20260705_120940`.
+
+**Delay correction (2026-07-06 audit, commit 510248a):** the round-1..3 "identified delay"
+was never actually simulated — both `sysid_ur5e_osc.py` and `plot_sysid_fit.py` reset the
+env AFTER applying the delay, and `Articulation.reset()` re-randomizes the DelayedPD
+buffers. Every CMA-ES candidate was scored at a *random* delay (the reported `delay=4` is
+optimizer drift around the initial mean), and every verification plot replayed at a random
+delay in {0..5} — that was the known "±0.2° run-to-run variance". The 24 armature/friction
+params are unaffected (they persist through reset and validated <2°/joint at any drawn
+delay). Both scripts now reset-then-apply, and `plot_sysid_fit.py --delay N` sweeps the
+delay over a frozen fit. **Measured**: RMSE rises monotonically with delay — total 1.019°
+at delay 0 vs 1.485° at delay 8 (w1 is the sensitive joint: 0.89° → 2.37°). The residual
+delay paired with the round-3 params is **0 steps @ 500 Hz (< 2 ms)**; the true fit quality
+is pan 0.30 / lift 1.87 / elbow 1.29 / w1 0.89 / w2 0.34 / w3 0.26° (total 1.02°), better
+than the accepted numbers, which were measured at an accidental delay≈2. Config outcome:
+Finetune DR keeps the paper's delay {0,1,2} @ 120 Hz; Finetune-Play pins delay 0.
+
+Lesson: the printed `RMSE: X°` (= sqrt of the pooled CMA-ES score) is NOT a per-joint RMSE and
+can exceed all of them — judge fits by the per-joint titles in `sysid_fit_error.png`. Also
+check every parameter against BOTH bound ends; saturation = wrong bounds or wrong model, not a
+bad optimizer. And when a replay's variance gets attributed to "random draw" noise, check the
+draw isn't replacing the very parameter you think you set.
+
 ---
 
-## 5. NEXT — verify the fit (laptop, after copying checkpoints back)
+## 5. DONE — verify the fit (laptop, after copying checkpoints back)
 
 ```bash
 # copy from A100:  rsync -av haka01:UWLab/logs/sysid/ logs/sysid/
@@ -165,7 +197,7 @@ is 0.575 kg but the sim carries ~1.1 kg — and redo the fit after aligning the 
 
 ---
 
-## 6. NEXT — integrate the identified params
+## 6. DONE — integrate the identified params
 
 Paste the best params (from `final_results.pt`: `best_armature`, `best_friction` =
 static_friction, `best_dynamic_ratio`, `best_viscous_friction`) into the `sysid:` block of
@@ -180,7 +212,7 @@ conventions.
 
 ---
 
-## 7. NEXT — sim hardening before finetune (both optional but recommended)
+## 7. DONE — sim hardening before finetune
 
 1. **Align the sim gripper mass to reality.** URDF/USD gripper totals ~1.1 kg vs the real
    0.575 kg (~2x). Gravity is off in sim, but wrist INERTIA shapes the dynamics the policy
@@ -190,38 +222,190 @@ conventions.
    --arm-wiggle`) and ideally redo §4-5 for a cleaner fit.
 2. **Wrist joint limits ±360° → ±180° in sim** (paper A.3.1; NOT in the released assets —
    verified). Prevents the policy exploiting extreme wrist rotations that trigger real
-   safety stops. Author in `graft_gripper_on_ur10e.py`. NOTE: recorded reset states with
-   |wrist q| > 180° become invalid → re-record resets afterward (cheap on the A100).
+   safety stops. **DONE**: the graft now sets ±180 by default (`--wrist-limit`, 0 keeps the
+   URDF's ±360); build+step smoke passed. Measured impact on the existing A100 datasets:
+   13.6% (Reaching), 26.6% (Grasped), 23.6% (Near Object), 15.6% (Near Goal) of states have
+   |wrist| > 180° → **the four reset datasets MUST be re-recorded** after regenerating the
+   USD on the A100 (loading a violating state clamps joints mid-teleport). The sysid fit is
+   NOT affected (chirp wrists stay within ±110°, limits don't change dynamics away from
+   limits).
 
-Both change dynamics/data ⇒ do them BEFORE Stage-2 finetune, re-record resets once, and
-(if masses changed) re-run Stage-1 briefly or let the finetune adapt.
+Both are in the graft now ⇒ regenerate the USD on the A100, re-record the four reset
+datasets once (§Pipeline README Step C), then finetune.
 
 ---
 
-## 8. NEXT — Stage-2 finetune (ADR) + eval validation
+## 7b. Dataset QC & salvage tools (added 2026-07-06)
+
+Two CPU-only tools (torch+numpy+yaml, no Isaac — run them on the A100 next to the
+recorder) gate every reset dataset before it feeds a training run:
+
+### `qc_reset_states_ur10e.py` — the gate
 
 ```bash
-# (optional, paper-recommended) train 2 more Stage-1 seeds, then pick by noise robustness:
+python scripts_v2/tools/conversions/qc_reset_states_ur10e.py --dataset_dir ./Datasets_ur10e/OmniReset
+# per reset type, one line + FAIL details; end verdict [QC_RESULT] [PASS]/[FAIL]
+```
+
+What each column means and what is / is not a failure:
+
+| check | meaning | gate |
+|---|---|---|
+| `wrist beyond180` | states with any \|wrist\| > 180.1° — **impossible** to reach dynamically on the ±180 USD; they exist because the reset events WRITE IK joint positions directly and nothing re-checks limits. Loading one clamps the wrist mid-teleport (wrong EE pose). | FAIL if > 0 → filter them out |
+| `at180` | states with a wrist exactly AT ±180 (float32 π reads a hair above float64 π — not a violation). These are the old "long way" IK solutions saturating at the new boundary. The gripper is 180°-symmetric, so a wrist parked at ±180 is grip-equivalent; states load fine. On the re-recorded Grasped set this is ~99.8% of states — expected, benign. | reported only |
+| `topdown≤45/30°` | gripper +Z tilt from straight-down (FK on the recorded joints) | ≥85% @45° for Anywhere/Resting grasped types |
+| `fingertip<0` | fingertip point below the support surface (inherited EEAnywhere sampler artifact; for Resting grips it's the tip-point approximation near the tabletop) | reported only |
+| `grip q` (min/median/max of `finger_joint`) | **grip semantics are per-type**: AnywhereEEGrasped holds the pcb mid-air at the canonical width (~0.0487); RestingEEGrasped mostly grips the on-table pcb across its ~2 mm THICKNESS (→ ~0.067–0.068 — do NOT read that as closed-on-air); PartiallyAssembledEEGrasped mixes width and exposed-edge thickness grips. `0.0000` = the OPEN default = the grasp event never engaged. | Anywhere: median ≈ 0.0487; Near Goal: median ≥ 0.03 |
+| `jaw asym` | \|finger − right_finger\| (dual-drive symmetry) | p99 ≤ 1.5 mm (Anywhere type) |
+| `open-jaw states` (Near Goal only) | fraction with `finger_joint < 0.02` — see the salvage note below | FAIL if median grip < 0.03 |
+
+### `filter_reset_states.py` — the salvage (no re-recording)
+
+```bash
+# drop beyond-limit states (states recorded within ±180 load identically on the new USD)
+python scripts_v2/tools/conversions/filter_reset_states.py --in-place \
+  --input .../resets_ObjectAnywhereEEAnywhere.pt --drop-wrist-beyond
+# drop never-engaged open-jaw "grasped" states
+python scripts_v2/tools/conversions/filter_reset_states.py --in-place \
+  --input .../resets_ObjectPartiallyAssembledEEGrasped.pt --min-grip 0.03
+```
+
+`--in-place` keeps a `.bak` next to the file; without it a `.filtered.pt` is written.
+Re-run the QC afterwards — it must PASS before training.
+
+### What the 2026-07-06 re-record QC actually found (for the record)
+
+* **Reaching**: 12/10611 states beyond ±180 (worst 207°) — the direct-write corner case
+  above, filtered out.
+* **Grasped / Near Object**: clean; ~99.8% / ~20% at-limit (benign saturation).
+* **Near Goal**: **66% open-jaw** — `check_reset_state_success` has NO jaws-on-object
+  condition, so whenever the in-box grasp IK fails (much more often under the ±180 limits,
+  which removed the long-way wrist solutions those grasps used), the event leaves the
+  gripper open and the stable hover is accepted anyway. Those states are effectively
+  `ObjectPartiallyAssembledEE**Anywhere**` — a type deliberately NOT in the training mix.
+  Filtered 2500 → ~850 genuine grips and launched with that. This is also WHY Near Goal
+  records so slowly: real in-box grips are the hardest states to stabilize; hovers pad the
+  accept count. **Known gap / future fix**: add a jaws-on-object success condition to the
+  recorder so C4 recording time only buys real grips, then re-record a full-size set.
+
+---
+
+## 8. RUNNING — Stage-2 finetune (ADR) + eval validation
+
+The full A100 sequence (after `git pull fork omnireset/ur10e-linear-gripper` — needs
+**b861f06 or later**: the 2026-07-06 audit fixed a DelayedPD buffer sizing that would
+crash the finetune hours in when the ADR curriculum reaches delay 2, made the gripper-gain
+DR cover BOTH dual-drive jaws, and added the dataset QC tool):
+
+```bash
+OBJ="env.scene.insertive_object=pcb env.scene.receptive_object=openbox"
+
+# 8a. regenerate the USD (picks up gripper mass 0.575 + wrist +/-180). The graft's INPUTS
+#     (UR10e/ur10e.usd, LinearGripper/linear_gripper.usd) are unchanged -- do NOT re-run the
+#     Part-1 conversion steps unless this is a fresh checkout.
+python scripts_v2/tools/conversions/graft_gripper_on_ur10e.py
+#     expect BOTH: "gripper mass: 1.100 -> 0.575" and "wrist joint limits -> +/-180 deg"
+
+# 8b. re-record the four reset datasets (Pipeline README Step C, C1->C4 in order) --
+#     REQUIRED: 14-27% of the old states violate the new wrist limits.
+
+# 8b'. QC the fresh datasets (CPU-only, runs anywhere; expects wrist>180 == 0 everywhere):
+python scripts_v2/tools/conversions/qc_reset_states_ur10e.py \
+  --dataset_dir ./Datasets_ur10e/OmniReset
+#     expect: [QC_RESULT] [PASS]. On the OLD datasets this correctly fails with the
+#     13.6/26.6/23.6/15.6% wrist-violation counts.
+
+# 8c. (optional, paper-recommended) train 2 more Stage-1 seeds, then pick by noise robustness:
 ./uwlab.sh -p scripts_v2/tools/sim2real/eval_robustness.py --headless \
   --task OmniReset-UR10eLinearGripper-RelCartesianOSC-State-Play-v0 \
   --checkpoints <ckpt_seed1.pt> <ckpt_seed2.pt> <ckpt_seed3.pt> \
-  --action_noise 2.0 --eval_steps 1000 --num_envs 4096 \
-  env.scene.insertive_object=pcb env.scene.receptive_object=openbox
+  --action_noise 2.0 --eval_steps 1000 --num_envs 4096 $OBJ
 
-# finetune (A100, 1 GPU; peg-class task per the paper ≈ 8 h):
+# 8d. finetune (A100, 1 GPU; peg-class task per the paper ~= 8 h):
 ./uwlab.sh -p scripts/reinforcement_learning/rsl_rl/train.py \
   --task OmniReset-UR10eLinearGripper-RelCartesianOSC-State-Finetune-v0 \
-  --num_envs 4096 --headless --logger tensorboard \
-  --resume_path <stage1_checkpoint.pt> \
-  env.scene.insertive_object=pcb env.scene.receptive_object=openbox \
+  --num_envs 4096 --headless --logger tensorboard $OBJ \
+  --resume_path logs/rsl_rl/ur5e_robotiq_2f85_omnireset_agent/2026-07-02_21-39-37/model_1100.pt \
   env.events.reset_from_reset_states.params.dataset_dir=./Datasets_ur10e/OmniReset
+
+# 8e. play the finetuned policy (laptop, GUI; note the Finetune-Play task id):
+./uwlab.sh -p scripts/reinforcement_learning/rsl_rl/play.py \
+  --task OmniReset-UR10eLinearGripper-RelCartesianOSC-State-Finetune-Play-v0 \
+  --num_envs 4 $OBJ $TRIMS \
+  env.events.reset_from_reset_states.params.dataset_dir=./Datasets_ur10e/OmniReset \
+  --load_run <finetune run folder> --checkpoint model_<iter>.pt
 ```
 
+**Resume caveat:** the Stage-1 checkpoint was trained on the OLD model (1.1 kg gripper,
+±360° wrists) and old resets. The curriculum's job is exactly to adapt to shifted dynamics,
+but watch the tensorboard success curve in the first hour — it should recover to Stage-1
+levels before the friction ramp starts. If it stays low, the fallback is a fresh Stage-1 run
+on the new USD/datasets (Pipeline README Step D) and finetuning from that instead.
+(Observed 2026-07-06: recovery to >92% on all four tasks within 4 iterations.)
+
+### 8.1 What `scale_progress` is — and when the finetune is DONE
+
+Stage 1 trained on an *idealized* robot: zero joint friction, zero armature, zero motor
+delay, soft OSC gains, large action steps. The real UR10e is none of those things. The
+finetune's single job is to walk the policy from that ideal robot to the measured one
+**without ever breaking it** — and `scale_progress` (call it `p`) is the position on that
+walk, from 0 (ideal) to 1 (the identified robot).
+
+**One knob, four channels.** Two curriculum terms share the same controller and climb
+together (tensorboard: `Curriculum/adr_sysid/scale_progress`,
+`Curriculum/action_scale/scale_progress`, each with its `mean_success_rate`):
+
+| channel | at p = 0 | at p = 1 (per env, re-drawn every reset) |
+|---|---|---|
+| joint friction + armature | 0 (ideal) | the §6 sysid values × U(0.8, 1.2) per joint |
+| motor delay | 0 | drawn from {0, 1, 2} physics steps @ 120 Hz (ceiling = round(p·2)) |
+| OSC gains | train Kp 200/3 | eval Kp 1000/50 × U(0.8, 1.2), damping_ratio → 1 |
+| action scale | (0.02…, 0.2) | (0.01, 0.01, **0.002**, 0.02, 0.02, 0.2) — z cut 10× so contact = pressing gently |
+
+Intuition for the coupling: a sticky, delayed robot needs FIRM control (soft gains stall in
+the friction dead zones), and firm control needs SMALL commanded steps (or contact turns
+into ramming). So dynamics hardness, controller stiffness, and step size must rise
+*together* — that is why one scalar drives all of it.
+
+**The controller is bang-bang on success rate**, updated every 200 env steps (≈ every
+handful of training iterations, independent of num_envs):
+
+* mean success > 0.95 → `p += 0.01`
+* mean success < 0.90 → `p -= 0.01`
+* in between → hold
+* warmup latch: `p` stays 0 until success first reaches 0.95 (the resume recovery), then
+  the latch never re-engages.
+
+Like adding weight to the bar only after a clean lift. Consequences worth knowing:
+
+* **Success hovering in the 0.90–0.95 band during the ramp is the mechanism working**, not
+  a regression — the controller deliberately surfs that band. Only `p` ratcheting
+  down repeatedly / success pinned below 0.90 means the run hit a wall.
+* Timeline: 100 increments × ~200 gated env steps ⇒ **≥ ~800 training iterations if
+  success never dips; realistically several hours**. Expect dips and partial retreats.
+* Milestone at **p ≈ 0.75**: the delay ceiling first reaches 2 — the exact point the
+  pre-audit code crashed (`ValueError: max time lag > history length`, fixed 74910d0).
+  Sailing past it confirms the fix in vivo.
+
+**"Done" = `p` pinned at 1.0 with success holding ~0.95.** At that point every episode
+runs at the full measured dynamics, stiff eval gains, and eval action scale — i.e. the
+exact distribution the `Finetune-Play` eval task freezes (`randomize_*_fixed` at p = 1,
+delay pinned to the measured 0). Practical checkpoint rule: let it *sit* at p = 1 for a
+few hundred more iterations so most recent gradient steps come from the terminal
+distribution, then take the latest checkpoint. If `p` plateaus below 1.0 oscillating,
+note WHERE — the value tells you which dynamics level breaks the policy — and consider
+longer training before reaching for config changes.
+
 The finetune curriculum ramps dynamics toward the §6 sysid values, raises OSC gains, and
-shrinks the action scale (paper A.3.6/A.3.9). **Before trusting the Finetune-Play task:
-validate its stiff eval OSC gains (rot Kp 50) IN CONTACT** — jaws closed on the pcb, watch
-wrist joint velocity. This is the P6 lesson: free-space probes pass while contact
-limit-cycles (see the comment block in `config/ur5e_robotiq_2f85/actions.py`).
+shrinks the action scale (paper A.3.6/A.3.9). **The Finetune-Play stiff eval gains (rot
+Kp 50) were validated IN CONTACT on 2026-07-06** (P6-pattern probe, jaws closed on the pcb,
+10 reset draws with the full fixed-sysid randomization: rot Kp drawn 40–57, delay pinned 0):
+worst wrist |dq| 0.0017 rad/s, worst held-pcb angular velocity 0.35 rad/s — the P6 failure
+signature was ~3.1/3.5 rad/s. The identified joint friction is what damps the massless PD
+here; P6's instability was on the frictionless Stage-1 setup. Note this validates the
+curriculum ENDPOINT — intermediate (partial-gain, partial-friction) points are guarded by
+the ADR back-off, and the endpoint is what deploys. Probe:
+`scripts_v2/tools/conversions/probe_eval_gains_in_contact.py` (untracked, re-creatable).
 
 Real-robot teleop sanity check of the OSC (after adapting for the custom gripper):
 `diffusion_policy demo_real_robot.py -o <dir> --robot_ip 192.168.0.100`
@@ -229,32 +413,72 @@ Real-robot teleop sanity check of the OSC (after adapting for the custom gripper
 
 ---
 
-## 9. NEXT — real deployment path (the big remaining items)
+## 9. NEXT — real deployment path (PLANNED 2026-07-06, start here tomorrow)
 
 The state-based expert **cannot run on the real robot** (it observes object poses). The
-OmniReset deployment path is student-teacher distillation to RGB, zero-shot:
+OmniReset deployment path is student-teacher distillation to RGB, zero-shot.
 
-1. **Custom gripper real-world driver.** The stack drives a 2F-85 via its URCap
-   (`real_env.py` / `rtde_interpolation_controller.py`); our linear gripper needs its own
-   open/close interface wired in. Engineering item, no upstream reference.
-2. **Wrist camera mount.** The repo's `2f85_d415_mount.stl` is 2F-85-specific — design one
-   for the linear gripper (paper: wrist D415 + front D435 + side D455, all USB 3.2;
-   40 ms end-to-end latency budget, 60 ms degrades badly).
-3. **Camera calibration** (per-camera): diffusion_policy `0_camera_calibrate.py`,
-   `1_camera_get_rgb.py`, `2_get_isaacsim_extrinsics.py` (ArUco 6x6_50 ID 12, 150 mm,
-   marker offset to base default [0.24, 0, 0]) → UWLab
-   `scripts_v2/tools/sim2real/align_cameras.py --camera front_camera --real_image ...
-   --joint_angles ...` (press `p` for pos/rot/focal) → paste into
-   `config/ur5e_robotiq_2f85/data_collection_rgb_cfg.py` (a UR10e variant of that cfg
-   still needs to be created, same subclass-and-swap pattern).
-4. **RGB data collection + distillation** (A100/H200): 80k expert trajectories under the
-   Table-2 randomizations (~24 GPU-h to collect), ResNet-18 + MLP student, 5-frame stack,
-   KL-matching + pose-reconstruction aux loss, end-to-end encoder, ~350k iters (~2 days).
-   Expect RGB sim success ≈ 50–60% of the expert's — real transfer is better than that
-   number suggests (paper Table 1: peg 85% real).
-5. **Real eval practicalities** (paper A.4): fix the receptive object (openbox) to the
-   table with command strips — sim treats it as static; compliant silicone mat; consistent
-   stage lighting; stuck-detection auto-recovery (no joint motion >2 s → open gripper 1 s).
+**Decisions made (2026-07-06):**
+- **Deployment machine: the RTX 4090 PC** — cameras (3× D405 on USB3), gripper serial,
+  ResNet inference, AND the 500 Hz RTDE loop all on that one box. This is the clean path
+  to the <40 ms end-to-end budget (a LAN hop between camera PC and control PC would eat
+  5–15 ms + jitter). To install there: `diffusion_policy` fork (ur10e-linear-gripper
+  branch, `robodiff_real` env) + robot subnet access (192.168.0.x).
+- **Cameras: 3× RealSense D405.** Wrist = ideal (D405 sweet spot is 7–50 cm). Front/side
+  at ~0.8–1.1 m are OUTSIDE the design range — RGB-only is what we use, so acceptable, but
+  eyeball sharpness during calibration before committing.
+- **RGB sim scene strategy: do NOT model our room.** The authors' RGB cfg is an abstract
+  STAGE — three flat "curtain" planes (left/back/right) around the table — with per-episode
+  texture/color randomization of every visible surface (curtains, table, objects, fingers,
+  wrist mount) + camera pose/focal jitter. We keep that stage in sim and make the REAL
+  workspace roughly match its geometry (backdrop panels around the table); randomization
+  covers appearance. The real lab becomes "just another sample".
+
+**Work items, in order** (A can start immediately; the finetune does not block A–E):
+
+1. **A — Linear-gripper driver** (small). Source: `RC10_control/rc10_api/gripper.py`
+   (serial `Open\n`/`Close\n`, sign convention `state<=0 -> close` — identical to
+   `real_env.py`'s `action[6]<0 -> close`; drop-in match). Plan: new
+   `diffusion_policy/real_world/linear_gripper.py` hardened for the 500 Hz process
+   (transition-only writes, serial-exception safety so a USB hiccup can't kill the torque
+   loop, commanded-Open on activation since there is no encoder, `--gripper_device` arg);
+   `rtde_interpolation_controller.py` gets a `gripper` selector (`robotiq`|`linear`|`none`)
+   replacing `RobotiqGripper.activate()/move()` on the linear path; plumb through
+   `real_env.py` + teleop/eval scripts. NO gripper feedback needed: the stack observes
+   `last_gripper_action` (commanded), never encoder values — true for the 2F-85 too.
+   Validation: measure real open↔close travel time vs sim (~0.1–0.2 s); if much slower,
+   tune the sim jaw velocity limit to match before the NEXT training round.
+2. **B — Wrist camera mount** (hardware). D405 on the linear gripper. Requirements: rigid;
+   fingers + grip zone in view at 7–30 cm; cable strain relief for wrist rotation; rough
+   viewpoint like the sim wrist cam (mounted on `robotiq_base_link`, offset ~(0.018,
+   −0.004, −0.069), looking at the grip zone) — exact placement NOT critical (calibration +
+   pose randomization absorb it). Sim side afterwards: add a simple proxy box for the mount
+   to the graft (front/side cameras see it; its texture gets randomized like the authors').
+3. **C — Camera rig + calibration** (front/side can start before the mount exists). Mount
+   rigidly ~where the sim cfg puts them (front ~1.1 m out, side ~0.8 m lateral). Per
+   camera: ArUco coarse extrinsic (6x6_50 ID 12, 150 mm; `0/1/2_camera_*.py`) →
+   `align_cameras.py` interactive overlay refine (press `p` → pos/rot/focal). Precision
+   target is only ~cm/degree: the per-episode camera randomization (±2–3 cm pose, focal
+   ranges) absorbs the residual. Deliverable: three (pos, rot, focal) tuples.
+4. **D — UR10e RGB data-collection cfg**. `ur10e` variant of `data_collection_rgb_cfg.py`,
+   same subclass-and-swap as the state cfgs (robot → EXPLICIT UR10e, action → UR10e eval
+   OSC; it inherits `FinetuneEvalEventCfg`, so the fixed-sysid + delay-0 pins carry over).
+   Set camera baselines from C, recenter the randomization ranges on our values, re-parent
+   the wrist camera to our mount transform, sanity-check curtain/table geometry against
+   the physical stage, register the gym id. Buildable with placeholder poses before C
+   finishes.
+5. **E — Physical stage prep** (paper A.4): backdrop panels ~where the sim curtains sit;
+   **command-strip the openbox to the table** (sim treats it as static); compliant mat;
+   consistent lighting; verify real table/mount geometry vs the sim scene (work surface
+   ~level with z=0, robot base on its plate ~1.3 cm above).
+6. **F — Distillation** (A100, AFTER the finetune converges): optionally 1–2 more finetune
+   seeds + `eval_robustness.py` selection (noise robustness predicts real transfer); then
+   80k expert episodes under the RGB randomization (~24 GPU-h), ResNet-18 + MLP student,
+   5-frame stack @ 10 Hz, KL-matching + pose-reconstruction aux loss, ~350k iters
+   (~2 days). Expect student sim success ≈ 50–60% of the expert — normal; real transfer is
+   better than that number suggests (paper: peg 85% real).
+7. **G — Real eval extras** (paper A.4): stuck-detection auto-recovery (no joint motion
+   >2 s → open gripper 1 s, not counted as failure).
 
 ---
 
@@ -267,6 +491,6 @@ OmniReset deployment path is student-teacher distillation to RGB, zero-shot:
 | UR10e real-side kinematics | `diffusion_policy/real_world/ur10e_kinematics.py` on `syedjameel/diffusion_policy` branch `ur10e-linear-gripper` |
 | Controller file dump | `~/urcontrol_from_ur10e/` (laptop) |
 | Extracted (nominal) calibration | `~/ur10e_calibration.yaml` |
-| Sysid target metadata | `source/uwlab_assets/.../local/Robots/Ur10eLinearGripper/metadata.yaml` (`sysid:` block = UR5e PLACEHOLDER until §6) |
+| Sysid target metadata | `source/uwlab_assets/.../local/Robots/Ur10eLinearGripper/metadata.yaml` (`sysid:` block = REAL UR10e values since 5cb15a7) |
 | Sim pipeline manual | `UR10E_PIPELINE_README.md` |
 | Paper / official doc | `2603.15789v3.pdf` / uw-lab.github.io → publications → omnireset → sim2real |

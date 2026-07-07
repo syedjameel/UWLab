@@ -75,6 +75,17 @@ def _apply_linear_gripper(cfg, robot, action) -> None:
     ev = getattr(cfg.events, "reset_end_effector_pose_from_grasp_dataset", None)
     if ev is not None:
         ev.params["gripper_cfg"] = SceneEntityCfg("robot", joint_names=_LINEAR_GRIPPER_JOINTS)
+    # The 2F-85 gripper-gain DR targets its single actuated joint ("finger_joint"); our
+    # dual-drive gripper has TWO driven jaws, and joint names resolve by fullmatch, so
+    # right_finger_joint was silently left at the nominal 1500/80 (only the left jaw
+    # randomized -> permanently asymmetric jaws, and the both-jaws-soft/stiff regime --
+    # which is what a real single-motor gripper actually varies like -- never sampled).
+    # Point the event at both jaws. Draws are per-joint independent (isaaclab
+    # randomize_actuator_gains); the real linkage keeps the jaws matched, so this is a
+    # superset of reality, like the rest of the DR.
+    gg = getattr(cfg.events, "randomize_gripper_actuator_parameters", None)
+    if gg is not None:
+        gg.params["asset_cfg"] = SceneEntityCfg("robot", joint_names=_LINEAR_GRIPPER_JOINTS)
     # EEAnywhere reset variants sample robotiq_base_link orientation from pose_range_b. The 2F-85's
     # ranges point ITS approach axis (+X) down; OUR approach axis is +Z (fingers reach +Z), so the
     # SAME pitch (pi/4, 3pi/4) never points our gripper top-down (all 34-60 deg slanted, 0% down).
