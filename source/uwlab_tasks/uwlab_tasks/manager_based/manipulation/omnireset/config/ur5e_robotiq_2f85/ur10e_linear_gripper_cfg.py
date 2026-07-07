@@ -65,6 +65,9 @@ from .rl_state_cfg import (
     Ur5eRobotiq2f85RelCartesianOSCFinetuneCfg,
     Ur5eRobotiq2f85RelCartesianOSCFinetuneEvalCfg,
     Ur5eRobotiq2f85RelCartesianOSCTrainCfg,
+    _paper_stage_box_center,
+    _paper_stage_cover_close,
+    _paper_stage_object_in_box,
 )
 from .sysid_cfg import SysidEnvCfg
 
@@ -283,4 +286,77 @@ class Ur10eLinearGripperCoverCloseRimPaperTrainCfg(Ur5eRobotiq2f85CoverCloseRimP
         _apply_linear_gripper(
             self, ur10e_linear_gripper.IMPLICIT_UR10E_LINEAR_GRIPPER, Ur10eLinearGripperRelativeOSCAction()
         )
+        _repoint_ur10e_resets(self)
+
+
+# ---------------------------------------------------------------------------------------
+# Box-assembly PAPER stages -- Stage 2 finetune + finetune-eval (UR10e + linear gripper).
+# Unlike the Stage-1 Train cfgs above (which subclass the 2F-85 Paper train cfg, so super()
+# already applies the pair), these subclass the GENERIC UR10e finetune cfgs to inherit the
+# explicit actuator + ADR curriculum + sysid/OSC-gain DR (Finetune) or the fixed-DR stiff
+# eval action (FinetuneEval). super() therefore does NOT apply the box-assembly pair, so we
+# call the extracted _paper_stage_* helper after it (same order as the Train cfgs: robot swap
+# first, then pair/success/scene), then repoint the reset loader at the UR10e datasets.
+# The helpers only touch the pair, the reset event, the object-material DR and the
+# progress_context reward -- all present in both FinetuneEventCfg and FinetuneEvalEventCfg --
+# and augment_box_assembly(scene_only=True) only declares scene entities, so no extra guards
+# are needed beyond the getattr guards the helpers already carry.
+# ---------------------------------------------------------------------------------------
+@configclass
+class Ur10eLinearGripperBoxCenterPaperFinetuneCfg(Ur10eLinearGripperRelCartesianOSCFinetuneCfg):
+    """Stage A finetune (UR10e + linear gripper): box -> table-center target."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        _paper_stage_box_center(self)
+        _repoint_ur10e_resets(self)
+
+
+@configclass
+class Ur10eLinearGripperObjectInBoxPaperFinetuneCfg(Ur10eLinearGripperRelCartesianOSCFinetuneCfg):
+    """Stage B finetune (UR10e + linear gripper): object -> box cavity."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        _paper_stage_object_in_box(self)
+        _repoint_ur10e_resets(self)
+
+
+@configclass
+class Ur10eLinearGripperCoverCloseRimPaperFinetuneCfg(Ur10eLinearGripperRelCartesianOSCFinetuneCfg):
+    """Stage C finetune (UR10e + linear gripper): edge-rim (caprim) cover -> box with object inside."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        _paper_stage_cover_close(self)
+        _repoint_ur10e_resets(self)
+
+
+@configclass
+class Ur10eLinearGripperBoxCenterPaperFinetuneEvalCfg(Ur10eLinearGripperRelCartesianOSCFinetuneEvalCfg):
+    """Eval after Stage A finetune (UR10e + linear gripper): box -> table-center target."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        _paper_stage_box_center(self)
+        _repoint_ur10e_resets(self)
+
+
+@configclass
+class Ur10eLinearGripperObjectInBoxPaperFinetuneEvalCfg(Ur10eLinearGripperRelCartesianOSCFinetuneEvalCfg):
+    """Eval after Stage B finetune (UR10e + linear gripper): object -> box cavity."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        _paper_stage_object_in_box(self)
+        _repoint_ur10e_resets(self)
+
+
+@configclass
+class Ur10eLinearGripperCoverCloseRimPaperFinetuneEvalCfg(Ur10eLinearGripperRelCartesianOSCFinetuneEvalCfg):
+    """Eval after Stage C finetune (UR10e + linear gripper): edge-rim (caprim) cover -> box with object inside."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        _paper_stage_cover_close(self)
         _repoint_ur10e_resets(self)

@@ -816,6 +816,44 @@ def _apply_paper_faithful_pair(cfg, insertive_usd: str, receptive_usd: str):
             _ev.params["dynamic_friction_range"] = (0.9, 1.9)
 
 
+# Stage-specific bodies, extracted so the UR10e Finetune/FinetuneEval variants (which subclass the
+# generic UR10e finetune cfgs, not the Paper train cfgs) can apply the same pair/success/scene setup
+# after their own robot+action swap. Each helper is the body of the matching Paper train cfg below --
+# everything AFTER super().__post_init__(). Pure extraction: no behavior change.
+def _paper_stage_box_center(cfg):
+    """Stage A body: box -> table-center pair + the canonical-handoff YAW gate (see the cfg docstring)."""
+    _apply_paper_faithful_pair(
+        cfg,
+        f"{UWLAB_ASSETS_DATA_DIR}/Props/BoxAssembly/Bottom/bottom.usd",
+        f"{UWLAB_ASSETS_DATA_DIR}/Props/BoxAssembly/TableCenterTarget/target.usd",
+    )
+    cfg.rewards.progress_context.params["check_yaw"] = True
+    cfg.rewards.progress_context.params["yaw_tol"] = math.radians(3.0)
+
+
+def _paper_stage_object_in_box(cfg):
+    """Stage B body: object -> box cavity pair (single-pair, generic ProgressContext)."""
+    _apply_paper_faithful_pair(
+        cfg,
+        f"{UWLAB_ASSETS_DATA_DIR}/Props/BoxAssembly/Mid/mid.usd",
+        f"{UWLAB_ASSETS_DATA_DIR}/Props/BoxAssembly/Bottom/bottom.usd",
+    )
+
+
+def _paper_stage_cover_close(cfg):
+    """Stage C body: caprim cover -> box pair + context entities (object inside, target) via augment."""
+    _apply_paper_faithful_pair(
+        cfg,
+        f"{UWLAB_ASSETS_DATA_DIR}/Props/BoxAssembly/CapRim/caprim.usd",
+        f"{UWLAB_ASSETS_DATA_DIR}/Props/BoxAssembly/Bottom/bottom.usd",
+    )
+    from uwlab_tasks.manager_based.manipulation.omnireset.config.ur5e_robotiq_2f85.box_assembly_aug import (
+        augment_box_assembly,
+    )
+
+    augment_box_assembly(cfg, scene_only=True)
+
+
 @configclass
 class Ur5eRobotiq2f85BoxCenterPaperTrainCfg(Ur5eRobotiq2f85RelCartesianOSCTrainCfg):
     """Paper-faithful Stage A: box -> table-center target (generic ProgressContext, 2-object scene).
@@ -829,13 +867,7 @@ class Ur5eRobotiq2f85BoxCenterPaperTrainCfg(Ur5eRobotiq2f85RelCartesianOSCTrainC
 
     def __post_init__(self):
         super().__post_init__()
-        _apply_paper_faithful_pair(
-            self,
-            f"{UWLAB_ASSETS_DATA_DIR}/Props/BoxAssembly/Bottom/bottom.usd",
-            f"{UWLAB_ASSETS_DATA_DIR}/Props/BoxAssembly/TableCenterTarget/target.usd",
-        )
-        self.rewards.progress_context.params["check_yaw"] = True
-        self.rewards.progress_context.params["yaw_tol"] = math.radians(3.0)
+        _paper_stage_box_center(self)
 
 
 @configclass
@@ -844,11 +876,7 @@ class Ur5eRobotiq2f85ObjectInBoxPaperTrainCfg(Ur5eRobotiq2f85RelCartesianOSCTrai
 
     def __post_init__(self):
         super().__post_init__()
-        _apply_paper_faithful_pair(
-            self,
-            f"{UWLAB_ASSETS_DATA_DIR}/Props/BoxAssembly/Mid/mid.usd",
-            f"{UWLAB_ASSETS_DATA_DIR}/Props/BoxAssembly/Bottom/bottom.usd",
-        )
+        _paper_stage_object_in_box(self)
 
 
 @configclass
@@ -864,13 +892,4 @@ class Ur5eRobotiq2f85CoverCloseRimPaperTrainCfg(Ur5eRobotiq2f85RelCartesianOSCTr
 
     def __post_init__(self):
         super().__post_init__()
-        _apply_paper_faithful_pair(
-            self,
-            f"{UWLAB_ASSETS_DATA_DIR}/Props/BoxAssembly/CapRim/caprim.usd",
-            f"{UWLAB_ASSETS_DATA_DIR}/Props/BoxAssembly/Bottom/bottom.usd",
-        )
-        from uwlab_tasks.manager_based.manipulation.omnireset.config.ur5e_robotiq_2f85.box_assembly_aug import (
-            augment_box_assembly,
-        )
-
-        augment_box_assembly(self, scene_only=True)
+        _paper_stage_cover_close(self)
