@@ -520,109 +520,147 @@ above. Student training is **`dataset_dir`-only** (`config/task/sim2real_image.y
 
 ## 10. RGB distillation & deployment — step-by-step (command-by-command)
 
-The executable version of §9, from a converged finetuned state expert to a deployed RGB
-student. **Sim configs (UWLab) and the real stack (diffusion_policy) are already built** — see
-§9 item D and the "diffusion_policy real-side" block above. What remains is per-step below.
-`$OBJ = env.scene.insertive_object=pcb env.scene.receptive_object=openbox` throughout.
+Follows the official OmniReset **sim2real** (camera calibration) and **distillation**
+(export → collect → train → eval → deploy) docs, adapted for **UR10e + linear gripper +
+3× D405**. Both the sim configs (UWLab, §9 item D) and the real stack (diffusion_policy, §9
+"diffusion_policy real-side") are already built. `$OBJ = env.scene.insertive_object=pcb
+env.scene.receptive_object=openbox` throughout.
 
-### Prereqs (once)
+**Three conda envs (per the docs):**
+- **SIM** — `env_uwlab` on the A100/4090 (`leisaac` on the laptop). Runs the UWLab sim
+  scripts: export, `collect_demos`, `align_cameras`, `eval_distilled_policy`.
+- **ROBODIFF** — the training env (diffusion_policy `conda_environment.yaml`).
+- **ROBODIFF_REAL** — the real-robot env (diffusion_policy `conda_environment_real.yaml`).
+  Runs the calibration capture (`0/1/2_camera_*.py`) and `eval_real_robot`.
+
+### 10.0 — One-time setup (distillation doc Step 1)
 ```bash
-# A100/4090: pull both forks
-cd ~/work/repos/UWLab            && git pull fork omnireset/ur10e-linear-gripper   # >= 48b9f2d
-cd ~/work/repos/diffusion_policy && git pull fork ur10e-linear-gripper             # >= 42a6e15
-# The finetune (§8) must be converged: p pinned at 1.0, success ~0.95, checkpoint chosen.
+# both repos as siblings; pull the forks
+cd ~/work/repos/UWLab            && git pull fork omnireset/ur10e-linear-gripper
+cd ~/work/repos/diffusion_policy && git pull fork ur10e-linear-gripper
+# install diffusion_policy into the SIM env (collect_demos zarr writing + shared utils)
+cd ~/work/repos/diffusion_policy && conda activate env_uwlab && python -m pip install -e . \
+  && python -m pip install dill hydra-core omegaconf zarr einops "diffusers<0.37" wandb accelerate
+# create the training + real-robot envs (once)
+mamba env create -f conda_environment.yaml        # -> robodiff (training)
+mamba env create -f conda_environment_real.yaml   # -> robodiff_real (deploy + calib capture)
 ```
+Prereq: the §8 finetune is converged (p pinned 1.0, success ~0.95, a checkpoint chosen).
 
-### 10.1 — Export the finetuned state expert to TorchScript
-`play.py` writes `<run>/exported/policy.pt` (+ `.onnx`) automatically (rsl_rl exporter):
+### 10.1 — Export the finetuned expert to TorchScript (distillation doc Step 2)
+**Why this step:** `collect_demos` replays a **JIT-traced TorchScript** expert (loaded via
+`experts_path`). The raw rsl_rl checkpoint (`model_<iter>.pt`) is not TorchScript; `play.py`
+traces + exports it to `<checkpoint_dir>/exported/policy.pt`.
 ```bash
-cd ~/work/repos/UWLab
+conda activate env_uwlab && cd ~/work/repos/UWLab
 ./uwlab.sh -p scripts/reinforcement_learning/rsl_rl/play.py \
   --task OmniReset-UR10eLinearGripper-RelCartesianOSC-State-Finetune-Play-v0 \
-  --num_envs 4 $OBJ \
-  env.events.reset_from_reset_states.params.dataset_dir=./Datasets_ur10e/OmniReset \
-  --load_run <finetune_run_folder> --checkpoint model_<iter>.pt
-# -> logs/rsl_rl/<exp>/<finetune_run_folder>/exported/policy.pt   (path used in 10.4)
+  --num_envs 4 --checkpoint <path/to/finetune/model_<iter>.pt> --headless $OBJ \
+  env.events.reset_from_reset_states.params.dataset_dir=./Datasets_ur10e/OmniReset
+# -> <checkpoint_dir>/exported/policy.pt   (+ policy.onnx)  -- path reused in 10.4
 ```
 
-### 10.2 — Physical rig (hardware; parallel with training)
+### 10.2 — Physical rig (hardware)
 Mount the 3× D405 (front `409122273078`, side `323622272232`, wrist `409122272284`); build the
-backdrop curtains ~where the sim curtains sit (front ≈1.1 m out, side ≈0.8 m lateral);
-command-strip the openbox to the table; drive the UR10e to the home pose
-`67.94 -93.33 146.23 -142.91 -90.04 -22.95` deg. Confirm the D405s enumerate:
-`rs-enumerate-devices | grep -A1 D405`.
+backdrop curtains (front ≈1.1 m out, side ≈0.8 m lateral); command-strip the openbox to the
+table; drive the arm to home `67.94 -93.33 146.23 -142.91 -90.04 -22.95` deg. Print + place the
+**ArUco marker** (dictionary `6x6_50`, ID `12`, size `150 mm` — the `marker_6x6_150mm_id12.pdf`
+linked from the sim2real doc) flat on the table near the base; marker-center → robot base
+offset `[0.24, 0.0, 0.0]` m. Confirm: `rs-enumerate-devices | grep -A1 D405`.
 
-### 10.3 — Camera calibration (per camera) → paste poses into the sim cfg
-For each of `front_camera` / `side_camera` / `wrist_camera`:
+### 10.3 — Camera calibration (sim2real doc) — ONE camera at a time (unplug the others)
+For each of `front` / `side` / `wrist`:
+
+**(a) capture + coarse extrinsics** — diffusion_policy, ROBODIFF_REAL:
 ```bash
-# (a) grab one real 640x480 RGB from that D405 (use your lerobot RealSense interface or
-#     pyrealsense) at the home pose -> real_<cam>.png
-# (b) interactively align the SIM camera onto the real image; press 'p' to print pos/rot/focal:
-cd ~/work/repos/UWLab
-./uwlab.sh -p scripts_v2/tools/sim2real/align_cameras.py --enable_cameras --robot ur10e \
-  --camera front_camera --real_image /path/to/real_front.png \
-  --joint_angles 67.94 -93.33 146.23 -142.91 -90.04 -22.95
+conda activate robodiff_real && cd ~/work/repos/diffusion_policy
+python scripts/sim2real/0_camera_calibrate.py        # ArUco -> intrinsics + extrinsics
+python scripts/sim2real/1_camera_get_rgb.py          # -> real_<cam>.png reference image
+python scripts/sim2real/2_get_isaacsim_extrinsics.py # prints initial pos, rot(wxyz), focal
 ```
-Then paste the three printed `(pos, rot, focal)` into **`_UR10E_CAMERA_POSES`** in
-`config/ur5e_robotiq_2f85/ur10e_linear_gripper_rgb_cfg.py` (one dict; feeds BOTH the
-CameraAlign and the DataCollection/Play envs). No rebuild — cfgs read it at construction.
-(D405 note: `align_cameras`/collection render 224² from the sim; the real 640×480 is
-**resized** (not cropped) to 224² in `real_env`, matching the sim's 320×240→224² — so no crop
-boxes; `pick_crop_boxes.py` is a lerobot-ACT tool, unused here.)
+Record the arm's joint angles (deg) at the capture pose (pendant). **Wrist:** put the arm in
+freedrive and position it so the wrist camera sees the marker.
 
-### 10.4 — Collect the 80k RGB demos (A100/4090; needs `--enable_cameras`)
+**(b) interactive alignment** — UWLab, SIM, `--robot ur10e`:
 ```bash
-cd ~/work/repos/UWLab
+conda activate env_uwlab && cd ~/work/repos/UWLab
+./uwlab.sh -p scripts_v2/tools/sim2real/align_cameras.py --enable_cameras --headless \
+  --robot ur10e --camera front_camera --real_image /path/to/real_front.png \
+  --joint_angles <j1> <j2> <j3> <j4> <j5> <j6>
+# nudge the sim camera onto the real image; press 'p' to print calibrated pos, rot, focal
+```
+
+**After all three cameras:** paste the three `(pos, rot, focal)` into **`_UR10E_CAMERA_POSES`**
+in `config/ur5e_robotiq_2f85/ur10e_linear_gripper_rgb_cfg.py`. The 2F-85 doc has you edit the
+`TiledCameraCfg` entries **and** the `randomize_*_camera` `base_position`/`base_rotation` by
+hand — our hook applies **both** (scene cameras + the DR event bases + recentered focal jitter)
+from that one dict, for the CameraAlign, DataCollection, and Play envs at once. No rebuild.
+
+⚠ **D405 calibration-script caveat (the one remaining code TODO):** the diffusion_policy capture
+scripts and `scripts/sim2real/perception/realsense.py` bake `_fovy = 65` (D415) and D4xx
+advanced-mode presets. For D405 the intrinsics/FOV from `0/1/2` need `_fovy → ~87` and an RGB-mode
+check first. **Simplest path that sidesteps it:** grab `real_<cam>.png` via your working lerobot
+D405 interface and skip `0/1/2` — `align_cameras` (step b) is what actually sets the sim
+pose/focal that collection uses. (See §9 diffusion_policy block 2C.)
+
+### 10.4 — Collect the 80k RGB demos (distillation doc Step 3) — SIM, needs `--enable_cameras`
+```bash
+conda activate env_uwlab && cd ~/work/repos/UWLab
 ./uwlab.sh -p scripts_v2/tools/collect_demos.py \
   --task OmniReset-UR10eLinearGripper-RelCartesianOSC-RGB-DataCollection-v0 \
-  --dataset_file ./datasets/ur10e_pcb/rgb0.zarr --num_envs 32 --num_demos 80000 \
+  --dataset_file datasets/ur10e_pcb/rgb0.zarr --num_envs 32 --num_demos 80000 \
   --enable_cameras --headless $OBJ \
-  agent.algorithm.offline_algorithm_cfg.behavior_cloning_cfg.experts_path=[logs/rsl_rl/<exp>/<run>/exported/policy.pt]
-# only SUCCESSFUL episodes are saved; ~24 GPU-h for 80k. Zarr files MERGE across runs, so you
-# can split: rerun with rgb1.zarr, rgb2.zarr, ... into the same dataset dir.
+  agent.algorithm.offline_algorithm_cfg.behavior_cloning_cfg.experts_path='["<ckpt_dir>/exported/policy.pt"]'
+# only SUCCESSFUL episodes are saved; ~24 GPU-h for 80k (10k ~2 h for a sim-only smoke test).
+# Zarr files MERGE across runs -- split collection by rerunning into rgb1.zarr, rgb2.zarr, ...
+# in the same datasets/ur10e_pcb/ dir.
 ```
 
-### 10.5 — Train the RGB student (diffusion_policy repo, robodiff env)
+### 10.5 — Train the RGB student (distillation doc Step 4) — ROBODIFF
 ```bash
-cd ~/work/repos/diffusion_policy && conda activate robodiff
-python train.py --config-name train_mlp_sim2real_image_with_aux_loss_kl_workspace.yaml \
+conda activate robodiff && cd ~/work/repos/diffusion_policy
+python train.py --config-name train_mlp_sim2real_image_with_aux_loss_workspace.yaml \
   --config-dir diffusion_policy/config \
-  task.dataset.dataset_dir=~/work/repos/UWLab/datasets/ur10e_pcb
-# dataset_dir is the ONLY change for UR10e (config is shape_meta-driven: front/side/wrist_rgb
-# @224x224, 6-D EE/joint/last-action, 7-D action; the _kl_ variant KL-distills against the
-# saved expert_action_mean/std). ~350k iters (~2 days on an H200); reasonable by ~1 day.
-# -> a diffusion-policy checkpoint <...>.ckpt
+  task.dataset.dataset_dir=<abs path to ~/work/repos/UWLab/datasets/ur10e_pcb>
+# dataset_dir = the folder holding rgb0.zarr / rgb1.zarr / ... -- the ONLY UR10e change
+# (config is shape_meta-driven: front/side/wrist_rgb @224x224, 6-D EE/joint/last-action,
+# 7-D action). ~350k iters (~2 days on an H200); reasonable by ~1 day. -> a .ckpt.
+# KL-distill variant (matches the paper's KL-matching, uses the saved expert_action_mean/std):
+#   --config-name train_mlp_sim2real_image_with_aux_loss_kl_workspace.yaml
 ```
 
-### 10.6 — Evaluate the student in sim
+### 10.6 — Evaluate the student in sim (distillation doc Step 5) — SIM
 ```bash
-cd ~/work/repos/UWLab
+conda activate env_uwlab && cd ~/work/repos/UWLab
 ./uwlab.sh -p scripts_v2/tools/eval_distilled_policy.py \
   --task OmniReset-UR10eLinearGripper-RelCartesianOSC-RGB-Play-v0 \
-  --checkpoint <student>.ckpt --num_trajectories 100 --enable_cameras $OBJ
-# expect student sim success ~50-60% of the expert (paper); real transfer is better.
+  --checkpoint <student>.ckpt --num_envs 32 --num_trajectories 100 \
+  --headless --enable_cameras --save_video $OBJ
+# expect student sim success ~50-60% of the expert (paper); real transfer is better than that.
+# (No UR10e -RGB-OOD-Play-v0 yet -- the OOD variant was deferred; add it like the 2F-85 if wanted.)
 ```
 
-### 10.7 — Deploy on the real UR10e (diffusion_policy repo, robodiff_real env)
+### 10.7 — Deploy on the real UR10e (distillation doc Step 6) — ROBODIFF_REAL, on the 4090 PC
 ```bash
-cd ~/work/repos/diffusion_policy && conda activate robodiff_real
-python eval_real_robot.py --input <student>.ckpt --output ./demo \
-  --robot_ip 192.168.0.100 -j
-# uses the built stack: ur10e_kinematics, LinearGripper on /dev/ttyACM0, the 3 D405 serials,
-# torque_max 330/330/150/56/56/56, setPayload 0.575 kg, home pose above.
+# 1. cameras at the calibrated poses (10.3); 2. copy <student>.ckpt to the 4090 PC; 3.:
+conda activate robodiff_real && cd ~/work/repos/diffusion_policy
+python eval_real_robot.py --input <student>.ckpt --output ./demo --robot_ip 192.168.0.100 -j
+# uses the built stack: ur10e_kinematics, LinearGripper on /dev/ttyACM0, D405 serials
+# front/side/wrist, torque_max 330/330/150/56/56/56, setPayload 0.575 kg, home pose above.
 ```
 
 ### ⚠ Known sim↔real gaps to watch
-- **Gripper actuation is ~6–10× slower on the real robot: measured 1.1–1.2 s to open/close
-  vs the near-instant sim jaw.** At 10 Hz that is ~11–12 control steps. The state expert (and
-  thus the student) learned grasp timing on the fast sim jaw, so at deployment the arm may
-  move on before the real grasp completes. Mitigations, cheapest first: (1) at deployment, the
-  stuck-detection/`'g'` open macro already helps; (2) if grasps fail on the slow close, slow
-  the **sim** jaw to ~1.1 s (lower the gripper `maxJointVelocity`/drive in the graft) and
-  **re-finetune** (the expert) before the next collection — do this only if deployment shows
-  it matters, since it costs a training round.
+- **Gripper actuation is ~6–10× slower on the real robot: 1.1–1.2 s measured to open/close vs
+  the near-instant sim jaw** (~11–12 control steps at 10 Hz). The expert (and student) learned
+  grasp timing on the fast sim jaw, so at deployment the arm may move on before the real grasp
+  completes. Mitigations, cheapest first: the deploy-side stuck-detection/`'g'` open macro
+  already helps; if grasps fail on the slow close, slow the **sim** jaw to ~1.1 s (lower the
+  gripper `maxJointVelocity`/drive in the graft) and **re-finetune** before the next collection
+  — only if deployment shows it matters (it costs a training round).
 - **Payload 0.575 kg confirmed** (weighed; `ur10e_kinematics.PAYLOAD_MASS`), used by the real
   OSC `setPayload` gravity comp. (The lerobot `0.3` was wrong.)
+- **Images are resized, not cropped** — `real_env` resizes 640×480 → 224×224, matching the sim
+  (320×240 → 224×224); same 4:3→1:1 squish on both sides, so no crop boxes.
 
 ---
 

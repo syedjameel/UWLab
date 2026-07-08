@@ -100,16 +100,35 @@ _UR10E_CAMERA_POSES = {
 
 
 def _apply_camera_poses(cfg) -> None:
-    """Write ``_UR10E_CAMERA_POSES`` onto the scene cameras (pose + focal shared across the
-    CameraAlign and DataCollection/Play envs)."""
+    """Write ``_UR10E_CAMERA_POSES`` onto the scene cameras AND the per-episode camera-pose /
+    focal randomization event bases, so a single edit updates the whole pipeline (this is the
+    manual two-place edit the 2F-85 sim2real doc describes, automated). Shared by the
+    CameraAlign env (no DR events -> those parts no-op) and the DataCollection/Play envs."""
+    events = getattr(cfg, "events", None)
+
+    def _event_term(term_name):
+        # Guarded: CameraAlign has no DR events (events MISSING/None) -> returns None.
+        ev = getattr(events, term_name, None) if events is not None else None
+        return ev if ev is not None and hasattr(ev, "params") else None
+
     for name, p in _UR10E_CAMERA_POSES.items():
         cam = getattr(cfg.scene, name, None)
-        if cam is None:
-            continue
-        cam.offset.pos = p["pos"]
-        cam.offset.rot = p["rot"]
-        if getattr(cam, "spawn", None) is not None and hasattr(cam.spawn, "focal_length"):
-            cam.spawn.focal_length = p["focal"]
+        if cam is not None:
+            cam.offset.pos = p["pos"]
+            cam.offset.rot = p["rot"]
+            if getattr(cam, "spawn", None) is not None and hasattr(cam.spawn, "focal_length"):
+                cam.spawn.focal_length = p["focal"]
+        # keep the reset-time camera-pose jitter centered on the calibrated pose
+        rc = _event_term(f"randomize_{name}")
+        if rc is not None and "base_position" in rc.params:
+            rc.params["base_position"] = p["pos"]
+            rc.params["base_rotation"] = p["rot"]
+        # recenter the focal-length jitter on the calibrated focal (keep the original width)
+        fc = _event_term(f"randomize_{name}_focal_length")
+        if fc is not None and "focal_length_range" in fc.params:
+            lo, hi = fc.params["focal_length_range"]
+            hw = (hi - lo) / 2.0
+            fc.params["focal_length_range"] = (p["focal"] - hw, p["focal"] + hw)
 
 
 # ---------------------------------------------------------------------------------------
