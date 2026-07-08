@@ -434,6 +434,25 @@ OmniReset deployment path is student-teacher distillation to RGB, zero-shot.
   workspace roughly match its geometry (backdrop panels around the table); randomization
   covers appearance. The real lab becomes "just another sample".
 
+**Real hardware config (from the working lerobot rig)** — UR10e `192.168.0.100`, RTDE 500 Hz;
+gripper serial `/dev/ttyACM0` @ 115200; 3× RealSense **D405** serials front `409122272284`,
+side `409122273078`, wrist `323622272232` (640×480@30), cropped to a per-camera ROI then
+resized to 224×224. ⚠ **Payload mismatch to reconcile before deployment**: the lerobot config
+sets `payload_mass 0.3`, but sysid/sim uses **0.575 kg** (`ur10e_kinematics.PAYLOAD_MASS`,
+which the real OSC's `setPayload` gravity comp uses) — weigh the real gripper and set both
+consistently.
+
+**diffusion_policy real-side — ✅ code done (2026-07-08, fork commit b0b0808; untested until
+the rig is up)**: arm swapped `ur5e_kinematics → ur10e_kinematics` in
+`rtde_interpolation_controller.py`/`real_env.py`/`eval_real_robot.py` (identical API, drop-in);
+new `real_world/linear_gripper.py` (hardened serial Open/Close, transition-only writes,
+serial-exceptions swallowed) replaces `RobotiqGripper` in the controller; `torque_max` →
+UR10e `330/330/150/56/56/56`; the D405 serials set + `camera_configs=None` (D405 rejects the
+415/435/455 advanced-mode presets); gripper `/dev/ttyACM0` plumbed through `real_env`. Still
+TODO (hardware): retune the real init/home joint pose to the pcb/openbox workspace; validate
+jaw open↔close travel time vs sim; physical camera calibration; the payload reconciliation
+above. Student training is **`dataset_dir`-only** (`config/task/sim2real_image.yaml`).
+
 **Work items, in order** (A can start immediately; the finetune does not block A–E):
 
 1. **A — Linear-gripper driver** (small). Source: `RC10_control/rc10_api/gripper.py`
