@@ -518,6 +518,114 @@ above. Student training is **`dataset_dir`-only** (`config/task/sim2real_image.y
 
 ---
 
+## 10. RGB distillation & deployment — step-by-step (command-by-command)
+
+The executable version of §9, from a converged finetuned state expert to a deployed RGB
+student. **Sim configs (UWLab) and the real stack (diffusion_policy) are already built** — see
+§9 item D and the "diffusion_policy real-side" block above. What remains is per-step below.
+`$OBJ = env.scene.insertive_object=pcb env.scene.receptive_object=openbox` throughout.
+
+### Prereqs (once)
+```bash
+# A100/4090: pull both forks
+cd ~/work/repos/UWLab            && git pull fork omnireset/ur10e-linear-gripper   # >= 48b9f2d
+cd ~/work/repos/diffusion_policy && git pull fork ur10e-linear-gripper             # >= 42a6e15
+# The finetune (§8) must be converged: p pinned at 1.0, success ~0.95, checkpoint chosen.
+```
+
+### 10.1 — Export the finetuned state expert to TorchScript
+`play.py` writes `<run>/exported/policy.pt` (+ `.onnx`) automatically (rsl_rl exporter):
+```bash
+cd ~/work/repos/UWLab
+./uwlab.sh -p scripts/reinforcement_learning/rsl_rl/play.py \
+  --task OmniReset-UR10eLinearGripper-RelCartesianOSC-State-Finetune-Play-v0 \
+  --num_envs 4 $OBJ \
+  env.events.reset_from_reset_states.params.dataset_dir=./Datasets_ur10e/OmniReset \
+  --load_run <finetune_run_folder> --checkpoint model_<iter>.pt
+# -> logs/rsl_rl/<exp>/<finetune_run_folder>/exported/policy.pt   (path used in 10.4)
+```
+
+### 10.2 — Physical rig (hardware; parallel with training)
+Mount the 3× D405 (front `409122273078`, side `323622272232`, wrist `409122272284`); build the
+backdrop curtains ~where the sim curtains sit (front ≈1.1 m out, side ≈0.8 m lateral);
+command-strip the openbox to the table; drive the UR10e to the home pose
+`67.94 -93.33 146.23 -142.91 -90.04 -22.95` deg. Confirm the D405s enumerate:
+`rs-enumerate-devices | grep -A1 D405`.
+
+### 10.3 — Camera calibration (per camera) → paste poses into the sim cfg
+For each of `front_camera` / `side_camera` / `wrist_camera`:
+```bash
+# (a) grab one real 640x480 RGB from that D405 (use your lerobot RealSense interface or
+#     pyrealsense) at the home pose -> real_<cam>.png
+# (b) interactively align the SIM camera onto the real image; press 'p' to print pos/rot/focal:
+cd ~/work/repos/UWLab
+./uwlab.sh -p scripts_v2/tools/sim2real/align_cameras.py --enable_cameras --robot ur10e \
+  --camera front_camera --real_image /path/to/real_front.png \
+  --joint_angles 67.94 -93.33 146.23 -142.91 -90.04 -22.95
+```
+Then paste the three printed `(pos, rot, focal)` into **`_UR10E_CAMERA_POSES`** in
+`config/ur5e_robotiq_2f85/ur10e_linear_gripper_rgb_cfg.py` (one dict; feeds BOTH the
+CameraAlign and the DataCollection/Play envs). No rebuild — cfgs read it at construction.
+(D405 note: `align_cameras`/collection render 224² from the sim; the real 640×480 is
+**resized** (not cropped) to 224² in `real_env`, matching the sim's 320×240→224² — so no crop
+boxes; `pick_crop_boxes.py` is a lerobot-ACT tool, unused here.)
+
+### 10.4 — Collect the 80k RGB demos (A100/4090; needs `--enable_cameras`)
+```bash
+cd ~/work/repos/UWLab
+./uwlab.sh -p scripts_v2/tools/collect_demos.py \
+  --task OmniReset-UR10eLinearGripper-RelCartesianOSC-RGB-DataCollection-v0 \
+  --dataset_file ./datasets/ur10e_pcb/rgb0.zarr --num_envs 32 --num_demos 80000 \
+  --enable_cameras --headless $OBJ \
+  agent.algorithm.offline_algorithm_cfg.behavior_cloning_cfg.experts_path=[logs/rsl_rl/<exp>/<run>/exported/policy.pt]
+# only SUCCESSFUL episodes are saved; ~24 GPU-h for 80k. Zarr files MERGE across runs, so you
+# can split: rerun with rgb1.zarr, rgb2.zarr, ... into the same dataset dir.
+```
+
+### 10.5 — Train the RGB student (diffusion_policy repo, robodiff env)
+```bash
+cd ~/work/repos/diffusion_policy && conda activate robodiff
+python train.py --config-name train_mlp_sim2real_image_with_aux_loss_kl_workspace.yaml \
+  --config-dir diffusion_policy/config \
+  task.dataset.dataset_dir=~/work/repos/UWLab/datasets/ur10e_pcb
+# dataset_dir is the ONLY change for UR10e (config is shape_meta-driven: front/side/wrist_rgb
+# @224x224, 6-D EE/joint/last-action, 7-D action; the _kl_ variant KL-distills against the
+# saved expert_action_mean/std). ~350k iters (~2 days on an H200); reasonable by ~1 day.
+# -> a diffusion-policy checkpoint <...>.ckpt
+```
+
+### 10.6 — Evaluate the student in sim
+```bash
+cd ~/work/repos/UWLab
+./uwlab.sh -p scripts_v2/tools/eval_distilled_policy.py \
+  --task OmniReset-UR10eLinearGripper-RelCartesianOSC-RGB-Play-v0 \
+  --checkpoint <student>.ckpt --num_trajectories 100 --enable_cameras $OBJ
+# expect student sim success ~50-60% of the expert (paper); real transfer is better.
+```
+
+### 10.7 — Deploy on the real UR10e (diffusion_policy repo, robodiff_real env)
+```bash
+cd ~/work/repos/diffusion_policy && conda activate robodiff_real
+python eval_real_robot.py --input <student>.ckpt --output ./demo \
+  --robot_ip 192.168.0.100 -j
+# uses the built stack: ur10e_kinematics, LinearGripper on /dev/ttyACM0, the 3 D405 serials,
+# torque_max 330/330/150/56/56/56, setPayload 0.575 kg, home pose above.
+```
+
+### ⚠ Known sim↔real gaps to watch
+- **Gripper actuation is ~6–10× slower on the real robot: measured 1.1–1.2 s to open/close
+  vs the near-instant sim jaw.** At 10 Hz that is ~11–12 control steps. The state expert (and
+  thus the student) learned grasp timing on the fast sim jaw, so at deployment the arm may
+  move on before the real grasp completes. Mitigations, cheapest first: (1) at deployment, the
+  stuck-detection/`'g'` open macro already helps; (2) if grasps fail on the slow close, slow
+  the **sim** jaw to ~1.1 s (lower the gripper `maxJointVelocity`/drive in the graft) and
+  **re-finetune** (the expert) before the next collection — do this only if deployment shows
+  it matters, since it costs a training round.
+- **Payload 0.575 kg confirmed** (weighed; `ur10e_kinematics.PAYLOAD_MASS`), used by the real
+  OSC `setPayload` gravity comp. (The lerobot `0.3` was wrong.)
+
+---
+
 ## Quick reference — file locations
 
 | what | where |

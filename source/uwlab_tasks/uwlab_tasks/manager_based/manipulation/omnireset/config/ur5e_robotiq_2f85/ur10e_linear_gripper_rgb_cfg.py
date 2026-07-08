@@ -71,6 +71,48 @@ def _fix_wrist_camera_path(cfg) -> None:
 
 
 # ---------------------------------------------------------------------------------------
+# Calibrated camera poses (pos, rot=quat wxyz, focal_length).
+#
+# ⚠ THESE ARE PLACEHOLDERS (inherited from the 2F-85 rig). Replace each with the value
+# printed by ``align_cameras.py --robot ur10e --camera <front|side|wrist>_camera`` against a
+# real D405 image, then rebuild nothing -- the cfgs read this dict at construction. Both the
+# CameraAlign env (what you calibrate WITH) and the DataCollection/Play envs (what collects)
+# use these, so one edit updates the whole pipeline. Real D405s: front 409122273078,
+# side 323622272232, wrist 409122272284 (positional order in the diffusion_policy deploy).
+# ---------------------------------------------------------------------------------------
+_UR10E_CAMERA_POSES = {
+    "front_camera": dict(
+        pos=(1.0770121, -0.1679045, 0.4486344),
+        rot=(0.70564552, 0.46613815, 0.25072644, 0.47107948),
+        focal=13.20,
+    ),
+    "side_camera": dict(
+        pos=(0.8323904, 0.5877843, 0.2805111),
+        rot=(0.29008842, 0.22122445, 0.51336143, 0.77676798),
+        focal=20.10,
+    ),
+    "wrist_camera": dict(
+        pos=(0.0182505, -0.00408447, -0.0689107),
+        rot=(0.34254336, -0.61819255, -0.6160212, 0.347879),
+        focal=24.55,
+    ),
+}
+
+
+def _apply_camera_poses(cfg) -> None:
+    """Write ``_UR10E_CAMERA_POSES`` onto the scene cameras (pose + focal shared across the
+    CameraAlign and DataCollection/Play envs)."""
+    for name, p in _UR10E_CAMERA_POSES.items():
+        cam = getattr(cfg.scene, name, None)
+        if cam is None:
+            continue
+        cam.offset.pos = p["pos"]
+        cam.offset.rot = p["rot"]
+        if getattr(cam, "spawn", None) is not None and hasattr(cam.spawn, "focal_length"):
+            cam.spawn.focal_length = p["focal"]
+
+
+# ---------------------------------------------------------------------------------------
 # Camera alignment (interactive sim2real camera calibration; used by align_cameras.py)
 # ---------------------------------------------------------------------------------------
 @configclass
@@ -90,6 +132,7 @@ class Ur10eLinearGripperCameraAlignEnvCfg(CameraAlignEnvCfg):
         self.scene.robot.init_state.pos = (0.0, -0.039, 0.0)
         self.actions = Ur10eLinearGripperSysidOSCAction()
         _fix_wrist_camera_path(self)
+        _apply_camera_poses(self)
 
 
 # ---------------------------------------------------------------------------------------
@@ -113,6 +156,8 @@ def _apply_ur10e_rgb(cfg) -> None:
             setattr(cfg.events, term, None)
     # Wrist camera prim path -> our nested gripper link (+ its DR event templates).
     _fix_wrist_camera_path(cfg)
+    # Calibrated (currently placeholder) camera poses/focals.
+    _apply_camera_poses(cfg)
 
 
 @configclass
