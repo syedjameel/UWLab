@@ -64,6 +64,13 @@ parser.add_argument(
 )
 parser.add_argument("--gripper_pos", type=float, default=1.0, help="Gripper position (0=closed, 1=open)")
 parser.add_argument("--warmup_steps", type=int, default=30, help="Simulation warmup steps before interaction")
+parser.add_argument(
+    "--robot",
+    type=str,
+    default="ur5e",
+    choices=["ur5e", "ur10e"],
+    help="Arm to align cameras for: ur5e (2F-85) or ur10e (linear gripper).",
+)
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
 
@@ -82,9 +89,20 @@ import matplotlib.pyplot as plt  # noqa: E402
 from pxr import Gf, UsdGeom  # noqa: E402
 
 import uwlab_tasks  # noqa: F401
-from uwlab_tasks.manager_based.manipulation.omnireset.config.ur5e_robotiq_2f85.camera_align_cfg import (
-    CameraAlignEnvCfg,
-)
+
+# Per-robot camera-align env cfg + task id (selected via --robot).
+if args_cli.robot == "ur10e":
+    from uwlab_tasks.manager_based.manipulation.omnireset.config.ur5e_robotiq_2f85.ur10e_linear_gripper_rgb_cfg import (
+        Ur10eLinearGripperCameraAlignEnvCfg as CameraAlignEnvCfg,
+    )
+
+    CAMERA_ALIGN_TASK_ID = "OmniReset-UR10eLinearGripper-CameraAlign-v0"
+else:
+    from uwlab_tasks.manager_based.manipulation.omnireset.config.ur5e_robotiq_2f85.camera_align_cfg import (
+        CameraAlignEnvCfg,
+    )
+
+    CAMERA_ALIGN_TASK_ID = "OmniReset-Ur5eRobotiq2f85-CameraAlign-v0"
 
 # ---- RGB key lookup ----
 CAMERA_TO_RGB = {
@@ -325,7 +343,7 @@ def main():
     for name, rad in zip(joint_names, joint_rads):
         env_cfg.scene.robot.init_state.joint_pos[name] = rad
 
-    env = gym.make("OmniReset-Ur5eRobotiq2f85-CameraAlign-v0", cfg=env_cfg)
+    env = gym.make(CAMERA_ALIGN_TASK_ID, cfg=env_cfg)
     device = env.unwrapped.device
 
     # Send zero OSC deltas so the robot holds the init joint config.

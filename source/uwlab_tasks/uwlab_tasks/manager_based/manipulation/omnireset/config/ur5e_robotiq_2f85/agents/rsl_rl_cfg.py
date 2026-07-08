@@ -81,3 +81,21 @@ class Base_DAggerRunnerCfg(Base_PPORunnerCfg):
             )
         ),
     )
+
+
+@configclass
+class UR10eLinearGripper_DAggerRunnerCfg(Base_DAggerRunnerCfg):
+    """DAgger runner for the UR10e + linear-gripper RGB distillation.
+
+    Identical to ``Base_DAggerRunnerCfg`` except the expert ACTION group is the UR10e
+    linear-gripper action (the 2F-85 base points at ``Ur5eRobotiq2f85RelativeOSCAction``).
+    The expert OBSERVATION group (the generic state ``ObservationsCfg.PolicyCfg``) is reused;
+    ``experts_path`` is supplied at runtime via a Hydra override to the exported policy.
+    """
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.algorithm.offline_algorithm_cfg.behavior_cloning_cfg.experts_action_group_cfg = (
+            "uwlab_tasks.manager_based.manipulation.omnireset.config.ur5e_robotiq_2f85.actions:"
+            "Ur10eLinearGripperRelativeOSCAction"
+        )

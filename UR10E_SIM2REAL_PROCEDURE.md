@@ -460,13 +460,30 @@ OmniReset deployment path is student-teacher distillation to RGB, zero-shot.
    `align_cameras.py` interactive overlay refine (press `p` → pos/rot/focal). Precision
    target is only ~cm/degree: the per-episode camera randomization (±2–3 cm pose, focal
    ranges) absorbs the residual. Deliverable: three (pos, rot, focal) tuples.
-4. **D — UR10e RGB data-collection cfg**. `ur10e` variant of `data_collection_rgb_cfg.py`,
-   same subclass-and-swap as the state cfgs (robot → EXPLICIT UR10e, action → UR10e eval
-   OSC; it inherits `FinetuneEvalEventCfg`, so the fixed-sysid + delay-0 pins carry over).
-   Set camera baselines from C, recenter the randomization ranges on our values, re-parent
-   the wrist camera to our mount transform, sanity-check curtain/table geometry against
-   the physical stage, register the gym id. Buildable with placeholder poses before C
-   finishes.
+4. **D — UR10e RGB configs — ✅ BUILT (sim side, 2026-07-08)**. New
+   `config/ur5e_robotiq_2f85/ur10e_linear_gripper_rgb_cfg.py` holds three UR10e cfgs
+   (subclass-and-swap via `_apply_linear_gripper`): a **CameraAlign** env (for §C
+   calibration), and **RGB DataCollection** + **RGB Play** envs. Plus a
+   `UR10eLinearGripper_DAggerRunnerCfg` (agents), 3 gym registrations, and
+   `align_cameras.py --robot {ur5e,ur10e}`. Task ids:
+   `OmniReset-UR10eLinearGripper-CameraAlign-v0`,
+   `-RelCartesianOSC-RGB-DataCollection-v0`, `-RGB-Play-v0`.
+   Details baked in: IMPLICIT UR10e robot + eval OSC action; delay pinned 0; resets from
+   `./Datasets_ur10e/OmniReset`; the two 2F-85 gripper-appearance DR terms dropped (their
+   meshes are absent on our instanced gripper visuals); **wrist camera re-pathed to
+   `/Robot/gripper/robotiq_base_link/rgb_wrist_camera`** (our graft nests the gripper — the
+   original `/Robot/robotiq_base_link` path errored). Smoke-tested on the laptop
+   (`smoke_test_rgb_ur10e.py`): both envs build, all 3 cameras render, obs shapes exact —
+   `policy` group `(3,224,224)` float + `data_collection` group `(224,224,3)` uint8, matching
+   the diffusion_policy `shape_meta`. Camera pos/rot/focal are still the authors'
+   **placeholders** (front frames the UR10e low; wrist renders black) — replace with §C
+   calibrated values before the 80k. Collection command (A100/4090, after export + calib):
+   `collect_demos.py --task ...-RGB-DataCollection-v0 --dataset_file <x>.zarr --num_envs 32
+   --num_demos 80000 --enable_cameras --headless $OBJ
+   agent...behavior_cloning_cfg.experts_path=[<run>/exported/policy.pt]` (zarr files merge
+   across runs). **Cross-repo (diffusion_policy) work is documented in the plan
+   `~/.claude/plans/vivid-giggling-tower.md` Part 2** (arm import-swap, linear-gripper serial
+   driver, D405 camera stack, student training = dataset_dir only).
 5. **E — Physical stage prep** (paper A.4): backdrop panels ~where the sim curtains sit;
    **command-strip the openbox to the table** (sim treats it as static); compliant mat;
    consistent lighting; verify real table/mount geometry vs the sim scene (work surface
