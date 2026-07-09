@@ -555,8 +555,12 @@ run on the real rig. Build a **lean env** instead, in two tiers:
 # tier 1 -- CALIBRATION capture only (0/1/2_camera_*.py + perception/): reliable, ~2 min
 conda create -n robodiff_real python=3.9 -y
 conda run -n robodiff_real python -m pip install \
-  numpy scipy matplotlib "opencv-contrib-python-headless<4.10" pyrealsense2 open3d
-# (pyrealsense2 wheel bundles librealsense w/ D405 support; opencv-contrib gives cv2.aruco)
+  "numpy<2" scipy matplotlib "opencv-contrib-python-headless<4.10" pyrealsense2 open3d
+# NOTE: numpy<2 is REQUIRED -- the opencv-contrib 4.9 wheel is compiled against numpy 1.x and
+# crashes under numpy 2.0 ("_ARRAY_API not found"). pip pulls numpy 2 by default, so pin it.
+# (pyrealsense2 wheel bundles librealsense w/ D405 support; opencv-contrib gives cv2.aruco --
+#  code uses the new ArucoDetector API + solvePnP, so 4.9 is fine; don't need <4.7.)
+# Verified: numpy 1.26.4 / cv2 4.9.0 / pyrealsense2 2.56.5 / open3d 0.19.0; perception/ imports OK.
 
 # tier 2 -- add DEPLOYMENT (eval_real_robot) when you actually deploy, ideally on the 4090 PC:
 conda run -n robodiff_real python -m pip install \
