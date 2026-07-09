@@ -574,7 +574,8 @@ run on the real rig. Build a **lean env** instead, in two tiers:
 # tier 1 -- CALIBRATION capture only (0/1/2_camera_*.py + perception/): reliable, ~2 min
 conda create -n robodiff_real python=3.9 -y
 conda run -n robodiff_real python -m pip install \
-  "numpy<2" scipy matplotlib "opencv-contrib-python-headless<4.10" pyrealsense2 open3d
+  "numpy<2" scipy matplotlib "opencv-contrib-python<4.10" pyrealsense2 open3d
+# (the GUI build, NOT -headless: teleop/demo need cv2.imshow; contrib still provides cv2.aruco)
 # NOTE: numpy<2 is REQUIRED -- the opencv-contrib 4.9 wheel is compiled against numpy 1.x and
 # crashes under numpy 2.0 ("_ARRAY_API not found"). pip pulls numpy 2 by default, so pin it.
 # (pyrealsense2 wheel bundles librealsense w/ D405 support; opencv-contrib gives cv2.aruco --
