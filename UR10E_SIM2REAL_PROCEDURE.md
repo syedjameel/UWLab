@@ -538,6 +538,13 @@ Follows the official OmniReset **sim2real** (camera calibration) and **distillat
 "diffusion_policy real-side") are already built. `$OBJ = env.scene.insertive_object=pcb
 env.scene.receptive_object=openbox` throughout.
 
+**The whole pipeline in one line:** the trained expert lives in sim and secretly reads object
+poses, so it can never run on the real robot — instead: *measure where your real cameras are
+(10.3 `0/1/2`), make the sim cameras match by eye (`align_cameras`), film the all-knowing
+expert through those matched cameras 80k times (10.4), distill it into a student that needs
+only pixels (10.5), rehearse in sim (10.6), perform live (10.7).* Each step below carries a
+"what it does" line so you know what the command is doing and what output to expect.
+
 **Three conda envs (per the docs):**
 - **SIM** — `env_uwlab` on the A100/4090 (`leisaac` on the laptop). Runs the UWLab sim
   scripts: export, `collect_demos`, `align_cameras`, `eval_distilled_policy`.
@@ -586,9 +593,12 @@ dm-control, robosuite, pybullet-svl, pytorchvideo, r3m, spnav, pytorch3d, ray, w
 Prereq: the §8 finetune is converged (p pinned 1.0, success ~0.95, a checkpoint chosen).
 
 ### 10.1 — Export the finetuned expert to TorchScript (distillation doc Step 2)
-**Why this step:** `collect_demos` replays a **JIT-traced TorchScript** expert (loaded via
-`experts_path`). The raw rsl_rl checkpoint (`model_<iter>.pt`) is not TorchScript; `play.py`
-traces + exports it to `<checkpoint_dir>/exported/policy.pt`.
+**What it does:** the finetune checkpoint (`model_<iter>.pt`) is a training-framework object
+(needs rsl_rl classes + config to load). `play.py` loads it once, runs it (your visual
+confirmation the checkpoint is good), and **JIT-traces** it — records the raw tensor ops into
+a standalone `exported/policy.pt`: the network frozen as a pure `obs -> action` function,
+loadable anywhere with `torch.jit.load`. That is the exact form `collect_demos` replays via
+`experts_path`.
 ```bash
 conda activate env_uwlab && cd ~/work/repos/UWLab
 ./uwlab.sh -p scripts/reinforcement_learning/rsl_rl/play.py \
@@ -631,6 +641,22 @@ linked from the sim2real doc) flat on the table 0.463 m from the base toward the
 ### 10.3 — Camera calibration (sim2real doc) — ONE camera at a time (unplug the others)
 For each of `front` / `side` / `wrist`:
 
+**What each script does:**
+- **`0_camera_calibrate.py`** — "where is the camera, in robot coordinates?" Photographs the
+  ArUco marker; since the marker's printed size (150 mm) and the lens intrinsics (read live
+  from the D405) are known, `solvePnP` computes where the camera must be standing (and how
+  tilted) for the marker to appear that size/shape in the image — like judging your distance
+  from a door because you know how big doors are. That gives camera-relative-to-MARKER;
+  adding `aruco_offset` (marker-in-base) makes it camera-relative-to-BASE. 10 rounds,
+  averaged. Expect: the labeled triads (BIG=base, MID=marker at +X 0.463, SMALL=camera,
+  tilted like the real mount) in a true-scale point cloud + printed view-dir/tilt per camera.
+- **`1_camera_get_rgb.py`** — takes THE reference photo (`real_rgb.png`): the frozen record of
+  "exactly what this camera sees from here". Robot must be AT the known pose; don't touch the
+  camera afterwards.
+- **`2_get_isaacsim_extrinsics.py`** — pure math on the json: flips the OpenCV camera axes
+  (z-forward) to Isaac/OpenGL (z-backward) and prints pos + quat(wxyz) — the ~cm-accurate
+  WARM START for align_cameras, not the final answer.
+
 **(a) capture + coarse extrinsics** — diffusion_policy, ROBODIFF_REAL:
 ```bash
 conda activate robodiff_real && cd ~/work/repos/diffusion_policy
@@ -647,6 +673,14 @@ after the `1_` capture. **Wrist:** put the arm in freedrive and position it so t
 camera sees the marker.
 
 **(b) interactive alignment** — UWLab, SIM, `--robot ur10e`:
+**What it does:** the pixel-match. Builds the CameraAlign env, poses the sim UR10e at
+`--joint_angles` (sim frame — the sim arm must strike the SAME pose as the real arm in the
+photo), renders the virtual camera, and overlays that render on your real photo in a
+matplotlib window. You nudge the virtual camera (pos/rot/focal) until the rendered robot lies
+ON TOP of the photographed robot — matching the whole articulated silhouette is dozens of
+constraints, far stronger than one flat marker, and it recovers the focal length ArUco can't.
+ArUco got ~cm; your eyes get the last mm/degrees. Expect: overlay starts NEAR aligned (the
+warm start); if it starts rotated ~90°/mirrored, a frame convention is wrong — stop.
 ```bash
 conda activate env_uwlab && cd ~/work/repos/UWLab
 ./uwlab.sh -p scripts_v2/tools/sim2real/align_cameras.py --enable_cameras --headless \
@@ -676,6 +710,14 @@ The debug window now shows labeled triads — BIG = robot base @ origin, MID = m
 view direction + tilt; use them as the per-camera sanity check.
 
 ### 10.4 — Collect the 80k RGB demos (distillation doc Step 3) — SIM, needs `--enable_cameras`
+**What it does:** films the expert working. Builds the RGB DataCollection env — the
+"stage-set" task: 3 calibrated cameras rendering, curtain/table/object textures re-randomized
+every episode, camera poses jittered around YOUR calibrated values, lighting/object DR. The
+STATE expert (secretly reading object poses — allowed in sim) drives; every step the env
+records what the cameras see + robot state + the expert's action. Successful episodes append
+to the zarr; failures are discarded. You are building "here's what the world looks like →
+here's what the expert did", 80k times. Sanity: open a few frames — robot/objects framed like
+your real photos, textures varying wildly.
 ```bash
 conda activate env_uwlab && cd ~/work/repos/UWLab
 ./uwlab.sh -p scripts_v2/tools/collect_demos.py \
@@ -689,6 +731,13 @@ conda activate env_uwlab && cd ~/work/repos/UWLab
 ```
 
 ### 10.5 — Train the RGB student (distillation doc Step 4) — ROBODIFF
+**What it does:** supervised imitation, no simulator — just the zarr. A ResNet-18 encodes the
+3 camera views (5-frame stacks); an MLP head predicts the expert's action. The `_kl_` variant
+also matches the expert's action DISTRIBUTION (mean/std saved at collection), and an
+auxiliary loss makes the encoder predict object poses — forcing the vision backbone to learn
+"where things are" instead of texture shortcuts. Because collection randomized every
+appearance, the student can't overfit to any one look — the real lab becomes just another
+texture draw. Output: the deployable student `.ckpt` (needs only images + robot state).
 ```bash
 conda activate robodiff && cd ~/work/repos/diffusion_policy
 python train.py --config-name train_mlp_sim2real_image_with_aux_loss_workspace.yaml \
@@ -702,6 +751,11 @@ python train.py --config-name train_mlp_sim2real_image_with_aux_loss_workspace.y
 ```
 
 ### 10.6 — Evaluate the student in sim (distillation doc Step 5) — SIM
+**What it does:** the exam before the real exam. Loads the STUDENT into the RGB Play env
+(in-distribution resets, same cameras) and lets it drive on its own predictions — the first
+time its small errors get to compound. Reports success rate + saves videos. ~50–60% of the
+expert is NORMAL (paper: students score modestly in sim yet transfer better in reality —
+real peg 85%). Near-zero = something structural (paths, obs mismatch) — debug, don't deploy.
 ```bash
 conda activate env_uwlab && cd ~/work/repos/UWLab
 ./uwlab.sh -p scripts_v2/tools/eval_distilled_policy.py \
@@ -713,6 +767,15 @@ conda activate env_uwlab && cd ~/work/repos/UWLab
 ```
 
 ### 10.7 — Deploy on the real UR10e (distillation doc Step 6) — ROBODIFF_REAL, on the 4090 PC
+**What it does:** the whole built stack comes alive. Three D405s stream → resize to 224²
+(same 4:3→1:1 squish as sim); RTDE reads joints at 500 Hz → `real_to_sim_joints` shifts q1 so
+the robot reports itself in the sim's language (§10.2a) → FK computes the EE-pose obs; the
+student consumes images+state at 10 Hz and outputs the same actions it produced in sim; the
+OSC turns them into joint torques (`directTorque`, `setPayload 0.575` gravity comp); jaw
+commands go down `/dev/ttyACM0`. Between episodes it homes the arm; a stuck-detector opens
+the gripper if the arm freezes >2 s. **First-run protocol:** hand on the e-stop; verify the
+startup moveJ goes to YOUR home pose and the first policy motions head TOWARD the workspace —
+any 90°-sideways tendency means a frame bug survived: kill it immediately.
 ```bash
 # 1. cameras at the calibrated poses (10.3); 2. copy <student>.ckpt to the 4090 PC; 3.:
 conda activate robodiff_real && cd ~/work/repos/diffusion_policy
