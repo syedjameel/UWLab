@@ -581,9 +581,16 @@ conda run -n robodiff_real python -m pip install \
 #  code uses the new ArucoDetector API + solvePnP, so 4.9 is fine; don't need <4.7.)
 # Verified: numpy 1.26.4 / cv2 4.9.0 / pyrealsense2 2.56.5 / open3d 0.19.0; perception/ imports OK.
 
-# tier 2 -- add DEPLOYMENT (eval_real_robot) when you actually deploy, ideally on the 4090 PC:
+# tier 1.5 -- TELEOP (demo_real_robot + real_env + controller; verified on the laptop
+# 2026-07-09, full import chain OK). CPU torch suffices (only the image resize uses it):
 conda run -n robodiff_real python -m pip install \
-  torch torchvision ur-rtde pyserial dill hydra-core omegaconf zarr numcodecs einops \
+  av click numba numcodecs pynput "ur-rtde==1.6.2" pyserial threadpoolctl zarr "atomics==1.0.2"
+conda run -n robodiff_real python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+# tier 2 -- add DEPLOYMENT (eval_real_robot) when you actually deploy, on the 4090 PC
+# (CUDA torch there for ResNet inference):
+conda run -n robodiff_real python -m pip install \
+  torch torchvision dill hydra-core omegaconf einops \
   "diffusers<0.37" tqdm imageio imageio-ffmpeg scikit-video scikit-image termcolor robomimic
 # run diffusion_policy scripts from the repo root (PYTHONPATH=$PWD) -- no `pip install -e .` needed.
 ```
