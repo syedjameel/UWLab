@@ -586,13 +586,35 @@ conda activate env_uwlab && cd ~/work/repos/UWLab
 # -> <checkpoint_dir>/exported/policy.pt   (+ policy.onnx)  -- path reused in 10.4
 ```
 
+### ⚠ 10.2a — RIG ORIENTATION (read first — differs from the authors' rig by 90°)
+**Verified against the sim reset datasets:** the sim robot spawns at the origin with identity
+rotation and the trained sim workspace/table is toward **sim +X** (objects ~`[0.42, 0.1]`,
+table `x=0.4`); FK of reset joints matches the sim only with `R_180Z`, so sim frame = REP-103.
+Our real rig has the workspace/marker toward **pendant −Y** (`[0, -0.463]` on the pendant);
+the authors' rig had it at sim +X (their `aruco_offset [0.24,0,0]` is **sim-frame**). Same
+joints ⇒ our real EE maps to sim `[0, +0.463]` — **90° away from the sim table**. Two
+conventions fix this everywhere (both implemented):
+
+1. **Joint mapping (deployment):** `q1_sim = q1_real − 90°`
+   (`ur10e_kinematics.real_to_sim_joints`, applied at the RTDE read boundary in
+   `rtde_interpolation_controller` — obs/FK/OSC are sim-frame; `moveJ`/`servoJ` stay real).
+   Verified: FK of the shifted real home lands at `[0.463, 0, 0.22]` — over the sim table.
+   Real home `67.94 -93.33 146.23 -142.91 -90.04 -22.95` ⇒ **sim** home
+   `-22.06 -93.33 146.23 -142.91 -90.04 -22.95`.
+2. **Marker convention (calibration):** marker **+X points from the robot base toward the
+   marker/workspace** (physically pendant −Y = sim +X); `aruco_offset = [0.463, 0, 0]`
+   (sim frame). Then `0/1/2` output the camera pose **directly in the sim frame** — the
+   authors' design; **no rotation conversion belongs in `2_get`** (verified; its docstring
+   states the contract).
+
 ### 10.2 — Physical rig (hardware)
 Mount the 3× D405 (front `409122273078`, side `323622272232`, wrist `409122272284`); build the
 backdrop curtains (front ≈1.1 m out, side ≈0.8 m lateral); command-strip the openbox to the
 table; drive the arm to home `67.94 -93.33 146.23 -142.91 -90.04 -22.95` deg. Print + place the
 **ArUco marker** (dictionary `6x6_50`, ID `12`, size `150 mm` — the `marker_6x6_150mm_id12.pdf`
-linked from the sim2real doc) flat on the table near the base; marker-center → robot base
-offset `[0.24, 0.0, 0.0]` m. Confirm: `rs-enumerate-devices | grep -A1 D405`.
+linked from the sim2real doc) flat on the table 0.463 m from the base toward the workspace,
+**oriented per §10.2a** (+X away from the base, toward the marker). Confirm:
+`rs-enumerate-devices | grep -A1 D405`.
 
 ### 10.3 — Camera calibration (sim2real doc) — ONE camera at a time (unplug the others)
 For each of `front` / `side` / `wrist`:
@@ -600,9 +622,9 @@ For each of `front` / `side` / `wrist`:
 **(a) capture + coarse extrinsics** — diffusion_policy, ROBODIFF_REAL:
 ```bash
 conda activate robodiff_real && cd ~/work/repos/diffusion_policy
-python scripts/sim2real/0_camera_calibrate.py        # ArUco -> intrinsics + extrinsics
+python scripts/sim2real/0_camera_calibrate.py        # ArUco -> intrinsics + extrinsics (sim frame)
 python scripts/sim2real/1_camera_get_rgb.py          # -> real_<cam>.png reference image
-python scripts/sim2real/2_get_isaacsim_extrinsics.py # prints initial pos, rot(wxyz), focal
+python scripts/sim2real/2_get_isaacsim_extrinsics.py # prints sim-frame warm-start pos + quat(wxyz)
 ```
 Record the arm's joint angles (deg) at the capture pose (pendant). **Wrist:** put the arm in
 freedrive and position it so the wrist camera sees the marker.
@@ -612,7 +634,9 @@ freedrive and position it so the wrist camera sees the marker.
 conda activate env_uwlab && cd ~/work/repos/UWLab
 ./uwlab.sh -p scripts_v2/tools/sim2real/align_cameras.py --enable_cameras --headless \
   --robot ur10e --camera front_camera --real_image /path/to/real_front.png \
-  --joint_angles <j1> <j2> <j3> <j4> <j5> <j6>
+  --joint_angles <j1_pendant - 90> <j2> <j3> <j4> <j5> <j6>
+# ⚠ SIM joints (§10.2a): subtract 90° from the PENDANT q1. Captured at home:
+#   --joint_angles -22.06 -93.33 146.23 -142.91 -90.04 -22.95
 # nudge the sim camera onto the real image; press 'p' to print calibrated pos, rot, focal
 ```
 
