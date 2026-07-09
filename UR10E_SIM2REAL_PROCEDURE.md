@@ -28,7 +28,7 @@ OmniReset paper (`2603.15789v3.pdf` at repo root, esp. Appendix A.3).
 | 6. Sysid params → metadata.yaml | **DONE** — `Ur10eLinearGripper/metadata.yaml` sysid block = real UR10e values (§6) |
 | 7. Sim hardening before finetune | **DONE** — gripper mass 0.575 kg + wrist ±180° limits both in the graft; **re-record resets before finetune** (14–27% of the old states violate the new wrist limits) (§7) |
 | 8. Stage-2 finetune (ADR) + eval-gain validation in contact | **RUNNING** — launched 2026-07-06 after dataset QC + salvage (§7b); eval gains validated in contact; watch `Curriculum/adr_sysid/scale_progress` → 1.0 (§8.1) |
-| 9. Real deployment path (RGB distillation, cameras, gripper driver) | todo — big items (§9) |
+| 9. Real deployment path (RGB distillation, cameras, gripper driver) | **IN PROGRESS** — sim RGB cfgs built; real-side code done incl. the 90° rig-orientation fix (§10.2a); lean `robodiff_real` env built; calibration chain dry-run-validated on the real front D405 (2026-07-09). Remaining: final-mount camera calibration (§10.3) → expert export → 80k collection → student training → deploy (§10) |
 
 ---
 
@@ -434,24 +434,36 @@ OmniReset deployment path is student-teacher distillation to RGB, zero-shot.
   workspace roughly match its geometry (backdrop panels around the table); randomization
   covers appearance. The real lab becomes "just another sample".
 
-**Real hardware config (from the working lerobot rig)** — UR10e `192.168.0.100`, RTDE 500 Hz;
-gripper serial `/dev/ttyACM0` @ 115200; 3× RealSense **D405** serials front `409122272284`,
-side `409122273078`, wrist `323622272232` (640×480@30), cropped to a per-camera ROI then
-resized to 224×224. ⚠ **Payload mismatch to reconcile before deployment**: the lerobot config
-sets `payload_mass 0.3`, but sysid/sim uses **0.575 kg** (`ur10e_kinematics.PAYLOAD_MASS`,
-which the real OSC's `setPayload` gravity comp uses) — weigh the real gripper and set both
-consistently.
+**Real hardware config (corrected 2026-07-08/09)** — UR10e `192.168.0.100`, RTDE 500 Hz;
+gripper serial `/dev/ttyACM0` @ 115200; 3× RealSense **D405** serials (TRUE roles, physically
+verified — the lerobot json labels were swapped): **front `409122273078`, side `323622272232`,
+wrist `409122272284`** (640×480@30). Images are **resized, not cropped** (640×480 → 224×224;
+crop boxes were a lerobot-ACT thing, not diffusion_policy). **Payload = 0.575 kg confirmed**
+(weighed; the lerobot `0.3` was wrong) — `ur10e_kinematics.PAYLOAD_MASS` drives the real OSC's
+`setPayload` gravity comp. Real home pose (pendant deg): `67.94 -93.33 146.23 -142.91 -90.04
+-22.95` (= sim `-22.06 ...` per §10.2a).
 
-**diffusion_policy real-side — ✅ code done (2026-07-08, fork commit b0b0808; untested until
-the rig is up)**: arm swapped `ur5e_kinematics → ur10e_kinematics` in
-`rtde_interpolation_controller.py`/`real_env.py`/`eval_real_robot.py` (identical API, drop-in);
-new `real_world/linear_gripper.py` (hardened serial Open/Close, transition-only writes,
-serial-exceptions swallowed) replaces `RobotiqGripper` in the controller; `torque_max` →
-UR10e `330/330/150/56/56/56`; the D405 serials set + `camera_configs=None` (D405 rejects the
-415/435/455 advanced-mode presets); gripper `/dev/ttyACM0` plumbed through `real_env`. Still
-TODO (hardware): retune the real init/home joint pose to the pcb/openbox workspace; validate
-jaw open↔close travel time vs sim; physical camera calibration; the payload reconciliation
-above. Student training is **`dataset_dir`-only** (`config/task/sim2real_image.yaml`).
+**diffusion_policy real-side — ✅ code done (fork commits b0b0808 + 42a6e15 + 0961090;
+untested on hardware until deployment)**:
+- arm swapped `ur5e_kinematics → ur10e_kinematics` in `rtde_interpolation_controller.py` /
+  `real_env.py` / `eval_real_robot.py` (identical API, drop-in); `torque_max` → UR10e
+  `330/330/150/56/56/56`; real home pose = `real_env` default init joints.
+- new `real_world/linear_gripper.py` (hardened serial Open/Close on `/dev/ttyACM0`:
+  transition-only writes, serial exceptions swallowed so a USB hiccup can't drop the 500 Hz
+  torque loop, no activate/encoder) replaces `RobotiqGripper` in the controller; plumbed
+  through `real_env`. Real jaw travel measured **1.1–1.2 s** (see §10 gaps).
+- D405 serials set in `eval_real_robot`/`demo_real_robot` + `camera_configs=None` (D405
+  rejects the 415/435/455 advanced-mode presets; verified `None` flows through cleanly).
+- **90° rig-orientation fix (§10.2a, commit 0961090)**: `real_to_sim_joints` (`q1 − 90°`)
+  applied at the RTDE read boundary (init read, OSC-loop read, ring-buffer `ActualQ`) so
+  FK / OSC / policy obs are all sim-frame; `moveJ` init + shutdown `servoJ` stay raw
+  real-frame; `ActualQd` offset-free; torques per-joint invariant. `eval_real_robot`
+  recomputes `end_effector_pose` from `arm_joint_pos` via FK, so ALL policy obs flow through
+  the shifted joints.
+
+Still TODO (hardware): physical camera calibration of the final mounts (§10.3; the chain
+itself was dry-run-validated 2026-07-09); first real teleop/OSC sanity run. Student training
+is **`dataset_dir`-only** (`config/task/sim2real_image.yaml`).
 
 **Work items, in order** (A can start immediately; the finetune does not block A–E):
 
@@ -623,11 +635,16 @@ For each of `front` / `side` / `wrist`:
 ```bash
 conda activate robodiff_real && cd ~/work/repos/diffusion_policy
 python scripts/sim2real/0_camera_calibrate.py        # ArUco -> intrinsics + extrinsics (sim frame)
-python scripts/sim2real/1_camera_get_rgb.py          # -> real_<cam>.png reference image
+python scripts/sim2real/1_camera_get_rgb.py          # -> perception/calibrations/real_rgb.png
+cp scripts/sim2real/perception/calibrations/real_rgb.png ~/real_<cam>.png  # it's overwritten per camera!
 python scripts/sim2real/2_get_isaacsim_extrinsics.py # prints sim-frame warm-start pos + quat(wxyz)
 ```
-Record the arm's joint angles (deg) at the capture pose (pendant). **Wrist:** put the arm in
-freedrive and position it so the wrist camera sees the marker.
+Sanity-check the `0_` output before moving on: the printed camera pos should sit in the **+X
+quadrant** (front cam ≈ `[0.7, 0, 0.2]`), view direction toward −X and tilted down like the
+physical mount; an all-NaN json = the marker was missed in some rounds (glare/blur) — rerun.
+Record the arm's joint angles (deg) at the capture pose (pendant). Don't touch the camera
+after the `1_` capture. **Wrist:** put the arm in freedrive and position it so the wrist
+camera sees the marker.
 
 **(b) interactive alignment** — UWLab, SIM, `--robot ur10e`:
 ```bash
@@ -646,12 +663,17 @@ in `config/ur5e_robotiq_2f85/ur10e_linear_gripper_rgb_cfg.py`. The 2F-85 doc has
 hand — our hook applies **both** (scene cameras + the DR event bases + recentered focal jitter)
 from that one dict, for the CameraAlign, DataCollection, and Play envs at once. No rebuild.
 
-⚠ **D405 calibration-script caveat (the one remaining code TODO):** the diffusion_policy capture
-scripts and `scripts/sim2real/perception/realsense.py` bake `_fovy = 65` (D415) and D4xx
-advanced-mode presets. For D405 the intrinsics/FOV from `0/1/2` need `_fovy → ~87` and an RGB-mode
-check first. **Simplest path that sidesteps it:** grab `real_<cam>.png` via your working lerobot
-D405 interface and skip `0/1/2` — `align_cameras` (step b) is what actually sets the sim
-pose/focal that collection uses. (See §9 diffusion_policy block 2C.)
+✅ **D405 status (resolved 2026-07-09; the old `_fovy`/preset caveat was a false alarm):**
+`_fovy = 65` is UNUSED metadata (`2_get` outputs only pos+quat; the focal comes from
+`align_cameras`), and the calibration `perception/realsense.py` loads NO advanced-mode preset
+(color+depth 640×480 — D405-native). The real D405 bug was viz-only: `depth_to_points`
+hardcoded 1 mm depth units, but the D405 uses ~0.1 mm → the debug cloud rendered ~10× too big
+(fixed: the device's `get_depth_scale()` is queried; commit `93d0b98`). The full `0/1/2` chain
+was **validated end-to-end on the real front D405 on 2026-07-09** (dry run): output landed in
+the sim frame at the expected +X quadrant, view 40° down, 6.7° off the cam→marker line.
+The debug window now shows labeled triads — BIG = robot base @ origin, MID = marker
+@ `[0.463,0,0]`, SMALL = camera (rotated to its calibrated pose) — and prints each camera's
+view direction + tilt; use them as the per-camera sanity check.
 
 ### 10.4 — Collect the 80k RGB demos (distillation doc Step 3) — SIM, needs `--enable_cameras`
 ```bash
