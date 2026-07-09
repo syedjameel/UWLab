@@ -541,10 +541,32 @@ cd ~/work/repos/diffusion_policy && git pull fork ur10e-linear-gripper
 # install diffusion_policy into the SIM env (collect_demos zarr writing + shared utils)
 cd ~/work/repos/diffusion_policy && conda activate env_uwlab && python -m pip install -e . \
   && python -m pip install dill hydra-core omegaconf zarr einops "diffusers<0.37" wandb accelerate
-# create the training + real-robot envs (once)
+# create the training env (once)
 mamba env create -f conda_environment.yaml        # -> robodiff (training)
-mamba env create -f conda_environment_real.yaml   # -> robodiff_real (deploy + calib capture)
 ```
+
+**`robodiff_real` — DON'T use the full `conda_environment_real.yaml` here.** That yaml is a
+heavy, old-pinned env (Py3.9 / CUDA 11.6 / PyTorch 1.12 / pytorch3d / MuJoCo / robosuite / r3m /
+dm-control) whose solve hangs (no mamba on the laptop, only conda), and it needs `sudo apt`
+system libs (librealsense, OSMesa, spnav). ~Half of it is sim-benchmark reproduction we never
+run on the real rig. Build a **lean env** instead, in two tiers:
+
+```bash
+# tier 1 -- CALIBRATION capture only (0/1/2_camera_*.py + perception/): reliable, ~2 min
+conda create -n robodiff_real python=3.9 -y
+conda run -n robodiff_real python -m pip install \
+  numpy scipy matplotlib "opencv-contrib-python-headless<4.10" pyrealsense2 open3d
+# (pyrealsense2 wheel bundles librealsense w/ D405 support; opencv-contrib gives cv2.aruco)
+
+# tier 2 -- add DEPLOYMENT (eval_real_robot) when you actually deploy, ideally on the 4090 PC:
+conda run -n robodiff_real python -m pip install \
+  torch torchvision ur-rtde pyserial dill hydra-core omegaconf zarr numcodecs einops \
+  "diffusers<0.37" tqdm imageio imageio-ffmpeg scikit-video scikit-image termcolor robomimic
+# run diffusion_policy scripts from the repo root (PYTHONPATH=$PWD) -- no `pip install -e .` needed.
+```
+Skipped vs the yaml (all sim-benchmark, unused on the real rig): free-mujoco-py, mujoco,
+dm-control, robosuite, pybullet-svl, pytorchvideo, r3m, spnav, pytorch3d, ray, wandb.
+
 Prereq: the §8 finetune is converged (p pinned 1.0, success ~0.95, a checkpoint chosen).
 
 ### 10.1 — Export the finetuned expert to TorchScript (distillation doc Step 2)
