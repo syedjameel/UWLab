@@ -147,8 +147,9 @@ class Ur10eLinearGripperCameraAlignEnvCfg(CameraAlignEnvCfg):
         self.scene.robot = ur10e_linear_gripper.EXPLICIT_UR10E_LINEAR_GRIPPER.replace(
             prim_path="{ENV_REGEX_NS}/Robot"
         )
-        # Keep the average real-world placement the base set for the UR5e (workspace kept).
-        self.scene.robot.init_state.pos = (0.0, -0.039, 0.0)
+        # Our rig's nominal is 0 (table asset frame == robot base frame; -0.039 was the
+        # UR5e rig's measured placement -- the base class now uses 0 too).
+        self.scene.robot.init_state.pos = (0.0, 0.0, 0.0)
         self.actions = Ur10eLinearGripperSysidOSCAction()
         _fix_wrist_camera_path(self)
         _apply_camera_poses(self)

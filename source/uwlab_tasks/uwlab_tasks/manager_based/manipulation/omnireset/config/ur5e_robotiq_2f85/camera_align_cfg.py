@@ -204,13 +204,12 @@ class CameraAlignEnvCfg(ManagerBasedRLEnvCfg):
         self.episode_length_s = 99999.0
         self.sim.dt = CAMERA_ALIGN_SIM_DT
 
-        # Place robot at average real-world position (reset_states_cfg y avg = -0.039).
-        # Robot + support + table move together (rigid assembly -- the base is bolted to
-        # the custom table; the table asset frame == robot base frame, support root z =
-        # the +0.004 work-surface datum).
-        self.scene.robot.init_state.pos = (0.0, -0.039, 0.0)
-        self.scene.ur5_metal_support.init_state.pos = (0.0, -0.039, 0.004)
-        self.scene.table.init_state.pos = (0.0, -0.039, 0.0)
+        # Our rig's nominal is 0 (table asset frame == robot base frame; the -0.039 was
+        # the UR5e rig's measured placement). Support root z = the +0.004 work-surface
+        # datum; robot/support/table all at the nominal for the calibration overlay.
+        self.scene.robot.init_state.pos = (0.0, 0.0, 0.0)
+        self.scene.ur5_metal_support.init_state.pos = (0.0, 0.0, 0.004)
+        self.scene.table.init_state.pos = (0.0, 0.0, 0.0)
 
         # Render settings for visual fidelity
         self.sim.render.enable_ambient_occlusion = True
