@@ -196,10 +196,17 @@ git remote rename origin fork
 git checkout omnireset/ur10e-custom-table
 
 # 2. env: conda + Isaac Sim 5.1.0 (pip) + CUDA torch + UWLab extensions
-./uwlab.sh --conda env_uwlab && conda activate env_uwlab
+#    (follows the official pip-installation page; python 3.11 + GLIBC >= 2.35 required)
+./uwlab.sh --conda env_uwlab      # creates env from environment.yml, python=3.11 for Isaac >= 5.0
+                                  # (equivalent per official docs: conda create -n env_uwlab python=3.11)
+conda activate env_uwlab
+pip install --upgrade pip
 pip install "isaacsim[all,extscache]==5.1.0" --extra-index-url https://pypi.nvidia.com
 pip install -U torch==2.7.0 torchvision==0.22.0 --index-url https://download.pytorch.org/whl/cu128
-./uwlab.sh -i
+isaacsim                          # first-run verify: accept the EULA ("Yes"); 10+ min extension cache
+sudo apt install cmake build-essential   # needed by the extension build
+./uwlab.sh --install              # (-i) UWLab extensions + rsl_rl etc.
+./uwlab.sh -p scripts/tutorials/00_sim/create_empty.py   # install verify
 
 # 3. rebuild ALL gitignored USDs (Part 1 steps 1a-1c) PLUS the custom table:
 python scripts_v2/tools/conversions/make_custom_table_usd.py
