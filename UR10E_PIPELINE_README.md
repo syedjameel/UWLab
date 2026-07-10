@@ -217,7 +217,20 @@ which gcc g++ make cmake || conda install -y -c conda-forge cmake make ninja c-c
 # (c-compiler/cxx-compiler set CC/CXX via env activation -- re-activate the env after install.
 #  With sudo, the official equivalent is: sudo apt install cmake build-essential)
 ./uwlab.sh --install              # (-i) UWLab extensions + rsl_rl etc.
-./uwlab.sh -p scripts/tutorials/00_sim/create_empty.py   # install verify
+# --install NOTES (observed on the H100 run, all expected):
+#  * skrl transiently upgrades torch to 2.13 mid-install; the script's FINAL step restores
+#    torch==2.7.0+cu128 + torchvision 0.22.0 + triton 3.3.0 itself -- final state is correct.
+#  * rsl-rl-lib ends at the UW-Lab fork (3.1.2, replacing upstream 5.0.1) -- that is the one
+#    our training code targets.
+#  * pip conflict errors at the end are BENIGN except one: restore torchaudio (dropped in
+#    the torch shuffle):
+pip install torchaudio==2.7.0 --index-url https://download.pytorch.org/whl/cu128
+#    ignore: stable-baselines3 wants torch>=2.8 (we use rsl_rl); isaacsim-kernel wants
+#    click==8.1.7/typing_extensions==4.12.2 (classic IsaacLab friction); fastapi/starlette
+#    (isaacsim-internal); "libtinfo.so.6 no version information" bash lines (conda ncurses).
+python -c "import torch; print(torch.__version__, torch.cuda.is_available())"  # 2.7.0+cu128 True
+./uwlab.sh -p scripts/tutorials/00_sim/create_empty.py   # install verify (first scene load
+                                                         # may sit quiet minutes: shader warm-up)
 
 # 3. rebuild ALL gitignored USDs (Part 1 steps 1a-1c) PLUS the custom table:
 python scripts_v2/tools/conversions/make_custom_table_usd.py
