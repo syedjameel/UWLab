@@ -203,7 +203,15 @@ conda activate env_uwlab
 pip install --upgrade pip
 pip install "isaacsim[all,extscache]==5.1.0" --extra-index-url https://pypi.nvidia.com
 pip install -U torch==2.7.0 torchvision==0.22.0 --index-url https://download.pytorch.org/whl/cu128
-isaacsim                          # first-run verify: accept the EULA ("Yes"); 10+ min extension cache
+# H100-server quirks found on first run (both sudo-free):
+conda install -y -c conda-forge libglu     # missing libGLU.so.1 kills MDL/shaders -> "HydraEngine rtx failed"
+export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH   # add to ~/.bashrc (every Isaac shell needs it)
+export CUDA_VISIBLE_DEVICES=0              # pin ONE free GPU (check nvidia-smi); avoids the multi-GPU
+                                           # P2P cudaErrorMemoryAllocation spam on shared 4x nodes
+isaacsim --headless               # first-run verify: accept the EULA ("Yes"); 10+ min extension cache.
+                                  # Headless noise is NORMAL (GLFW/window/audio/ROS2-bridge errors);
+                                  # what must NOT appear after the libglu fix: libGLU.so.1 errors,
+                                  # "Cannot load shader file", "HydraEngine rtx failed creating scene renderer"
 # build toolchain (needed by the extension build). No sudo on the server? Use conda-forge:
 which gcc g++ make cmake || conda install -y -c conda-forge cmake make ninja c-compiler cxx-compiler
 # (c-compiler/cxx-compiler set CC/CXX via env activation -- re-activate the env after install.
