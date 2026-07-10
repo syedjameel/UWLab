@@ -133,7 +133,8 @@ _UR10E_CALIBRATION_DIR = f"{UWLAB_LOCAL_ASSETS_DIR}/Robots/UR10e"
 # UR10e torque limits (URDF): the UR10e is a much stronger arm than the UR5e (150/28).
 _UR10E_TORQUE_LIMIT = (330.0, 330.0, 150.0, 56.0, 56.0, 56.0)
 
-# Train OSC: same gains as the UR5e linear-gripper train OSC (rot Kp 3, damping_ratio 0.2).
+# Train OSC: UR5e linear-gripper train gains (rot Kp 3) with rot damping_ratio 0.1
+# (the UR5e ran 0.2; the 2026-07-10 note below explains why the lighter gripper halves it).
 #
 # Rot Kp MUST stay at 3: raising it to 6 (to close the UR10e's free-space rotational
 # authority gap, ~2/3 of the UR5e's at Kp 3) made the wrist UNSTABLE IN CONTACT -- the
@@ -145,13 +146,30 @@ _UR10E_TORQUE_LIMIT = (330.0, 330.0, 150.0, 56.0, 56.0, 56.0)
 # Jacobian matches a finite-difference of the sim to 3 decimals on every column. Lesson: any
 # OSC gain change must be validated IN CONTACT (jaws closed on an object), not just with
 # free-space hold-jitter/authority probes.
+#
+# 2026-07-10: the wrist_3 velocity-limit "runaway" during reset recording was TWO stacked
+# defects, both diagnosed by per-step torque/velocity traces:
+#   (1) the reset events' differential IK is joint-limit-unaware and wrote wrist solutions
+#       BEYOND the graft's +-180 deg limits (ee915f8 hardening; the pre-hardening +-360
+#       graft made the same solutions legal, which is why the 07-03 datasets were clean).
+#       PhysX then resolves the violated limit DURING the episode -- dragging the joint at
+#       the velocity cap with ZERO applied torque. Fixed at the source: the events wrap
+#       the final IK joints into the limits (events._wrap_joints_into_limits; a full-turn
+#       wrap is physically exact).
+#   (2) the rotational kd term is EXPLICIT velocity feedback at 120 Hz: stability needs
+#       kd*dt/I < 2. The graft's gripper-mass fix (d1cc46b, 1.1 -> real 0.575 kg) halved
+#       the wrist_3 reflected inertia (I ~ 0.002), putting the UR5e-lineage dr 0.2
+#       (kd 0.69) at ~2.7 -> alternating-sign divergence growing x1.7/step from noise.
+#       dr 0.1 (kd 0.35) restores kd*dt/I ~ 1.4 -- the same margin the UR5e had at dr 0.2
+#       with its 1.1 kg gripper (0.69/(0.004*120) ~ 1.4). kd scales with inertia; the mass
+#       halving halves dr.
 UR10E_LINEAR_GRIPPER_RELATIVE_OSC = RelCartesianOSCActionCfg(
     asset_name="robot",
     joint_names=["shoulder.*", "elbow.*", "wrist.*"],
     body_name="wrist_3_link",
     scale_xyz_axisangle=(0.02, 0.02, 0.02, 0.02, 0.02, 0.2),
     motion_stiffness=(200.0, 200.0, 200.0, 3.0, 3.0, 3.0),
-    motion_damping_ratio=(3.0, 3.0, 3.0, 0.2, 0.2, 0.2),
+    motion_damping_ratio=(3.0, 3.0, 3.0, 0.1, 0.1, 0.1),
     torque_limit=_UR10E_TORQUE_LIMIT,
     calibration_dir=_UR10E_CALIBRATION_DIR,
 )

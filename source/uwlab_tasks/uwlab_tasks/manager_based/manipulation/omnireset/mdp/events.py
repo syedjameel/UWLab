@@ -6,6 +6,7 @@
 """Event functions for manipulation tasks."""
 
 import logging
+import math
 import numpy as np
 import os
 import random
@@ -618,6 +619,37 @@ class global_physics_control_event(ManagerTermBase):
                 )
 
 
+def _wrap_joints_into_limits(
+    robot: Articulation, joint_ids: list[int] | slice, env_ids: torch.Tensor
+) -> None:
+    """Wrap out-of-limit revolute joint positions by +-2*pi where the wrapped angle is in range.
+
+    The differential IK used by the EE reset events is joint-limit-unaware: its integrate-and-
+    teleport iterations can walk a wrist joint past the USD limits (e.g. the graft's sim2real
+    +-180 deg wrist hardening, ee915f8) and the final ``write_joint_state_to_sim`` persists the
+    illegal angle. PhysX then resolves the violated limit DURING the episode -- dragging the
+    joint back at its velocity cap with zero applied torque (wrist_3 pinned at +-pi rad/s), which
+    poisoned the recorded reset states (C1 98% / C3 73% spinning; C2 parked at the -180 deg
+    limit). A full-turn wrap is an exact no-op on the physical pose, so wherever ``q +- 2*pi``
+    lands inside the limits we take it; anything still outside is clamped to the limit edge
+    (true IK overreach, not a winding artifact).
+    """
+    q = robot.data.joint_pos[env_ids][:, joint_ids]
+    limits = robot.data.joint_pos_limits[env_ids][:, joint_ids]
+    lo, hi = limits[..., 0], limits[..., 1]
+    two_pi = 2.0 * math.pi
+    q_wrapped = torch.where((q > hi) & (q - two_pi >= lo), q - two_pi, q)
+    q_wrapped = torch.where((q_wrapped < lo) & (q_wrapped + two_pi <= hi), q_wrapped + two_pi, q_wrapped)
+    q_wrapped = torch.clamp(q_wrapped, lo, hi)
+    if not torch.equal(q_wrapped, q):
+        robot.write_joint_state_to_sim(
+            position=q_wrapped,
+            velocity=torch.zeros_like(q_wrapped),
+            joint_ids=joint_ids,
+            env_ids=env_ids,  # type: ignore
+        )
+
+
 class reset_end_effector_round_fixed_asset(ManagerTermBase):
     def __init__(self, cfg: EventTermCfg, env: ManagerBasedEnv):
         fixed_asset_cfg: SceneEntityCfg = cfg.params.get("fixed_asset_cfg")  # type: ignore
@@ -680,6 +712,9 @@ class reset_end_effector_round_fixed_asset(ManagerTermBase):
                 joint_ids=self.joint_ids,
                 env_ids=env_ids,  # type: ignore
             )
+        # The differential IK is limit-unaware; wrap any wound-past-the-limit joint back
+        # into range (exact full-turn wrap) so PhysX never has to resolve a violated limit.
+        _wrap_joints_into_limits(self.robot, self.joint_ids, env_ids)
 
 
 class reset_end_effector_from_grasp_dataset(ManagerTermBase):
@@ -845,6 +880,9 @@ class reset_end_effector_from_grasp_dataset(ManagerTermBase):
                 joint_ids=self.joint_ids,
                 env_ids=env_ids,  # type: ignore
             )
+        # The differential IK is limit-unaware; wrap any wound-past-the-limit joint back
+        # into range (exact full-turn wrap) so PhysX never has to resolve a violated limit.
+        _wrap_joints_into_limits(self.robot, self.joint_ids, env_ids)
 
         # Sample gripper joint positions using the same indices
         sampled_gripper_positions = self.gripper_joint_positions[grasp_indices]
