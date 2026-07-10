@@ -182,6 +182,52 @@ the process; the session's visuals were already valid.
 
 ---
 
+## 3b. Fresh-server setup (H100) — custom-table branch
+
+Complete bring-up on a brand-new GPU server for branch **`omnireset/ur10e-custom-table`**
+(the real-rig table swap; re-records all resets + retrains both stages). NO PhysX trims on
+server GPUs.
+
+```bash
+# 1. clone + branch
+mkdir -p ~/work/repos && cd ~/work/repos
+git clone https://github.com/syedjameel/UWLab.git && cd UWLab
+git remote rename origin fork
+git checkout omnireset/ur10e-custom-table
+
+# 2. env: conda + Isaac Sim 5.1.0 (pip) + CUDA torch + UWLab extensions
+./uwlab.sh --conda env_uwlab && conda activate env_uwlab
+pip install "isaacsim[all,extscache]==5.1.0" --extra-index-url https://pypi.nvidia.com
+pip install -U torch==2.7.0 torchvision==0.22.0 --index-url https://download.pytorch.org/whl/cu128
+./uwlab.sh -i
+
+# 3. rebuild ALL gitignored USDs (Part 1 steps 1a-1c) PLUS the custom table:
+python scripts_v2/tools/conversions/make_custom_table_usd.py
+
+# 4. input datasets (fresh server has none; both arm-independent): Step A (partial
+#    assemblies, ~30 s) + Step B (grasps, ~min) below.
+
+# 5. Step C with TWO custom-table branch changes:
+#    * C4: record ~2500 (slow; ~2/3 open-jaw hovers are expected) then salvage:
+#        python scripts_v2/tools/conversions/filter_reset_states.py --in-place \
+#          --input ./Datasets_ur10e/OmniReset/Resets/OpenBox__Pcb/resets_ObjectPartiallyAssembledEEGrasped.pt \
+#          --min-grip 0.03
+#    * gate before training: qc_reset_states_ur10e.py must print [QC_RESULT] [PASS]
+
+# 6. Stage 1 (Step D as-is), then Stage 2:
+./uwlab.sh -p scripts/reinforcement_learning/rsl_rl/train.py \
+  --task OmniReset-UR10eLinearGripper-RelCartesianOSC-State-Finetune-v0 \
+  --num_envs 4096 --headless --logger tensorboard $OBJ \
+  --resume_path logs/rsl_rl/<experiment>/<stage1_run>/model_<iter>.pt \
+  env.events.reset_from_reset_states.params.dataset_dir=./Datasets_ur10e/OmniReset
+# watch Curriculum/adr_sysid/scale_progress -> 1.0 @ success ~0.95 (procedure doc 8.1)
+```
+
+Old `Datasets_ur10e` reset datasets from the authors'-table era are INVALID on this branch
+(they bake the old table pose; the loader force-restores it) — always re-record.
+
+---
+
 ## 4. A100: full pipeline
 
 Numbers below are the repo's reference pcb/openbox pipeline (see
