@@ -15,10 +15,21 @@ table:
     x_max: 1.05         # front edge (toward the workspace)
     y_half: 0.35        # 700 mm wide
     thickness: 0.030    # cosmetic (visible edge under the mats)
-  # solid body below the top, down to the floor
+  # under-table detail (visual polish; the arm never goes below the top):
+  # 4 legs + perimeter apron rails under the top + a lower shelf
   body:
-    inset: 0.02         # body shrunk this much from the top's footprint (visual)
     z_bottom: -0.676    # floor level (680 mm floor->work surface, incl. the 4 mm mat)
+    legs:
+      cross_section: 0.06   # 60 x 60 mm legs
+      inset: 0.05           # leg center inset from the table corners
+    apron:
+      height: 0.08          # rails hanging under the top perimeter
+      thickness: 0.02
+      inset: 0.04
+    shelf:
+      z_top: -0.55          # lower shelf top
+      thickness: 0.02
+      inset: 0.08
   # two 4 mm mats ON the structural top; their top = the WORK SURFACE at +0.004
   mats:
     thickness: 0.004
