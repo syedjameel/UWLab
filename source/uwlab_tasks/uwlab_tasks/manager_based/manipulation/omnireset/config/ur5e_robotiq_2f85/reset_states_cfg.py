@@ -187,8 +187,16 @@ class ResetStatesBaseEventCfg:
         mode="reset",
         params={
             "pose_range": {
-                "x": (0.3, 0.55),
-"y": (-0.1, 0.3),
+                # x (authors: 0.3, 0.55) shifted +5 cm, band size kept: on our rig the
+                # black mat (x < 0.35, with the base cutout) is the base's zone and the
+                # green mat starting at x = 0.35 is the physical workspace -- objects
+                # spawn fully on the green mat, clear of the base. Same shift in the two
+                # insertive events below; C3/C4 inherit (C1 restores / receptive-relative).
+                "x": (0.35, 0.60),
+                # y centered (authors: -0.1, 0.5 -- their rig's workspace was off to one
+                # side; ours is symmetric): same 0.40 m width, centered on the base/mat
+                # centerline, 12 cm margin to both mat edges (y +-0.35).
+                "y": (-0.2, 0.2),
                 "z": (0.0, 0.0),
                 "roll": (0.0, 0.0),
                 "pitch": (0.0, 0.0),
@@ -209,13 +217,10 @@ class ObjectAnywhereEEAnywhereEventCfg(ResetStatesBaseEventCfg):
         mode="reset",
         params={
             "pose_range": {
-                "x": (0.3, 0.55),
-                # y max trimmed 0.5 -> 0.30 for the real table: mats end at y=+0.35
-                # (authors' table was 1.365 m wide; ours is 0.70) -- objects must never
-                # spawn over the edge.
-# y max 0.30 (authors: 0.5): physically forced -- our mat is 0.70 m wide
-                # vs the authors' 1.365 m; objects must not spawn past the edge.
-                "y": (-0.1, 0.30),
+                # x shifted +5 cm onto the green workspace mat (see reset_receptive_object_pose).
+                "x": (0.35, 0.60),
+                # y centered, same 0.40 m width (see reset_receptive_object_pose).
+                "y": (-0.2, 0.2),
                 "z": (0.0, 0.3),
                 # PCB stays essentially top-up: only a small +/-0.1 rad (~6 deg) roll/pitch
                 # jitter for robustness to placement error; yaw stays free (in-plane spin
@@ -298,10 +303,10 @@ class ObjectAnywhereEEGraspedEventCfg(ResetStatesBaseEventCfg):
         mode="reset",
         params={
             "pose_range": {
-                "x": (0.3, 0.55),
-# y max 0.30 (authors: 0.5): physically forced -- our mat is 0.70 m wide
-                # vs the authors' 1.365 m; objects must not spawn past the edge.
-                "y": (-0.1, 0.30),
+                # x shifted +5 cm onto the green workspace mat (see reset_receptive_object_pose).
+                "x": (0.35, 0.60),
+                # y centered, same 0.40 m width (see reset_receptive_object_pose).
+                "y": (-0.2, 0.2),
                 "z": (0.0, 0.3),
                 # PCB stays essentially top-up: only a small +/-0.1 rad (~6 deg) roll/pitch
                 # jitter for robustness to placement error; yaw stays free (in-plane spin
