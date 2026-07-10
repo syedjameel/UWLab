@@ -29,7 +29,8 @@ must run Part 1 first.
 
 ## 1. Rebuild the USDs
 
-Three USDs, built in order (arm → gripper → graft). Needed once per machine / fresh checkout.
+Four gitignored asset builds, in order (arm → gripper → graft → TABLE). Needed once per
+machine / fresh checkout.
 
 ```bash
 conda activate leisaac
@@ -58,6 +59,15 @@ python scripts_v2/tools/conversions/graft_gripper_on_ur10e.py
 #   URDF importer's zero-mass frame links (base/base_link/flange/tool0) 0.01 kg.
 #   Mount standoff along wrist_3 +Z defaults to 0.049 m (--standoff to retune; eyeball in
 #   the GUI during Part 3 — it is inherited from the UR5e and not yet visually confirmed).
+
+# 1d. ⭐ CUSTOM LAB TABLE (this branch): generate the real-rig table + mount-plate USDs
+#     from measured dimensions (pure python + pxr, ~2 s, no Isaac app needed)
+python scripts_v2/tools/conversions/make_custom_table_usd.py
+#   reads source/.../local/Props/Mounts/CustomLabTable/table_dims.yaml
+#   -> custom_lab_table.usd + custom_mount_plate.usd (same dir; gitignored like all USDs)
+#   The scene cfgs on this branch point at these -- WITHOUT this step every env build fails
+#   with a missing-USD error. Old Datasets_ur10e reset states (authors'-table era) are
+#   INVALID on this branch and must be re-recorded (Step C / §4).
 ```
 
 Sanity check (optional, ~2 min): build + step one env.
