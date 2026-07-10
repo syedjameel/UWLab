@@ -55,6 +55,7 @@ mount_plate:
 materials:
   mat_black:   {diffuse: [0.0, 0.0000007, 0.000001], metallic: 0.0, roughness: 0.9}
   mat_green:   {diffuse: [0.09, 0.42, 0.09], metallic: 0.0, roughness: 0.9}   # photo-matched
-  # white cabinet body/walls + pillars (user request 2026-07-10)
+  # white cabinet body/walls; BLACK curtain pillars (user request 2026-07-10)
   table_frame: {diffuse: [0.85, 0.85, 0.85], metallic: 0.05, roughness: 0.55}
+  pillars:     {diffuse: [0.01, 0.01, 0.012], metallic: 0.3, roughness: 0.5}
   mount_plate: {diffuse: [0.178, 0.179, 0.120], metallic: 0.18, roughness: 0.82}

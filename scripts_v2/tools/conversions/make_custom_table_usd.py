@@ -231,7 +231,7 @@ def make_table(dims, out_path):
     UsdGeom.Scope.Define(stage, "/custom_lab_table/visuals/Looks")
     col = UsdGeom.Xform.Define(stage, "/custom_lab_table/collisions")
 
-    for name in ("mat_black", "mat_green", "table_frame"):
+    for name in ("mat_black", "mat_green", "table_frame", "pillars"):
         author_omnipbr(stage, f"/custom_lab_table/visuals/Looks/{name}",
                        m[name]["diffuse"], m[name]["metallic"], m[name]["roughness"])
 
@@ -267,12 +267,15 @@ def make_table(dims, out_path):
         for ly in lys:
             frame_parts.append(box_mesh(lx - lc / 2, lx + lc / 2, ly - lc / 2, ly + lc / 2,
                                         zb, wz0))                                  # short legs
-    for px in pxs:
-        for py in pys:
-            frame_parts.append(box_mesh(px - pc / 2, px + pc / 2, py - pc / 2, py + pc / 2,
-                                        mat_t, mat_t + ph))                        # pillars
     author_mesh(stage, "/custom_lab_table/visuals/table_frame", merge_meshes(frame_parts),
                 "/custom_lab_table/visuals/Looks/table_frame")
+    # curtain pillars as their own mesh (BLACK -- distinct from the white cabinet)
+    pillar_parts = [
+        box_mesh(px - pc / 2, px + pc / 2, py - pc / 2, py + pc / 2, mat_t, mat_t + ph)
+        for px in pxs for py in pys
+    ]
+    author_mesh(stage, "/custom_lab_table/visuals/pillars", merge_meshes(pillar_parts),
+                "/custom_lab_table/visuals/Looks/pillars")
 
     # --- collisions (invisible Cubes; authors' pattern) ---
     cx, cy = (x0 + x1) / 2.0, 0.0
