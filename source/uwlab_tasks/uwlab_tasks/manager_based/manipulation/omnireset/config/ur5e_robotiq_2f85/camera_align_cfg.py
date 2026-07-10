@@ -205,8 +205,12 @@ class CameraAlignEnvCfg(ManagerBasedRLEnvCfg):
         self.sim.dt = CAMERA_ALIGN_SIM_DT
 
         # Place robot at average real-world position (reset_states_cfg y avg = -0.039).
+        # Robot + support + table move together (rigid assembly -- the base is bolted to
+        # the custom table; the table asset frame == robot base frame, support root z =
+        # the +0.004 work-surface datum).
         self.scene.robot.init_state.pos = (0.0, -0.039, 0.0)
-        self.scene.ur5_metal_support.init_state.pos = (0.0, -0.039, -0.013)
+        self.scene.ur5_metal_support.init_state.pos = (0.0, -0.039, 0.004)
+        self.scene.table.init_state.pos = (0.0, -0.039, 0.0)
 
         # Render settings for visual fidelity
         self.sim.render.enable_ambient_occlusion = True

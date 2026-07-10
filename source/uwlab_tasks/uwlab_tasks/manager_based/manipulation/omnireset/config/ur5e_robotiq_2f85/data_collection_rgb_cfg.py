@@ -272,7 +272,9 @@ class RGBEventCfg(BaseRGBEventCfg):
         params={
             "asset_cfg": SceneEntityCfg("table"),
             "event_name": "randomize_table_event",
-            "mesh_names": ["visuals/vention_mat"],
+            # custom lab table: BOTH mats are DR targets (black rear + green workspace mat;
+            # the real two-tone surface becomes just one sample of the randomization)
+            "mesh_names": ["visuals/mat_black", "visuals/mat_green"],
             "texture_prob": 0.5,
             "texture_config_path": str(Path(__file__).parent / "resources" / "texture_paths.yaml"),
             "diffuse_tint_range": ((0.0, 0.0, 0.0), (1.0, 1.0, 1.0)),
@@ -720,7 +722,9 @@ class OODRGBEventCfg(BaseRGBEventCfg):
         params={
             "asset_cfg": SceneEntityCfg("table"),
             "event_name": "randomize_table_event",
-            "mesh_names": ["visuals/vention_mat"],
+            # custom lab table: BOTH mats are DR targets (black rear + green workspace mat;
+            # the real two-tone surface becomes just one sample of the randomization)
+            "mesh_names": ["visuals/mat_black", "visuals/mat_green"],
             "texture_prob": 0.5,
             "texture_config_path": str(Path(__file__).parent / "resources" / "texture_paths_ood.yaml"),
             "diffuse_tint_range": ((0.0, 0.0, 0.0), (1.0, 1.0, 1.0)),

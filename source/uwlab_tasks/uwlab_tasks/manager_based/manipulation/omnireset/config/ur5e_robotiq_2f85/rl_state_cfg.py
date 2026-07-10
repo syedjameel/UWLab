@@ -70,28 +70,35 @@ class RlStateSceneCfg(InteractiveSceneCfg):
         init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, 0.0), rot=(1.0, 0.0, 0.0, 0.0)),
     )
 
-    # Environment
+    # Environment -- the REAL lab table (procedurally generated from measured dims; see
+    # local/Props/Mounts/CustomLabTable/table_dims.yaml + make_custom_table_usd.py).
+    # Asset frame == robot base frame (origin at the base flange, work surface at +0.004),
+    # so the table spawns AT the robot's default root and the recording envs jitter
+    # robot+support+table TOGETHER (the base is bolted to this table -- rigid assembly).
     table = RigidObjectCfg(
         prim_path="{ENV_REGEX_NS}/Table",
-        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.4, 0.0, -0.881), rot=(0.707, 0.0, 0.0, -0.707)),
+        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, 0.0), rot=(1.0, 0.0, 0.0, 0.0)),
         spawn=sim_utils.UsdFileCfg(
-            usd_path=f"{UWLAB_CLOUD_ASSETS_DIR}/Props/Mounts/UWPatVention/pat_vention.usd",
+            usd_path=f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Mounts/CustomLabTable/custom_lab_table.usd",
             rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
         ),
     )
 
+    # Flush proxy plate in the black mat's base cutout (no physical plate on the real rig;
+    # entity kept for event/dataset compatibility). ROOT z = the WORK SURFACE (+0.004) --
+    # the object-reset placement datum (authors' convention: plate root z == mat-top).
     ur5_metal_support = RigidObjectCfg(
         prim_path="{ENV_REGEX_NS}/UR5MetalSupport",
-        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0, -0.013), rot=(1.0, 0.0, 0.0, 0.0)),
+        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0, 0.004), rot=(1.0, 0.0, 0.0, 0.0)),
         spawn=sim_utils.UsdFileCfg(
-            usd_path=f"{UWLAB_CLOUD_ASSETS_DIR}/Props/Mounts/UWPatVention2/Ur5MetalSupport/ur5plate.usd",
+            usd_path=f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Mounts/CustomLabTable/custom_mount_plate.usd",
             rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
         ),
     )
 
     ground = AssetBaseCfg(
         prim_path="/World/GroundPlane",
-        init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, 0.0, -0.868)),
+        init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, 0.0, -0.676)),
         spawn=sim_utils.GroundPlaneCfg(),
     )
 

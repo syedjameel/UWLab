@@ -69,28 +69,32 @@ class ResetStatesSceneCfg(InteractiveSceneCfg):
         init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, 0.0), rot=(1.0, 0.0, 0.0, 0.0)),
     )
 
-    # Environment
+    # Environment -- the REAL lab table (see rl_state_cfg.py for the full rationale;
+    # this block is duplicated there -- keep both in sync). Asset frame == robot base
+    # frame; work surface at +0.004; reset_robot_pose jitters robot+support+table
+    # TOGETHER (rigid assembly -- the base is bolted to this table).
     table = RigidObjectCfg(
         prim_path="{ENV_REGEX_NS}/Table",
-        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.4, 0.0, -0.881), rot=(0.707, 0.0, 0.0, -0.707)),
+        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, 0.0), rot=(1.0, 0.0, 0.0, 0.0)),
         spawn=sim_utils.UsdFileCfg(
-            usd_path=f"{UWLAB_CLOUD_ASSETS_DIR}/Props/Mounts/UWPatVention/pat_vention.usd",
+            usd_path=f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Mounts/CustomLabTable/custom_lab_table.usd",
             rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
         ),
     )
 
+    # Flush proxy plate (placement datum): ROOT z = work surface (+0.004).
     ur5_metal_support = RigidObjectCfg(
         prim_path="{ENV_REGEX_NS}/UR5MetalSupport",
-        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0, -0.013), rot=(1.0, 0.0, 0.0, 0.0)),
+        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0, 0.004), rot=(1.0, 0.0, 0.0, 0.0)),
         spawn=sim_utils.UsdFileCfg(
-            usd_path=f"{UWLAB_CLOUD_ASSETS_DIR}/Props/Mounts/UWPatVention2/Ur5MetalSupport/ur5plate.usd",
+            usd_path=f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Mounts/CustomLabTable/custom_mount_plate.usd",
             rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
         ),
     )
 
     ground = AssetBaseCfg(
         prim_path="/World/GroundPlane",
-        init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, 0.0, -0.868)),
+        init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, 0.0, -0.676)),
         spawn=sim_utils.GroundPlaneCfg(),
     )
 
@@ -164,7 +168,14 @@ class ResetStatesBaseEventCfg:
                 "yaw": (0.0, 0.0),
             },
             "velocity_range": {},
-            "asset_cfgs": {"robot": SceneEntityCfg("robot"), "ur5_metal_support": SceneEntityCfg("ur5_metal_support")},
+            # robot + support + TABLE move together: on the real rig the base is bolted to
+            # the table (and the base sits in a tight 200 mm mat cutout -- independent
+            # jitter would clip the mat). One shared draw = rigid-assembly placement DR.
+            "asset_cfgs": {
+                "robot": SceneEntityCfg("robot"),
+                "ur5_metal_support": SceneEntityCfg("ur5_metal_support"),
+                "table": SceneEntityCfg("table"),
+            },
         },
     )
 
@@ -196,7 +207,10 @@ class ObjectAnywhereEEAnywhereEventCfg(ResetStatesBaseEventCfg):
         params={
             "pose_range": {
                 "x": (0.3, 0.55),
-                "y": (-0.1, 0.5),
+                # y max trimmed 0.5 -> 0.30 for the real table: mats end at y=+0.35
+                # (authors' table was 1.365 m wide; ours is 0.70) -- objects must never
+                # spawn over the edge.
+                "y": (-0.1, 0.30),
                 "z": (0.0, 0.3),
                 # PCB stays essentially top-up: only a small +/-0.1 rad (~6 deg) roll/pitch
                 # jitter for robustness to placement error; yaw stays free (in-plane spin
