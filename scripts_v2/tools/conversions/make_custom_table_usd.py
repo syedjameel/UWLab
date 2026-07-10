@@ -244,30 +244,29 @@ def make_table(dims, out_path):
     author_mesh(stage, "/custom_lab_table/visuals/mat_green",
                 box_mesh(split, x1, -yh, yh, 0.0, mat_t),
                 "/custom_lab_table/visuals/Looks/mat_green")
-    # frame: structural top slab + under-table detail (4 legs, apron rails, lower shelf)
-    # + 4 corner curtain pillars, merged into ONE mesh (authors' single-mesh pattern)
-    legs, apron, shelf = body["legs"], body["apron"], body["shelf"]
+    # frame: structural top slab + cabinet-style side WALLS (under-table volume enclosed,
+    # short legs visible below) + 4 corner curtain pillars, merged into ONE mesh
+    # (authors' single-mesh pattern)
+    walls, legs = body["walls"], body["legs"]
     zb = body["z_bottom"]
+    wi, wt = walls["inset"], walls["thickness"]
+    wz0 = zb + walls["bottom_clearance"]        # walls stop here; legs show below
     lc, li = legs["cross_section"], legs["inset"]
     lxs = (x0 + li, x1 - li)
     lys = (-yh + li, yh - li)
     pxs = (x0 + pin, x1 - pin)
     pys = (-yh + pin, yh - pin)
     frame_parts = [box_mesh(x0, x1, -yh, yh, -thick, 0.0)]                         # top slab
+    frame_parts += [
+        box_mesh(x0 + wi, x1 - wi, -yh + wi, -yh + wi + wt, wz0, -thick),          # wall -y
+        box_mesh(x0 + wi, x1 - wi, yh - wi - wt, yh - wi, wz0, -thick),            # wall +y
+        box_mesh(x0 + wi, x0 + wi + wt, -yh + wi, yh - wi, wz0, -thick),           # wall -x
+        box_mesh(x1 - wi - wt, x1 - wi, -yh + wi, yh - wi, wz0, -thick),           # wall +x
+    ]
     for lx in lxs:
         for ly in lys:
             frame_parts.append(box_mesh(lx - lc / 2, lx + lc / 2, ly - lc / 2, ly + lc / 2,
-                                        zb, -thick))                               # legs
-    ah, at, ai = apron["height"], apron["thickness"], apron["inset"]
-    frame_parts += [
-        box_mesh(x0 + ai, x1 - ai, -yh + ai, -yh + ai + at, -thick - ah, -thick),  # apron -y
-        box_mesh(x0 + ai, x1 - ai, yh - ai - at, yh - ai, -thick - ah, -thick),    # apron +y
-        box_mesh(x0 + ai, x0 + ai + at, -yh + ai, yh - ai, -thick - ah, -thick),   # apron -x
-        box_mesh(x1 - ai - at, x1 - ai, -yh + ai, yh - ai, -thick - ah, -thick),   # apron +x
-    ]
-    st, si = shelf["thickness"], shelf["inset"]
-    frame_parts.append(box_mesh(x0 + si, x1 - si, -yh + si, yh - si,
-                                shelf["z_top"] - st, shelf["z_top"]))              # lower shelf
+                                        zb, wz0))                                  # short legs
     for px in pxs:
         for py in pys:
             frame_parts.append(box_mesh(px - pc / 2, px + pc / 2, py - pc / 2, py + pc / 2,
@@ -281,13 +280,10 @@ def make_table(dims, out_path):
                           (cx, cy, mat_t / 2.0), (x1 - x0, 2 * yh, mat_t))
     author_collision_cube(stage, "/custom_lab_table/collisions/top_slab",
                           (cx, cy, -thick / 2.0), (x1 - x0, 2 * yh, thick))
-    for k, lx in enumerate(lxs):
-        for j, ly in enumerate(lys):
-            author_collision_cube(stage, f"/custom_lab_table/collisions/leg_{k}{j}",
-                                  (lx, ly, (zb - thick) / 2.0), (lc, lc, abs(zb) - thick))
-    author_collision_cube(stage, "/custom_lab_table/collisions/shelf",
-                          (cx, cy, shelf["z_top"] - st / 2.0),
-                          (x1 - x0 - 2 * si, 2 * (yh - si), st))
+    # one box for the whole enclosed cabinet volume (walls + legs region)
+    author_collision_cube(stage, "/custom_lab_table/collisions/cabinet",
+                          (cx, cy, (zb - thick) / 2.0),
+                          (x1 - x0 - 2 * wi, 2 * (yh - wi), abs(zb) - thick))
     for k, px in enumerate(pxs):
         for j, py in enumerate(pys):
             author_collision_cube(stage, f"/custom_lab_table/collisions/pillar_{k}{j}",
