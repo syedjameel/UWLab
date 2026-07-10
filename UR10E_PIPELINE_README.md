@@ -204,7 +204,10 @@ pip install --upgrade pip
 pip install "isaacsim[all,extscache]==5.1.0" --extra-index-url https://pypi.nvidia.com
 pip install -U torch==2.7.0 torchvision==0.22.0 --index-url https://download.pytorch.org/whl/cu128
 isaacsim                          # first-run verify: accept the EULA ("Yes"); 10+ min extension cache
-sudo apt install cmake build-essential   # needed by the extension build
+# build toolchain (needed by the extension build). No sudo on the server? Use conda-forge:
+which gcc g++ make cmake || conda install -y -c conda-forge cmake make ninja c-compiler cxx-compiler
+# (c-compiler/cxx-compiler set CC/CXX via env activation -- re-activate the env after install.
+#  With sudo, the official equivalent is: sudo apt install cmake build-essential)
 ./uwlab.sh --install              # (-i) UWLab extensions + rsl_rl etc.
 ./uwlab.sh -p scripts/tutorials/00_sim/create_empty.py   # install verify
 
