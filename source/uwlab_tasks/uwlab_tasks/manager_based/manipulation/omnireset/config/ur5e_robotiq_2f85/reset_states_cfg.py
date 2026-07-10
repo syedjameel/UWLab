@@ -162,7 +162,12 @@ class ResetStatesBaseEventCfg:
             "pose_range": {
                 "x": (-0.01, 0.01),
                 "y": (-0.059, -0.019),
-                "z": (-0.01, 0.01),
+                # z jitter REMOVED (was +-0.01): objects are placed at the support's
+                # DEFAULT datum while the jittered table moved under them -- the kinematic
+                # box ended up to 1 cm inside/above the mats (verified in the first H100
+                # recording: corr(box_z - table_z, table_z) = -1.000). The real table
+                # height is fixed anyway; x/y placement DR keeps its value.
+                "z": (0.0, 0.0),
                 "roll": (0.0, 0.0),
                 "pitch": (0.0, 0.0),
                 "yaw": (0.0, 0.0),
@@ -185,7 +190,10 @@ class ResetStatesBaseEventCfg:
         params={
             "pose_range": {
                 "x": (0.3, 0.55),
-                "y": (-0.1, 0.3),
+                                # y recentered by -0.039 (the assembly nominal): the placement datum is the
+                # support DEFAULT pose and does not follow the jitter -- unshifted ranges put
+                # the box up to 3.6 cm past the mat edge (seen in the first H100 recording).
+                "y": (-0.139, 0.261),
                 "z": (0.0, 0.0),
                 "roll": (0.0, 0.0),
                 "pitch": (0.0, 0.0),
@@ -210,7 +218,10 @@ class ObjectAnywhereEEAnywhereEventCfg(ResetStatesBaseEventCfg):
                 # y max trimmed 0.5 -> 0.30 for the real table: mats end at y=+0.35
                 # (authors' table was 1.365 m wide; ours is 0.70) -- objects must never
                 # spawn over the edge.
-                "y": (-0.1, 0.30),
+                                # y recentered by -0.039 (the assembly nominal): the placement datum is the
+                # support DEFAULT pose and does not follow the jitter -- unshifted ranges put
+                # the box up to 3.6 cm past the mat edge (seen in the first H100 recording).
+                "y": (-0.139, 0.261),
                 "z": (0.0, 0.3),
                 # PCB stays essentially top-up: only a small +/-0.1 rad (~6 deg) roll/pitch
                 # jitter for robustness to placement error; yaw stays free (in-plane spin
@@ -235,7 +246,11 @@ class ObjectAnywhereEEAnywhereEventCfg(ResetStatesBaseEventCfg):
             "pose_range_b": {
                 "x": (0.3, 0.7),
                 "y": (-0.4, 0.4),
-                "z": (0.0, 0.5),
+                # floor raised 0.0 -> 0.02: work surface is at +0.004 now (was -0.013);
+                # z=0 targets wedged fingers into the mat (H100 C1: 1.9% fingertips below
+                # the top -> wrist chatter at eval gains). 0.02 restores the authors'
+                # effective ~1.5 cm minimum clearance.
+                "z": (0.02, 0.5),
                 "roll": (0.0, 0.0),
                 "pitch": (np.pi / 4, 3 * np.pi / 4),
                 "yaw": (np.pi / 2, 3 * np.pi / 2),
@@ -289,7 +304,10 @@ class ObjectAnywhereEEGraspedEventCfg(ResetStatesBaseEventCfg):
         params={
             "pose_range": {
                 "x": (0.3, 0.55),
-                "y": (-0.1, 0.3),
+                                # y recentered by -0.039 (the assembly nominal): the placement datum is the
+                # support DEFAULT pose and does not follow the jitter -- unshifted ranges put
+                # the box up to 3.6 cm past the mat edge (seen in the first H100 recording).
+                "y": (-0.139, 0.261),
                 "z": (0.0, 0.3),
                 # PCB stays essentially top-up: only a small +/-0.1 rad (~6 deg) roll/pitch
                 # jitter for robustness to placement error; yaw stays free (in-plane spin
