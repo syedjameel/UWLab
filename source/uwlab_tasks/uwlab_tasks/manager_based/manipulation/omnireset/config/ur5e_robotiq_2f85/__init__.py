@@ -225,6 +225,36 @@ gym.register(
     kwargs={"env_cfg_entry_point": f"{__name__}.ur10e_linear_gripper_cfg:Ur10eLinearGripperSysidEnvCfg"},
 )
 
+# ---- UR10e + linear-gripper RGB pipeline (camera align + distillation data collection) ----
+# Camera-alignment env (interactive sim2real camera calibration via align_cameras.py --robot ur10e).
+gym.register(
+    id="OmniReset-UR10eLinearGripper-CameraAlign-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={"env_cfg_entry_point": f"{__name__}.ur10e_linear_gripper_rgb_cfg:Ur10eLinearGripperCameraAlignEnvCfg"},
+)
+
+# RGB data collection (80k expert demos for distillation) + in-distribution RGB play/eval.
+gym.register(
+    id="OmniReset-UR10eLinearGripper-RelCartesianOSC-RGB-DataCollection-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.ur10e_linear_gripper_rgb_cfg:Ur10eLinearGripperDataCollectionRGBCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_cfg:UR10eLinearGripper_DAggerRunnerCfg",
+    },
+)
+
+gym.register(
+    id="OmniReset-UR10eLinearGripper-RelCartesianOSC-RGB-Play-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.ur10e_linear_gripper_rgb_cfg:Ur10eLinearGripperEvalRGBCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_cfg:UR10eLinearGripper_DAggerRunnerCfg",
+    },
+)
+
 # Register reset states environments
 gym.register(
     id="OmniReset-UR5eRobotiq2f85-ObjectAnywhereEEAnywhere-v0",
