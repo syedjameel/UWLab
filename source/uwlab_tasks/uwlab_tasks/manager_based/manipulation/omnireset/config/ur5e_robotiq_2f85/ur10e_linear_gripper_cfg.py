@@ -149,6 +149,26 @@ class Ur10eLinearGripperRelCartesianOSCTrainCfg(Ur5eRobotiq2f85RelCartesianOSCTr
         )
 
 
+# Real gripper jaw speed (m/s per jaw joint): the physical gripper takes ~1.0 s for the
+# full 68 mm stroke (user-measured 2026-07-12) -> 0.068 m/s. The sim's implicit jaw PD
+# does the same stroke in 0.2 s (measured; velocity effectively uncapped at 130), so a
+# policy trained without this cap learns to grab-and-go before real jaws would have
+# closed (~0.7 s to the 40 mm-cube grip point = ~7 policy steps @ 10 Hz). Applied as the
+# jaw velocity_limit_sim on the DEPLOYMENT-MATCHED envs only (finetune, Finetune-Play,
+# RGB collection/play) -- the same treatment as the measured motor delay: Stage-1
+# train/eval keep the authors' idealized dynamics, the finetune absorbs the real ones.
+# Re-tune with a precise stopwatch/frame-count measurement if 1.0 s was approximate.
+REAL_GRIPPER_JAW_SPEED = 0.068
+
+
+def _apply_real_gripper_speed(cfg) -> None:
+    """Cap the jaw drives at the measured real jaw speed (copy-on-write: the actuator cfg
+    object is shared module-level state; mutating it in place would leak into Stage-1)."""
+    cfg.scene.robot.actuators["gripper"] = cfg.scene.robot.actuators["gripper"].replace(
+        velocity_limit_sim=REAL_GRIPPER_JAW_SPEED
+    )
+
+
 @configclass
 class Ur10eLinearGripperRelCartesianOSCFinetuneCfg(Ur5eRobotiq2f85RelCartesianOSCFinetuneCfg):
     """Stage 2 finetune: explicit actuator + curriculum (base sets EXPLICIT 2F-85; we override last).
@@ -163,6 +183,7 @@ class Ur10eLinearGripperRelCartesianOSCFinetuneCfg(Ur5eRobotiq2f85RelCartesianOS
         _apply_linear_gripper(
             self, ur10e_linear_gripper.EXPLICIT_UR10E_LINEAR_GRIPPER, Ur10eLinearGripperRelativeOSCAction()
         )
+        _apply_real_gripper_speed(self)
         # Motor delay: the CMA-ES "identified delay=4" was never actually simulated (the
         # scripts reset AFTER applying it, re-randomizing the buffers; fixed 2026-07-06).
         # Re-measured by sweeping delay 0..8 over the frozen 24-param fit: RMSE rises
@@ -200,6 +221,7 @@ class Ur10eLinearGripperRelCartesianOSCFinetuneEvalCfg(Ur5eRobotiq2f85RelCartesi
         _apply_linear_gripper(
             self, ur10e_linear_gripper.EXPLICIT_UR10E_LINEAR_GRIPPER, Ur10eLinearGripperRelativeOSCEvalAction()
         )
+        _apply_real_gripper_speed(self)
         # Eval at the MEASURED residual motor delay: the delay sweep over the frozen
         # sysid fit (2026-07-06) is monotonically best at 0 steps @ 500 Hz (< 2 ms), so
         # paired with the metadata sysid params the real arm is delay 0 at this env's

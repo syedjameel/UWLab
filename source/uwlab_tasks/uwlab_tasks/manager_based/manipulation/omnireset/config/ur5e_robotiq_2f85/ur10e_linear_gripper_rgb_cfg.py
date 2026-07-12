@@ -45,6 +45,7 @@ from .data_collection_rgb_cfg import (
     Ur5eRobotiq2f85EvalRGBRelCartesianOSCCfg,
 )
 from .linear_gripper_cfg import _apply_linear_gripper
+from .ur10e_linear_gripper_cfg import _apply_real_gripper_speed
 
 # Reset states are robot-specific; the RGB collection resets from the UR10e datasets.
 _UR10E_RESET_DIR = "./Datasets_ur10e/OmniReset"
@@ -164,6 +165,9 @@ def _apply_ur10e_rgb(cfg) -> None:
     _apply_linear_gripper(
         cfg, ur10e_linear_gripper.IMPLICIT_UR10E_LINEAR_GRIPPER, Ur10eLinearGripperRelativeOSCEvalAction()
     )
+    # Real jaw speed (1.0 s full stroke): the demos must teach the distilled policy the
+    # real grip-wait timing, so collection runs at deployment gripper dynamics.
+    _apply_real_gripper_speed(cfg)
     # Pin the measured motor delay (0) -- deployment dynamics (mirrors Finetune-Play).
     if getattr(cfg.events, "randomize_arm_sysid", None) is not None:
         cfg.events.randomize_arm_sysid.params["delay_range"] = (0, 0)
