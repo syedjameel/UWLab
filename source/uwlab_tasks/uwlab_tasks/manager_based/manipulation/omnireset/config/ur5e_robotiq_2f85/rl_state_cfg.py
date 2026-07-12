@@ -752,6 +752,23 @@ class Ur5eRobotiq2f85RelCartesianOSCFinetuneCfg(Ur5eRobotiq2f85RlStateCfg):
         self.scene.robot = EXPLICIT_UR5E_ROBOTIQ_2F85.replace(prim_path="{ENV_REGEX_NS}/Robot")
 
 
+@configclass
+class PlayTerminationsCfg(TerminationsCfg):
+    """Play/eval terminations: also end the episode shortly after success.
+
+    Mirrors the RGB collection cut (``DataCollectionRGBTerminationsCfg``): post-success the
+    reward is flat w.r.t. the arm, so an early-training policy's behavior there is arbitrary
+    (measured 2026-07-11: model_1100 pressed the open gripper down/sideways after placing --
+    harmless, but it films badly). Training envs are untouched (authors': timeout only);
+    ``eval_robustness.py`` already overwrote this same ``success`` attr, so it is unaffected.
+    """
+
+    success = DoneTerm(
+        func=task_mdp.consecutive_success_state_with_min_length,
+        params={"num_consecutive_successes": 5, "min_episode_length": 10},
+    )
+
+
 # Evaluation configuration (after Stage 1: implicit actuator, soft gains, no sysid DR)
 @configclass
 class Ur5eRobotiq2f85RelCartesianOSCEvalCfg(Ur5eRobotiq2f85RlStateCfg):
@@ -759,6 +776,7 @@ class Ur5eRobotiq2f85RelCartesianOSCEvalCfg(Ur5eRobotiq2f85RlStateCfg):
 
     events: TrainEvalEventCfg = TrainEvalEventCfg()
     actions: Ur5eRobotiq2f85RelativeOSCAction = Ur5eRobotiq2f85RelativeOSCAction()
+    terminations: PlayTerminationsCfg = PlayTerminationsCfg()
 
 
 # Evaluation configuration (after Stage 2: explicit actuator, stiff gains, fixed sysid)
@@ -768,6 +786,7 @@ class Ur5eRobotiq2f85RelCartesianOSCFinetuneEvalCfg(Ur5eRobotiq2f85RlStateCfg):
 
     events: FinetuneEvalEventCfg = FinetuneEvalEventCfg()
     actions: Ur5eRobotiq2f85RelativeOSCEvalAction = Ur5eRobotiq2f85RelativeOSCEvalAction()
+    terminations: PlayTerminationsCfg = PlayTerminationsCfg()
 
     def __post_init__(self):
         super().__post_init__()
