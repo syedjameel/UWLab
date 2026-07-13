@@ -10,7 +10,12 @@ Sources of truth: the official sim2real doc
 OmniReset paper (`2603.15789v3.pdf` at repo root, esp. Appendix A.3).
 
 - **Robot:** UR10e, IP `192.168.0.100` (ssh `root@`, serial 20185000717), PolyScope 5.25
-- **Sim repo:** `~/work/repos/UWLab`, branch `omnireset/ur10e-linear-gripper` (fork `syedjameel/UWLab`)
+- **Sim repo:** `~/work/repos/UWLab`, branch **`omnireset/ur10e-custom-table`** (fork `syedjameel/UWLab`) —
+  the active branch, built off `omnireset/ur10e-linear-gripper`. Adds, on top of it: the custom
+  lab-table swap (real-rig geometry → re-recorded resets), the gripper base **camera-mount
+  visual** (visual only, no collision — keeps the obs space at 172 so checkpoints stay loadable),
+  the real **1 s gripper stroke** cap in the deployment-matched envs, and the finetune motor-delay
+  range narrowed to **(0,1)** (removes the p=0.75 ADR wall; see §8.1).
 - **Real-robot repo:** `~/work/repos/diffusion_policy` — our UR10e changes live on branch
   **`ur10e-linear-gripper` of the fork `syedjameel/diffusion_policy`** (based on the
   `omnireset` branch of WEIRDLabUW/diffusion_policy). Colleagues:
@@ -27,8 +32,8 @@ OmniReset paper (`2603.15789v3.pdf` at repo root, esp. Appendix A.3).
 | 5. Fit verification (plot, <2°/joint) | **DONE** — pan 0.32 / lift 1.93 / elbow 1.31 / w1 1.11 / w2 0.34 / w3 0.27° (§5) |
 | 6. Sysid params → metadata.yaml | **DONE** — `Ur10eLinearGripper/metadata.yaml` sysid block = real UR10e values (§6) |
 | 7. Sim hardening before finetune | **DONE** — gripper mass 0.575 kg + wrist ±180° limits both in the graft; **re-record resets before finetune** (14–27% of the old states violate the new wrist limits) (§7) |
-| 8. Stage-2 finetune (ADR) + eval-gain validation in contact | **RUNNING** — launched 2026-07-06 after dataset QC + salvage (§7b); eval gains validated in contact; watch `Curriculum/adr_sysid/scale_progress` → 1.0 (§8.1) |
-| 9. Real deployment path (RGB distillation, cameras, gripper driver) | **IN PROGRESS** — sim RGB cfgs built; real-side code done incl. the 90° rig-orientation fix (§10.2a); lean `robodiff_real` env built; calibration chain dry-run-validated on the real front D405 (2026-07-09). Remaining: final-mount camera calibration (§10.3) → expert export → 80k collection → student training → deploy (§10) |
+| 8. Stage-2 finetune (ADR) + eval-gain validation in contact | **RUNNING** (custom-table branch, with the real 1 s gripper stroke) — the run stalled ~24 h oscillating at the p=0.75 ADR wall; root-caused to the delay ceiling discretely jumping to 2 at p=0.75, tipped over by the gripper tax on the grasp task. **Fixed by narrowing the delay DR to (0,1)** and resuming from an earlier checkpoint (`model_3300`, before the oscillation baked in). Watch `Curriculum/adr_sysid/scale_progress` climb *through* 0.75 → 1.0 (§8.1) |
+| 9. Real deployment path (RGB distillation, cameras, gripper driver) | **IN PROGRESS** — sim RGB cfgs built; real-side code done incl. the 90° rig-orientation fix (§10.2a); `robodiff_real` env present on the laptop (calibration + teleop stack imports OK); calibration chain dry-run-validated on the real front D405 (2026-07-09). Gripper 1 s stroke now modeled in sim (§10 gaps closed). Remaining: final-mount camera calibration (§10.3) → expert export → 80k collection → student training → deploy (§10) |
 
 ---
 
@@ -171,7 +176,9 @@ at delay 0 vs 1.485° at delay 8 (w1 is the sensitive joint: 0.89° → 2.37°).
 delay paired with the round-3 params is **0 steps @ 500 Hz (< 2 ms)**; the true fit quality
 is pan 0.30 / lift 1.87 / elbow 1.29 / w1 0.89 / w2 0.34 / w3 0.26° (total 1.02°), better
 than the accepted numbers, which were measured at an accidental delay≈2. Config outcome:
-Finetune DR keeps the paper's delay {0,1,2} @ 120 Hz; Finetune-Play pins delay 0.
+Finetune DR draws the delay from **(0,1)** @ 120 Hz (originally the paper's {0,1,2}, narrowed
+2026-07-13 to clear the p=0.75 wall — the real delay is 0, so (0,1) still over-brackets it, see
+§8.1); Finetune-Play pins delay 0.
 
 Lesson: the printed `RMSE: X°` (= sqrt of the pooled CMA-ES score) is NOT a per-joint RMSE and
 can exceed all of them — judge fits by the per-joint titles in `sysid_fit_error.png`. Also
@@ -292,7 +299,14 @@ Re-run the QC afterwards — it must PASS before training.
 
 ## 8. RUNNING — Stage-2 finetune (ADR) + eval validation
 
-The full A100 sequence (after `git pull fork omnireset/ur10e-linear-gripper` — needs
+> **Custom-table branch note (2026-07-13):** the current finetune runs on
+> `omnireset/ur10e-custom-table`, which additionally swaps in the real lab table (so the four
+> reset datasets were RE-RECORDED against the new geometry — Pipeline README Step C — before
+> this run) and caps the gripper at the real 1 s stroke in the finetune/RGB envs. That gripper
+> tax + the old delay-2 step created the p=0.75 wall; the delay range is now (0,1) (see §8.1).
+> Resume from `model_3300` (pre-wall), not the stuck checkpoint.
+
+The full A100 sequence (after `git pull fork omnireset/ur10e-custom-table` — needs
 **b861f06 or later**: the 2026-07-06 audit fixed a DelayedPD buffer sizing that would
 crash the finetune hours in when the ADR curriculum reaches delay 2, made the gripper-gain
 DR cover BOTH dual-drive jaws, and added the dataset QC tool):
@@ -358,7 +372,7 @@ together (tensorboard: `Curriculum/adr_sysid/scale_progress`,
 | channel | at p = 0 | at p = 1 (per env, re-drawn every reset) |
 |---|---|---|
 | joint friction + armature | 0 (ideal) | the §6 sysid values × U(0.8, 1.2) per joint |
-| motor delay | 0 | drawn from {0, 1, 2} physics steps @ 120 Hz (ceiling = round(p·2)) |
+| motor delay | 0 | drawn from **{0, 1}** physics steps @ 120 Hz (ceiling = round(p·1); was {0,1,2}/round(p·2) — see the p=0.75 note below) |
 | OSC gains | train Kp 200/3 | eval Kp 1000/50 × U(0.8, 1.2), damping_ratio → 1 |
 | action scale | (0.02…, 0.2) | (0.01, 0.01, **0.002**, 0.02, 0.02, 0.2) — z cut 10× so contact = pressing gently |
 
@@ -383,9 +397,17 @@ Like adding weight to the bar only after a clean lift. Consequences worth knowin
   down repeatedly / success pinned below 0.90 means the run hit a wall.
 * Timeline: 100 increments × ~200 gated env steps ⇒ **≥ ~800 training iterations if
   success never dips; realistically several hours**. Expect dips and partial retreats.
-* Milestone at **p ≈ 0.75**: the delay ceiling first reaches 2 — the exact point the
-  pre-audit code crashed (`ValueError: max time lag > history length`, fixed 74910d0).
-  Sailing past it confirms the fix in vivo.
+* **p ≈ 0.75 was an ADR wall** (now removed): with the old delay range {0,1,2} the ceiling
+  `round(p·delay_hi)` jumps DISCRETELY 1→2 exactly at p=0.75 (`round(1.5)=2`). Once the real
+  1 s gripper stroke shaved ~2% off the grasp-from-open task, the aggregate could no longer
+  absorb that delay-2 step and success fell below the 0.95 advance threshold every time p hit
+  0.75 → the run oscillated there for ~24 h (measured 2026-07-13: earlier no-gripper run crossed
+  at task0=0.921/mean=0.926; slow-gripper run stalled at task0=0.902/same mean). **Fix: delay
+  range → (0,1)** so the ceiling is `round(p)` (0 for p<0.5, 1 for p≥0.5, no jump); the real
+  delay is 0 so this doesn't weaken sim2real. Resume from a checkpoint BEFORE the oscillation
+  (`model_3300`), not the stuck one, or it re-learns the wall. (Historical: p=0.75 was also
+  where the pre-audit DelayedPD buffer-size crash hit, `ValueError: max time lag > history
+  length`, fixed 74910d0 — unrelated to this wall.)
 
 **"Done" = `p` pinned at 1.0 with success holding ~0.95.** At that point every episode
 runs at the full measured dynamics, stiff eval gains, and eval action scale — i.e. the
@@ -413,7 +435,7 @@ Real-robot teleop sanity check of the OSC (after adapting for the custom gripper
 
 ---
 
-## 9. NEXT — real deployment path (PLANNED 2026-07-06, start here tomorrow)
+## 9. Real deployment path (RGB distillation) — plan + progress
 
 The state-based expert **cannot run on the real robot** (it observes object poses). The
 OmniReset deployment path is student-teacher distillation to RGB, zero-shot.
@@ -451,7 +473,9 @@ untested on hardware until deployment)**:
 - new `real_world/linear_gripper.py` (hardened serial Open/Close on `/dev/ttyACM0`:
   transition-only writes, serial exceptions swallowed so a USB hiccup can't drop the 500 Hz
   torque loop, no activate/encoder) replaces `RobotiqGripper` in the controller; plumbed
-  through `real_env`. Real jaw travel measured **1.1–1.2 s** (see §10 gaps).
+  through `real_env`. Real jaw travel measured **~1 s** — now MODELED in sim: the finetune/RGB
+  envs cap the jaw `velocity_limit_sim` at 0.068 m/s (`REAL_GRIPPER_JAW_SPEED`, 2026-07-13), so
+  the expert learns the real grasp-wait timing (§10 gaps closed).
 - D405 serials set in `eval_real_robot`/`demo_real_robot` + `camera_configs=None` (D405
   rejects the 415/435/455 advanced-mode presets; verified `None` flows through cleanly).
 - **90° rig-orientation fix (§10.2a, commit 0961090)**: `real_to_sim_joints` (`q1 − 90°`)
@@ -477,14 +501,20 @@ is **`dataset_dir`-only** (`config/task/sim2real_image.yaml`).
    replacing `RobotiqGripper.activate()/move()` on the linear path; plumb through
    `real_env.py` + teleop/eval scripts. NO gripper feedback needed: the stack observes
    `last_gripper_action` (commanded), never encoder values — true for the 2F-85 too.
-   Validation: measure real open↔close travel time vs sim (~0.1–0.2 s); if much slower,
-   tune the sim jaw velocity limit to match before the NEXT training round.
+   ✅ Done — measured ~1 s open↔close; the sim jaw `velocity_limit_sim` is now capped at
+   0.068 m/s (`REAL_GRIPPER_JAW_SPEED`) in the finetune/RGB envs so training sees the real
+   grasp timing.
 2. **B — Wrist camera mount** (hardware). D405 on the linear gripper. Requirements: rigid;
    fingers + grip zone in view at 7–30 cm; cable strain relief for wrist rotation; rough
    viewpoint like the sim wrist cam (mounted on `robotiq_base_link`, offset ~(0.018,
    −0.004, −0.069), looking at the grip zone) — exact placement NOT critical (calibration +
-   pose randomization absorb it). Sim side afterwards: add a simple proxy box for the mount
-   to the graft (front/side cameras see it; its texture gets randomized like the authors').
+   pose randomization absorb it). ✅ Sim side done (2026-07-13): the real gripper base +
+   camera-mount STL is grafted as the base **visual** (`meshes/base_visual.stl`) so the
+   front/side/wrist cameras render the true gripper; **VISUAL ONLY, no collision** — a mount
+   collider would add a shape and grow the per-shape material obs (breaks checkpoint loading),
+   and a wrist bracket never touches the workspace in this task. Its texture is DR'd like the
+   authors'. ⚠ Still update the **wrist camera pose** to match where the D405 actually sits on
+   this mount during §10.3 calibration.
 3. **C — Camera rig + calibration** (front/side can start before the mount exists). Mount
    rigidly ~where the sim cfg puts them (front ~1.1 m out, side ~0.8 m lateral). Per
    camera: ArUco coarse extrinsic (6x6_50 ID 12, 150 mm; `0/1/2_camera_*.py`) →
@@ -552,53 +582,70 @@ only pixels (10.5), rehearse in sim (10.6), perform live (10.7).* Each step belo
 - **ROBODIFF_REAL** — the real-robot env (diffusion_policy `conda_environment_real.yaml`).
   Runs the calibration capture (`0/1/2_camera_*.py`) and `eval_real_robot`.
 
-### 10.0 — One-time setup (distillation doc Step 1)
+### 10.0 — One-time setup (official OmniReset sim2real + distillation docs)
+
+Three conda envs, exactly as the docs define them (docs use `mamba`; `conda env create` works
+but its solver crawls on the real yaml):
+- **env_uwlab** — the sim env (= `leisaac` on the laptop): export, `collect_demos`,
+  `align_cameras`, `eval_distilled_policy`.
+- **robodiff** — training env, from `conda_environment.yaml`.
+- **robodiff_real** — real-robot env (calibration capture + deploy), from `conda_environment_real.yaml`.
+
+Repos are siblings under `~/work/repos/` (UWLab + diffusion_policy). Pull the forks first
+(we track our forks; the docs clone `-b omnireset WEIRDLabUW/diffusion_policy`, our
+`ur10e-linear-gripper` branch is that omnireset base + the UR10e changes):
 ```bash
-# both repos as siblings; pull the forks
-cd ~/work/repos/UWLab            && git pull fork omnireset/ur10e-linear-gripper
+cd ~/work/repos/UWLab            && git pull fork omnireset/ur10e-custom-table
 cd ~/work/repos/diffusion_policy && git pull fork ur10e-linear-gripper
-# install diffusion_policy into the SIM env (collect_demos zarr writing + shared utils)
-cd ~/work/repos/diffusion_policy && conda activate env_uwlab && python -m pip install -e . \
-  && python -m pip install dill hydra-core omegaconf zarr einops "diffusers<0.37" wandb accelerate
-# create the training env (once)
-mamba env create -f conda_environment.yaml        # -> robodiff (training)
 ```
 
-**`robodiff_real` — DON'T use the full `conda_environment_real.yaml` here.** That yaml is a
-heavy, old-pinned env (Py3.9 / CUDA 11.6 / PyTorch 1.12 / pytorch3d / MuJoCo / robosuite / r3m /
-dm-control) whose solve hangs (no mamba on the laptop, only conda), and it needs `sudo apt`
-system libs (librealsense, OSMesa, spnav). ~Half of it is sim-benchmark reproduction we never
-run on the real rig. Build a **lean env** instead, in two tiers:
-
+**Prereqs the official `conda_environment_real.yaml` needs** (Py3.9 / CUDA 11.6 / PyTorch 1.12 /
+pytorch3d / MuJoCo / robosuite / r3m / dm-control -- these are `sudo` + build-heavy):
 ```bash
-# tier 1 -- CALIBRATION capture only (0/1/2_camera_*.py + perception/): reliable, ~2 min
-conda create -n robodiff_real python=3.9 -y
-conda run -n robodiff_real python -m pip install \
-  "numpy<2" scipy matplotlib "opencv-contrib-python<4.10" pyrealsense2 open3d
-# (the GUI build, NOT -headless: teleop/demo need cv2.imshow; contrib still provides cv2.aruco)
-# NOTE: numpy<2 is REQUIRED -- the opencv-contrib 4.9 wheel is compiled against numpy 1.x and
-# crashes under numpy 2.0 ("_ARRAY_API not found"). pip pulls numpy 2 by default, so pin it.
-# (pyrealsense2 wheel bundles librealsense w/ D405 support; opencv-contrib gives cv2.aruco --
-#  code uses the new ArucoDetector API + solvePnP, so 4.9 is fine; don't need <4.7.)
-# Verified: numpy 1.26.4 / cv2 4.9.0 / pyrealsense2 2.56.5 / open3d 0.19.0; perception/ imports OK.
-
-# tier 1.5 -- TELEOP (demo_real_robot + real_env + controller; verified on the laptop
-# 2026-07-09, full import chain OK). CPU torch suffices (only the image resize uses it):
-conda run -n robodiff_real python -m pip install \
-  av click numba numcodecs pynput "ur-rtde==1.6.2" pyserial threadpoolctl zarr "atomics==1.0.2"
-conda run -n robodiff_real python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
-
-# tier 2 -- add DEPLOYMENT (eval_real_robot) when you actually deploy, on the 4090 PC
-# (CUDA torch there for ResNet inference):
-conda run -n robodiff_real python -m pip install \
-  torch torchvision dill hydra-core omegaconf einops \
-  "diffusers<0.37" tqdm imageio imageio-ffmpeg scikit-video scikit-image termcolor robomimic
-# run diffusion_policy scripts from the repo root (PYTHONPATH=$PWD) -- no `pip install -e .` needed.
+conda install -n base -c conda-forge mamba -y   # the docs use mamba; conda's solver is very slow here
+sudo apt install -y libosmesa6-dev libgl1-mesa-glx libglfw3 patchelf libspnav-dev spacenavd
+# (+ Intel librealsense per the RealSense SDK guide if the bundled pyrealsense2 wheel isn't enough)
 ```
-Skipped vs the yaml (all sim-benchmark, unused on the real rig): free-mujoco-py, mujoco,
-dm-control, robosuite, pybullet-svl, pytorchvideo, r3m, spnav, pytorch3d, ray, wandb.
 
-Prereq: the §8 finetune is converged (p pinned 1.0, success ~0.95, a checkpoint chosen).
+**1) SIM env** (distillation Step 1) -- install diffusion_policy into env_uwlab (=`leisaac`):
+```bash
+cd ~/work/repos/diffusion_policy && conda activate leisaac \
+  && python -m pip install -e . \
+  && python -m pip install dill hydra-core omegaconf zarr einops "diffusers<0.37" wandb accelerate
+```
+
+**2) TRAINING env** (once):
+```bash
+cd ~/work/repos/diffusion_policy && mamba env create -f conda_environment.yaml    # -> robodiff
+```
+
+**3) REAL env** (sim2real doc) -- the full official env:
+```bash
+conda env remove -n robodiff_real -y                    # if an older robodiff_real exists (yaml reuses the name)
+cd ~/work/repos/diffusion_policy
+mamba env create -f conda_environment_real.yaml         # -> robodiff_real
+conda activate robodiff_real && python -m pip install -e .
+```
+Run diffusion_policy scripts from the repo root with `PYTHONPATH=$PWD` (the `pip install -e .`
+above also makes the package importable).
+
+> **You do NOT need step 3 for the CALIBRATION stage.** The §10.3 capture scripts
+> (`0/1/2_camera_*.py` + `perception/`) only import numpy<2 / opencv-contrib / pyrealsense2 /
+> open3d (+ ur-rtde, pyserial, cpu-torch for teleop) -- all plain `pip`, no `sudo`, no mamba,
+> ~2 min, and our laptop `robodiff_real` already has them (verified: numpy 1.26.4 / cv2 4.9.0 /
+> pyrealsense2 / open3d 0.19.0 / ur-rtde / pyserial / torch cpu import OK). Build the full
+> `conda_environment_real.yaml` on the **deployment PC (4090)** where `eval_real_robot` runs and
+> the `sudo apt` + `mamba` setup is worth it; `pytorch3d` / `free-mujoco-py` are hard to build
+> and ~half the yaml (mujoco/robosuite/r3m/dm-control) is sim-benchmark repro the real rig never runs.
+> Calibration-only quick env (no sudo, if you need to rebuild it):
+> ```bash
+> conda create -n robodiff_real python=3.9 -y && conda run -n robodiff_real python -m pip install \
+>   "numpy<2" scipy matplotlib "opencv-contrib-python<4.10" pyrealsense2 open3d \
+>   av click numba numcodecs pynput "ur-rtde==1.6.2" pyserial threadpoolctl zarr "atomics==1.0.2" \
+> && conda run -n robodiff_real python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+> ```
+
+Prereq for the pipeline: the §8 finetune is converged (p pinned 1.0, success ~0.95, a checkpoint chosen).
 
 ### 10.1 — Export the finetuned expert to TorchScript (distillation doc Step 2)
 **What it does:** the finetune checkpoint (`model_<iter>.pt`) is a training-framework object
@@ -793,13 +840,15 @@ python eval_real_robot.py --input <student>.ckpt --output ./demo --robot_ip 192.
 ```
 
 ### ⚠ Known sim↔real gaps to watch
-- **Gripper actuation is ~6–10× slower on the real robot: 1.1–1.2 s measured to open/close vs
-  the near-instant sim jaw** (~11–12 control steps at 10 Hz). The expert (and student) learned
-  grasp timing on the fast sim jaw, so at deployment the arm may move on before the real grasp
-  completes. Mitigations, cheapest first: the deploy-side stuck-detection/`'g'` open macro
-  already helps; if grasps fail on the slow close, slow the **sim** jaw to ~1.1 s (lower the
-  gripper `maxJointVelocity`/drive in the graft) and **re-finetune** before the next collection
-  — only if deployment shows it matters (it costs a training round).
+- **Gripper stroke ~1 s on the real robot vs near-instant sim jaw — now MODELED (2026-07-13).**
+  The finetune/RGB envs cap the jaw `velocity_limit_sim` at 0.068 m/s (`REAL_GRIPPER_JAW_SPEED`
+  in `ur10e_linear_gripper_cfg.py`, applied via `_apply_real_gripper_speed`; Stage 1 keeps the
+  fast jaw, same as the arm-delay treatment). So the current finetune (and the demos it will
+  film) learn the real grasp-wait timing — no separate re-finetune needed. Side effect it caused:
+  the grasp-from-open task got ~2% harder, which surfaced the p=0.75 delay wall (fixed via the
+  delay (0,1) narrowing, §8.1). Deploy-side `'g'` open macro / stuck-detection still there as a
+  backstop. If a precise stopwatch/frame-count measurement differs from 1 s, retune the one
+  constant and re-finetune.
 - **Payload 0.575 kg confirmed** (weighed; `ur10e_kinematics.PAYLOAD_MASS`), used by the real
   OSC `setPayload` gravity comp. (The lerobot `0.3` was wrong.)
 - **Images are resized, not cropped** — `real_env` resizes 640×480 → 224×224, matching the sim
