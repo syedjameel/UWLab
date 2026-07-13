@@ -188,16 +188,25 @@ class Ur10eLinearGripperRelCartesianOSCFinetuneCfg(Ur5eRobotiq2f85RelCartesianOS
         # scripts reset AFTER applying it, re-randomizing the buffers; fixed 2026-07-06).
         # Re-measured by sweeping delay 0..8 over the frozen 24-param fit: RMSE rises
         # monotonically from delay 0 (total 1.02 deg) -> the residual delay PAIRED WITH
-        # the metadata sysid params is 0 steps @ 500 Hz (< 2 ms). (0, 2) here = the paper
-        # Table 2 range {0,1,2} @ this env's 120 Hz; reality sits at the low end, which is
-        # structurally unavoidable for a nonnegative quantity, and the range brackets any
-        # real latency growth from above. UR10e-only override.
-        self.events.randomize_arm_sysid.params["delay_range"] = (0, 2)
-        # The actuator's max_delay sizes its DelayBuffers (history_length = max_delay);
-        # set_time_lag(2) on the inherited max_delay=1 buffers raises ValueError the first
-        # time the ADR curriculum reaches scale_progress >= 0.75 and an env draws delay 2
-        # -- i.e. hours into the finetune. Must be >= delay_range[1]. (The sysid script
-        # handles the same invariant by rebuilding the actuator with max_delay=--delay_max.)
+        # the metadata sysid params is 0 steps @ 500 Hz (< 2 ms). Reality is delay 0.
+        #
+        # (0, 2) -> (0, 1) (2026-07-13): the ADR ramps the delay ceiling as
+        # round(scale_progress * delay_hi) (see randomize_arm_from_sysid). With delay_hi=2
+        # that ceiling DISCRETELY jumps 1 -> 2 exactly at scale_progress 0.75 (round(1.5)=2),
+        # which is the wall the finetune got stuck on: once the real gripper-speed cap
+        # (1 s stroke) shaved ~2% off the grasp-from-open task, the aggregate could no longer
+        # absorb the delay-2 step and success fell below the 0.95 advance threshold every
+        # time p reached 0.75 (measured: earlier no-gripper run crossed at task0=0.921 /
+        # mean=0.926; slow-gripper run stalled at task0=0.902 / same mean). delay_hi=1 makes
+        # the ceiling round(p): 0 for p<0.5, 1 for p>=0.5 -- no jump at 0.75, and since the
+        # real delay is 0, delay 1 still over-brackets it. Removes the wall without weakening
+        # sim2real below reality. If a future rig genuinely shows >1-step latency, restore
+        # (0, 2) and expect this wall back.
+        self.events.randomize_arm_sysid.params["delay_range"] = (0, 1)
+        # The actuator's max_delay sizes its DelayBuffers (history_length = max_delay) and must
+        # be >= delay_range[1]. Kept at 2 (a harmless margin above the delay-1 range) so the
+        # buffers stay valid if delay_range is bumped back without touching this line. (The
+        # sysid script rebuilds the actuator with max_delay=--delay_max for the same invariant.)
         self.scene.robot.actuators["arm"].max_delay = 2
 
 
