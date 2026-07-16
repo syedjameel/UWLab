@@ -679,7 +679,7 @@ conventions fix this everywhere (both implemented):
    Real home `67.94 -93.33 146.23 -142.91 -90.04 -22.95` ⇒ **sim** home
    `-22.06 -93.33 146.23 -142.91 -90.04 -22.95`.
 2. **Marker convention (calibration):** marker **+X points from the robot base toward the
-   marker/workspace** (physically pendant −Y = sim +X); `aruco_offset = [0.463, 0, 0]`
+   marker/workspace** (physically pendant −Y = sim +X); `aruco_offset = [0.455, 0, 0]` (touch-off 2026-07-16)
    (sim frame). Then `0/1/2` output the camera pose **directly in the sim frame** — the
    authors' design; **no rotation conversion belongs in `2_get`** (verified; its docstring
    states the contract).
@@ -689,11 +689,20 @@ Mount the 3× D405 (front `409122273078`, side `323622272232`, wrist `4091222722
 backdrop curtains (front ≈1.1 m out, side ≈0.8 m lateral); command-strip the openbox to the
 table; drive the arm to home `67.94 -93.33 146.23 -142.91 -90.04 -22.95` deg. Print + place the
 **ArUco marker** (dictionary `6x6_50`, ID `12`, size `150 mm` — the `marker_6x6_150mm_id12.pdf`
-linked from the sim2real doc) flat on the table 0.463 m from the base toward the workspace,
+linked from the sim2real doc) flat on the table 0.455 m (TCP touch-off) from the base toward the workspace,
 **oriented per §10.2a** (+X away from the base, toward the marker). Confirm:
 `rs-enumerate-devices | grep -A1 D405`.
 
 ### 10.3 — Camera calibration (sim2real doc) — ONE camera at a time (unplug the others)
+
+> ✅ **DONE 2026-07-16 (full pass on the real rig):** all three cameras calibrated
+> (ArUco anchored at a TCP touch-off `[0.455, 0, 0]`) + refined with the automated sweep
+> (step (b)) and written into `_UR10E_CAMERA_POSES`: front focal **14.32**, side **13.34**,
+> wrist **12.74** (wrist kept at the raw ArUco offset — see the sweep caveats below).
+> Verification blends: `table_swap_snaps/19_final_verify/` (+ per-stage frames in
+> `table_swap_snaps/sweep_{front,side,wrist3}/`). Re-run this section only if a camera
+> (or the marker) moves.
+
 For each of `front` / `side` / `wrist`:
 
 **What each script does:**
@@ -703,8 +712,12 @@ For each of `front` / `side` / `wrist`:
   tilted) for the marker to appear that size/shape in the image — like judging your distance
   from a door because you know how big doors are. That gives camera-relative-to-MARKER;
   adding `aruco_offset` (marker-in-base) makes it camera-relative-to-BASE. 10 rounds,
-  averaged. Expect: the labeled triads (BIG=base, MID=marker at +X 0.463, SMALL=camera,
+  averaged. Expect: the labeled triads (BIG=base, MID=marker at +X **0.455**, SMALL=camera,
   tilted like the real mount) in a true-scale point cloud + printed view-dir/tilt per camera.
+  **The anchor is a TCP TOUCH-OFF, not a tape measure**: jog the tool tip onto the marker
+  center, read the pendant base-frame xyz (2026-07-16: `[0, -455, 0]` mm pendant = sim
+  `[0.455, 0, 0]`; z read 0 → keep z=0, trust the robot over the nominal 4 mm mat height).
+  Any anchor error shifts EVERY camera equally — redo the touch-off if the marker moves.
 - **`1_camera_get_rgb.py`** — takes THE reference photo (`real_rgb.png`): the frozen record of
   "exactly what this camera sees from here". Robot must be AT the known pose; don't touch the
   camera afterwards.
@@ -714,20 +727,70 @@ For each of `front` / `side` / `wrist`:
 
 **(a) capture + coarse extrinsics** — diffusion_policy, ROBODIFF_REAL:
 ```bash
-conda activate robodiff_real && cd ~/work/repos/diffusion_policy
-python scripts/sim2real/0_camera_calibrate.py        # ArUco -> intrinsics + extrinsics (sim frame)
-python scripts/sim2real/1_camera_get_rgb.py          # -> perception/calibrations/real_rgb.png
-cp scripts/sim2real/perception/calibrations/real_rgb.png ~/real_<cam>.png  # it's overwritten per camera!
-python scripts/sim2real/2_get_isaacsim_extrinsics.py # prints sim-frame warm-start pos + quat(wxyz)
+conda activate robodiff_real && cd ~/work/repos/diffusion_policy/scripts/sim2real
+python 0_camera_calibrate.py        # ArUco -> intrinsics + extrinsics (sim frame)
+python 1_camera_get_rgb.py          # -> perception/calibrations/real_rgb.png
+python 2_get_isaacsim_extrinsics.py # prints sim-frame warm-start pos + quat(wxyz)
+# archive per camera (both files are overwritten on the next camera!):
+cp perception/calibrations/most_recent_calib.json perception/calibrations/<cam>_camera_calib.json
+cp perception/calibrations/real_rgb.png           perception/calibrations/real_rgb_<cam>.png
 ```
 Sanity-check the `0_` output before moving on: the printed camera pos should sit in the **+X
 quadrant** (front cam ≈ `[0.7, 0, 0.2]`), view direction toward −X and tilted down like the
 physical mount; an all-NaN json = the marker was missed in some rounds (glare/blur) — rerun.
 Record the arm's joint angles (deg) at the capture pose (pendant). Don't touch the camera
-after the `1_` capture. **Wrist:** put the arm in freedrive and position it so the wrist
-camera sees the marker.
+after the `1_` capture. **Wrist:** position the arm so the wrist camera sees the whole marker
+(2026-07-16 capture pose, pendant: `69.58 -98.08 138.53 -130.43 -89.95 -20.42`, TCP
+`[0,-500,100]` mm). The `2_` output for the wrist is BASE-frame; the sim wants the
+LINK-relative offset: read the gripper-link pose at the capture joints with
+`get_link_pose_ur10e.py` (below) and compute `offset = inv(T_base_link) @ T_base_cam`
+(scipy, both as pos+quat — see the wrist comment in `_UR10E_CAMERA_POSES`).
 
-**(b) interactive alignment** — UWLab, SIM, `--robot ur10e`:
+**(b) automated sweep refinement** — UWLab, SIM (recommended BEFORE the interactive pass —
+it found the real corrections on 2026-07-16 while the eyeball missed them):
+`sweep_camera_align.py` holds the CameraAlign env at the capture joints and
+coordinate-descends focal → pitch → yaw → roll → x → y → z, re-rendering and scoring
+edge-map correlation against the real capture per value; every frame + 50/50 blend is
+saved for review and the final `pos/rot/focal` prints ready to paste.
+```bash
+conda activate leisaac && cd ~/work/repos/UWLab
+# sim joints = pendant with q1 - 90 (§10.2a); 2026-07-16 capture pose shown
+JOINTS="-20.42 -98.08 138.53 -130.43 -89.95 -20.42"
+CAL=~/work/repos/diffusion_policy/scripts/sim2real/perception/calibrations
+
+./uwlab.sh -p scripts_v2/tools/conversions/sweep_camera_align.py --camera front_camera \
+  --real_image $CAL/real_rgb_front.png --joint_angles $JOINTS --out table_swap_snaps/sweep_front
+./uwlab.sh -p scripts_v2/tools/conversions/sweep_camera_align.py --camera side_camera \
+  --real_image $CAL/real_rgb_side.png --joint_angles $JOINTS --out table_swap_snaps/sweep_side
+# wrist NEEDS both extra flags: --mask excludes the marker (it exists only in the real
+# image and otherwise drowns the metric); --reset_each resets before every render (the
+# OSC hold drifts mm-scale over accumulated steps -- invisible far-field, dominant at
+# the wrist's 10-15 cm range):
+./uwlab.sh -p scripts_v2/tools/conversions/sweep_camera_align.py --camera wrist_camera \
+  --real_image $CAL/real_rgb_wrist.png --joint_angles $JOINTS \
+  --mask 100 150 560 480 --reset_each --out table_swap_snaps/sweep_wrist
+```
+⚠ **Findings baked into the current values (2026-07-16):**
+- **Do NOT derive the focal from intrinsics** (`fx*20.955/640` ≈ 12.8): the renderer's
+  effective FOV is up to ~11% wider than the USD focal/aperture math (and than
+  `TiledCamera.data.intrinsic_matrices` claims). The sweep found front 14.32 / side 13.34
+  empirically — clean single-peak curves, night-and-day blends.
+- **Wrist:** the sweep's position result was rejected by eyeball (it fits the residual
+  OSC-hold settle, not a real offset); the raw ArUco offset + open jaws already blend
+  cleanly. Judge wrist changes by the saved blends, not the score alone. The remaining
+  few px of finger doubling is the modeled jaw width (sim opens 136.8 mm vs real 142–144;
+  fix measured + deliberately deferred — see memory note `gripper-jaw-width-deferred`).
+- A stale Isaac process holds ~2.4 GB of the 6 GB GPU and OOMs the next launch —
+  `nvidia-smi` before every run; kill leftovers.
+- (already baked into the cfgs, no action) **link-mounted cameras render from a FROZEN
+  spawn pose** on this Isaac build — the wrist camera was silently black/garbage in every
+  env (the authors' 2F-85 align env included). Fixed by
+  `task_mdp.track_link_mounted_camera` (reset-time re-author of the camera op un-pins it)
+  + a 5 cm wrist near-clip (the calibrated optical center sits ~8 mm inside the modeled
+  D405 body). Installed via `_apply_wrist_camera_tracking` in
+  `ur10e_linear_gripper_rgb_cfg.py` for the CameraAlign/DataCollection/Play envs.
+
+**(c) interactive alignment (optional final nudge)** — UWLab, SIM, `--robot ur10e`:
 **What it does:** the pixel-match. Builds the CameraAlign env, poses the sim UR10e at
 `--joint_angles` (sim frame — the sim arm must strike the SAME pose as the real arm in the
 photo), renders the virtual camera, and overlays that render on your real photo in a
@@ -737,14 +800,24 @@ constraints, far stronger than one flat marker, and it recovers the focal length
 ArUco got ~cm; your eyes get the last mm/degrees. Expect: overlay starts NEAR aligned (the
 warm start); if it starts rotated ~90°/mirrored, a frame convention is wrong — stop.
 ```bash
-conda activate env_uwlab && cd ~/work/repos/UWLab
+conda activate leisaac && cd ~/work/repos/UWLab
+JOINTS="-20.42 -98.08 138.53 -130.43 -89.95 -20.42"   # sim = pendant q1 - 90 (§10.2a)
+CAL=~/work/repos/diffusion_policy/scripts/sim2real/perception/calibrations
+
 ./uwlab.sh -p scripts_v2/tools/sim2real/align_cameras.py --enable_cameras --headless \
-  --robot ur10e --camera front_camera --real_image /path/to/real_front.png \
-  --joint_angles <j1_pendant - 90> <j2> <j3> <j4> <j5> <j6>
-# ⚠ SIM joints (§10.2a): subtract 90° from the PENDANT q1. Captured at home:
-#   --joint_angles -22.06 -93.33 146.23 -142.91 -90.04 -22.95
+  --robot ur10e --camera front_camera --real_image $CAL/real_rgb_front.png \
+  --joint_angles $JOINTS
+# repeat with --camera side_camera / wrist_camera + the matching real_rgb_*.png
 # nudge the sim camera onto the real image; press 'p' to print calibrated pos, rot, focal
 ```
+- ⚠ Gripper binary-action sign (BinaryJointAction): **positive/zero = OPEN, negative =
+  CLOSE**. The default `--gripper_pos 1.0` holds the jaws open — do NOT pass −1 (it
+  marches the jaws shut ~1.3 mm/step and fakes a finger misalignment; cost us a debugging
+  round on 2026-07-16).
+- **Wrist:** the tool edits (and `p` prints) the LINK-relative offset directly — paste it
+  straight into the wrist entry of `_UR10E_CAMERA_POSES`. Expect a few px of finger
+  wobble from the OSC hold settle; align on the base cone + mat boundary, and remember
+  the jaw-width note above before chasing the fingers.
 
 **After all three cameras:** paste the three `(pos, rot, focal)` into **`_UR10E_CAMERA_POSES`**
 in `config/ur5e_robotiq_2f85/ur10e_linear_gripper_rgb_cfg.py`. The 2F-85 doc has you edit the
@@ -761,7 +834,7 @@ hardcoded 1 mm depth units, but the D405 uses ~0.1 mm → the debug cloud render
 was **validated end-to-end on the real front D405 on 2026-07-09** (dry run): output landed in
 the sim frame at the expected +X quadrant, view 40° down, 6.7° off the cam→marker line.
 The debug window now shows labeled triads — BIG = robot base @ origin, MID = marker
-@ `[0.463,0,0]`, SMALL = camera (rotated to its calibrated pose) — and prints each camera's
+@ `[0.455,0,0]` (TCP touch-off 2026-07-16; was 0.463 nominal), SMALL = camera (rotated to its calibrated pose) — and prints each camera's
 view direction + tilt; use them as the per-camera sanity check.
 
 ### 10.4 — Collect the 80k RGB demos (distillation doc Step 3) — SIM, needs `--enable_cameras`
