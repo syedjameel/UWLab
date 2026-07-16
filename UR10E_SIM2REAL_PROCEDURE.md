@@ -848,8 +848,16 @@ view direction + tilt; use them as the per-camera sanity check.
 >    the **580 branch works** (validated: 580.159.03 laptop + 4090 box after downgrade
 >    via `sudo apt install nvidia-driver-580`). Non-rendering runs work on 595, which
 >    makes this easy to misdiagnose.
-> 3. First DR run downloads ~957 texture assets (~4.7 GB) to `~/.cache/uwlab/assets` —
->    one-time per machine; the run looks idle during it (kit log quiet, python busy).
+> 3. First DR run downloads TWO one-time asset sets to `~/.cache/uwlab/assets`:
+>    ~957 appearance textures (~4.7 GB) AND ~920 HDRI environment maps (~15+ GB, the
+>    sky-light DR). The run looks idle during both (kit log quiet, python busy) — watch
+>    `find ~/.cache/uwlab/assets -type f | wc -l` as the progress bar.
+> 3b. If a download hiccups, the run dies at the FIRST RESET with a misleading
+>    `TypeError: ManagerTermBase.reset() missing 1 required positional argument: 'self'`:
+>    the DR terms are class-based and initialize inside Isaac's deferred play callback,
+>    which SWALLOWS the real exception and leaves later terms uninstantiated. Remedy:
+>    just rerun — downloads resume from the cache (verified 2026-07-17: identical rerun
+>    passed once the cache completed).
 > 4. **Export-vs-table note:** loading the 2026-07-13 finetune checkpoint requires the
 >    PILLARED table (its critic saw 7 table colliders = 172 obs dims; pillar-free = 160
 >    -> size-mismatch on load). Toggle `pillars.enabled: true` + regenerate the table USD
