@@ -15,8 +15,10 @@ hand-authored invisible Cube colliders; no textures, no UVs), only the geometry 
     - ``visuals/mat_black``   700x700x4 mm mat over the robot half, with the circular
                               base cutout (ring-triangulated; the RGB DR retextures it)
     - ``visuals/mat_green``   700x700x4 mm workspace mat (DR-retextured too)
-    - ``visuals/table_frame`` structural top + body + 4 corner pillars in ONE mesh
-                              (authors' single ``vention_metal`` pattern; not randomized)
+    - ``visuals/table_frame`` structural top + body in ONE mesh (authors' single
+                              ``vention_metal`` pattern; not randomized)
+    - ``visuals/pillars``     4 corner curtain pillars -- only when
+                              ``table.pillars.enabled`` (removed from the real rig 2026-07-16)
     - ``visuals/Looks/*``     constant-color OmniPBR (authors' exact constants)
     - ``collisions/*``        invisible unit Cubes scaled to slabs/body/pillars
 * ``custom_mount_plate.usd`` -- the ``ur5_metal_support`` replacement: a flush proxy disk
@@ -223,6 +225,7 @@ def make_table(dims, out_path):
     x0, x1, yh, thick = top["x_min"], top["x_max"], top["y_half"], top["thickness"]
     mat_t, split = mats["thickness"], mats["split_x"]
     (hcx, hcy), hr = mats["hole"]["center"], mats["hole"]["diameter"] / 2.0
+    pillars_on = pil.get("enabled", True)
     pc, ph, pin = pil["cross_section"], pil["height"], pil["inset"]
     m = dims["materials"]
 
@@ -231,7 +234,8 @@ def make_table(dims, out_path):
     UsdGeom.Scope.Define(stage, "/custom_lab_table/visuals/Looks")
     col = UsdGeom.Xform.Define(stage, "/custom_lab_table/collisions")
 
-    for name in ("mat_black", "mat_green", "table_frame", "pillars"):
+    look_names = ["mat_black", "mat_green", "table_frame"] + (["pillars"] if pillars_on else [])
+    for name in look_names:
         author_omnipbr(stage, f"/custom_lab_table/visuals/Looks/{name}",
                        m[name]["diffuse"], m[name]["metallic"], m[name]["roughness"])
 
@@ -269,13 +273,15 @@ def make_table(dims, out_path):
                                         zb, wz0))                                  # short legs
     author_mesh(stage, "/custom_lab_table/visuals/table_frame", merge_meshes(frame_parts),
                 "/custom_lab_table/visuals/Looks/table_frame")
-    # curtain pillars as their own mesh (BLACK -- distinct from the white cabinet)
-    pillar_parts = [
-        box_mesh(px - pc / 2, px + pc / 2, py - pc / 2, py + pc / 2, mat_t, mat_t + ph)
-        for px in pxs for py in pys
-    ]
-    author_mesh(stage, "/custom_lab_table/visuals/pillars", merge_meshes(pillar_parts),
-                "/custom_lab_table/visuals/Looks/pillars")
+    # curtain pillars as their own mesh (BLACK -- distinct from the white cabinet);
+    # skipped entirely when table.pillars.enabled is false (real rig, 2026-07-16)
+    if pillars_on:
+        pillar_parts = [
+            box_mesh(px - pc / 2, px + pc / 2, py - pc / 2, py + pc / 2, mat_t, mat_t + ph)
+            for px in pxs for py in pys
+        ]
+        author_mesh(stage, "/custom_lab_table/visuals/pillars", merge_meshes(pillar_parts),
+                    "/custom_lab_table/visuals/Looks/pillars")
 
     # --- collisions (invisible Cubes; authors' pattern) ---
     cx, cy = (x0 + x1) / 2.0, 0.0
@@ -287,10 +293,11 @@ def make_table(dims, out_path):
     author_collision_cube(stage, "/custom_lab_table/collisions/cabinet",
                           (cx, cy, (zb - thick) / 2.0),
                           (x1 - x0 - 2 * wi, 2 * (yh - wi), abs(zb) - thick))
-    for k, px in enumerate(pxs):
-        for j, py in enumerate(pys):
-            author_collision_cube(stage, f"/custom_lab_table/collisions/pillar_{k}{j}",
-                                  (px, py, mat_t + ph / 2.0), (pc, pc, ph))
+    if pillars_on:
+        for k, px in enumerate(pxs):
+            for j, py in enumerate(pys):
+                author_collision_cube(stage, f"/custom_lab_table/collisions/pillar_{k}{j}",
+                                      (px, py, mat_t + ph / 2.0), (pc, pc, ph))
     stage.Save()
     return out_path
 

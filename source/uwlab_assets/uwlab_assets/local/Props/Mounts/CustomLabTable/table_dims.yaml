@@ -34,8 +34,11 @@ table:
     hole:
       center: [0.0, 0.0]  # the robot base (black mat has a circular cutout around it)
       diameter: 0.200     # UR10e base is 0.190 -> 5 mm radial clearance, base recessed 4 mm
-  # curtain-mounting pillars at the 4 tabletop corners, rising from the mat top
+  # curtain-mounting pillars at the 4 tabletop corners, rising from the mat top.
+  # REMOVED from the real rig 2026-07-16 (curtains now hang from behind the table) --
+  # enabled: false keeps them out of the USD; dims kept in case they ever return.
   pillars:
+    enabled: false
     cross_section: 0.04   # 40 x 40 mm
     height: 1.0           # 1 m above the mat top
     inset: 0.02           # pillar center inset from the table corner (half cross-section)
