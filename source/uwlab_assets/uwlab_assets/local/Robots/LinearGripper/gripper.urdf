@@ -23,10 +23,16 @@
       <mass value="0.8"/>
       <inertia ixx="0.001245" ixy="0" ixz="0" iyy="0.002728" iyz="0" izz="0.003051"/>
     </inertial>
+    <!-- VISUAL = meshes/base_visual.stl: the real base WITH the camera-mount bracket and
+         D405 (added 2026-07-13, VISUAL ONLY so the RGB cameras see the real gripper).
+         COLLISION = meshes/base.stl: the ORIGINAL base WITHOUT the mount. The mount is
+         deliberately NOT in collision, because adding a collider shape would grow the
+         per-shape material observation and break checkpoints trained before it; the wrist
+         bracket does not touch the workspace in this top-down task anyway. -->
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry>
-        <mesh filename="meshes/base.stl" scale="0.001 0.001 0.001"/>
+        <mesh filename="meshes/base_visual.stl" scale="0.001 0.001 0.001"/>
       </geometry>
       <material name="dark_gray">
         <color rgba="0.75 0.75 0.72 1"/>
