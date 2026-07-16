@@ -1577,6 +1577,118 @@ def randomize_tiled_cameras(
                 op.Set(new_quat)
 
 
+def sample_link_camera_offset_jitter(
+    env,
+    env_ids: torch.Tensor,
+    camera_name: str,
+    base_position: tuple,
+    base_rotation: tuple,
+    position_deltas: dict,
+    euler_deltas: dict,
+) -> None:
+    """Reset-mode companion to :func:`track_link_mounted_camera`: per-episode camera-pose DR
+    for a link-mounted camera, expressed as a jitter of the LINK->CAMERA offset.
+
+    The plain :func:`randomize_tiled_cameras` writes the camera prim directly, which a
+    per-step tracker would overwrite -- so for tracked cameras the jitter is sampled here
+    (same delta ranges/semantics) and stashed on the env; the tracker composes it every step.
+    base_rotation is wxyz in the OpenGL camera convention, deltas mirror randomize_tiled_cameras.
+    """
+    if env_ids is None:
+        env_ids = torch.arange(env.scene.num_envs)
+
+    stash = getattr(env, "_link_camera_offsets", None)
+    if stash is None:
+        stash = {}
+        env._link_camera_offsets = stash
+    if camera_name not in stash:
+        n = env.scene.num_envs
+        base_p = torch.tensor(base_position, dtype=torch.float64).repeat(n, 1)
+        base_q = torch.tensor(base_rotation, dtype=torch.float64).repeat(n, 1)
+        stash[camera_name] = {"pos": base_p, "quat": base_q}
+
+    entry = stash[camera_name]
+    for env_idx in env_ids.tolist():
+        dp = [random.uniform(*position_deltas[k]) for k in ("x", "y", "z")]
+        entry["pos"][env_idx] = torch.tensor(base_position, dtype=torch.float64) + torch.tensor(
+            dp, dtype=torch.float64
+        )
+        # delta rotation pre-multiplied onto the base, matching randomize_tiled_cameras
+        base_quat = Gf.Quatd(base_rotation[0], Gf.Vec3d(*base_rotation[1:]))
+        delta_rot = (
+            Gf.Rotation(Gf.Vec3d(0, 0, 1), random.uniform(*euler_deltas["yaw"]))
+            * Gf.Rotation(Gf.Vec3d(0, 1, 0), random.uniform(*euler_deltas["pitch"]))
+            * Gf.Rotation(Gf.Vec3d(1, 0, 0), random.uniform(*euler_deltas["roll"]))
+        )
+        q = (delta_rot * Gf.Rotation(base_quat)).GetQuat()
+        entry["quat"][env_idx] = torch.tensor(
+            [q.GetReal(), *q.GetImaginary()], dtype=torch.float64
+        )
+
+
+def track_link_mounted_camera(
+    env,
+    env_ids: torch.Tensor,
+    camera_path_template: str,
+    base_position: tuple,
+    base_rotation: tuple,
+    camera_name: str = "wrist_camera",
+) -> None:
+    """Un-freeze a link-mounted camera's RENDERED pose by re-authoring its local transform.
+
+    In this Isaac build a camera prim parented to an articulation link renders (and reads
+    back) a FROZEN pose: the sensor's XformPrimView pins the camera's world matrix in Fabric
+    at spawn (offset composed with the spawn joint config), and physics-driven link updates
+    never reach it (verified for both the UR10e graft's and the authors' 2F-85 wrist
+    cameras; a manual Fabric-hierarchy recompute fixes the pose READ but not the RENDER).
+
+    Authoring the camera prim's USD transform op un-pins it: from then on Fabric composes
+    the authored LOCAL op with the LIVE physics parent every frame (verified numerically:
+    after one write, view pose == T_link(current) * op). So one write per reset of the
+    plain link->camera offset is sufficient tracking; no per-step work is needed.
+
+    base_position/base_rotation: link->camera offset, wxyz quat in the OpenGL camera
+    convention -- the same values ``TiledCameraCfg.OffsetCfg(convention="opengl")`` takes.
+    A per-episode jittered offset stashed by :func:`sample_link_camera_offset_jitter`
+    (declare that term BEFORE this one) takes precedence when present. Register with
+    mode="reset".
+    """
+    if env_ids is None:
+        env_ids = torch.arange(env.scene.num_envs)
+
+    cache = getattr(env, "_link_camera_track_cache", None)
+    if cache is None:
+        cache = {"xform_op": {}}
+        env._link_camera_track_cache = cache
+
+    ids = env_ids.tolist() if torch.is_tensor(env_ids) else list(env_ids)
+    offsets = getattr(env, "_link_camera_offsets", {}).get(camera_name)
+    if offsets is not None:
+        off_pos = offsets["pos"][ids]
+        off_quat = offsets["quat"][ids]
+    else:
+        off_pos = torch.tensor(base_position, dtype=torch.float64).repeat(len(ids), 1)
+        off_quat = torch.tensor(base_rotation, dtype=torch.float64).repeat(len(ids), 1)
+
+    stage = omni.usd.get_context().get_stage()
+    for row, env_idx in enumerate(ids):
+        camera_path = camera_path_template.format(env_idx)
+        if camera_path not in cache["xform_op"]:
+            prim = stage.GetPrimAtPath(camera_path)
+            if not prim.IsValid():
+                continue
+            # one matrix op replaces whatever the spawner authored (translate/orient/etc.)
+            xform = UsdGeom.Xformable(prim)
+            xform.ClearXformOpOrder()
+            cache["xform_op"][camera_path] = xform.AddTransformOp()
+        op = cache["xform_op"].get(camera_path)
+        if op is None:
+            continue
+        q = off_quat[row]
+        rot = Gf.Rotation(Gf.Quatd(float(q[0]), Gf.Vec3d(float(q[1]), float(q[2]), float(q[3]))))
+        op.Set(Gf.Matrix4d(1.0).SetTransform(rot, Gf.Vec3d(*map(float, off_pos[row]))))
+
+
 def randomize_camera_focal_length(
     env, env_ids: torch.Tensor, camera_path_template: str, focal_length_range: tuple = (0.8, 1.8)
 ) -> None:

@@ -10,7 +10,8 @@ the UR10e arm + custom linear gripper, using the same subclass-and-swap pattern 
 ``ur10e_linear_gripper_cfg.py``. The 2F-85 arms share the ``robotiq_base_link`` /
 ``wrist_3_link`` link contract, so the RGB scene, three ``TiledCamera``s (front/side/wrist
 parented to ``robotiq_base_link``), observations, terminations, and the
-object/table/curtain/HDRI + camera-pose/focal randomization all carry over unchanged.
+object/table/HDRI + camera-pose/focal randomization all carry over unchanged (the curtain
+planes are repositioned to our measured rig -- see ``_UR10E_CURTAIN_POSES``).
 
 What is UR10e / linear-gripper specific here:
 * robot + action swapped via ``_apply_linear_gripper`` (RGB collection/play) or directly
@@ -22,9 +23,10 @@ What is UR10e / linear-gripper specific here:
 * resets read the UR10e datasets (``./Datasets_ur10e/OmniReset``, CLI-overridable);
 * motor delay pinned to the measured 0 (matches Finetune-Play deployment dynamics).
 
-Camera pos/rot/focal are inherited from the 2F-85 configs as PLACEHOLDERS -- replace them
-with the calibrated values from ``align_cameras.py`` (run against the CameraAlign env below)
-before the real 80k collection. See ``UR10E_SIM2REAL_PROCEDURE.md`` §9.
+Camera pos/rot/focal are the 2026-07-16 ArUco calibration of the real rig (see the
+``_UR10E_CAMERA_POSES`` comment); verify/refine by eye with ``align_cameras.py`` (run
+against the CameraAlign env below) before the real 80k collection. See
+``UR10E_SIM2REAL_PROCEDURE.md`` §9.
 
 Registered gym ids (mirroring the 2F-85 ones):
 * ``OmniReset-UR10eLinearGripper-CameraAlign-v0``
@@ -36,8 +38,10 @@ from __future__ import annotations
 
 import uwlab_assets.robots.ur10e_linear_gripper as ur10e_linear_gripper
 
+from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.utils import configclass
 
+from ... import mdp as task_mdp
 from .actions import Ur10eLinearGripperRelativeOSCEvalAction, Ur10eLinearGripperSysidOSCAction
 from .camera_align_cfg import CameraAlignEnvCfg
 from .data_collection_rgb_cfg import (
@@ -74,28 +78,51 @@ def _fix_wrist_camera_path(cfg) -> None:
 # ---------------------------------------------------------------------------------------
 # Calibrated camera poses (pos, rot=quat wxyz, focal_length).
 #
-# ⚠ THESE ARE PLACEHOLDERS (inherited from the 2F-85 rig). Replace each with the value
-# printed by ``align_cameras.py --robot ur10e --camera <front|side|wrist>_camera`` against a
-# real D405 image, then rebuild nothing -- the cfgs read this dict at construction. Both the
-# CameraAlign env (what you calibrate WITH) and the DataCollection/Play envs (what collects)
-# use these, so one edit updates the whole pipeline. Real D405s: front 409122273078,
-# side 323622272232, wrist 409122272284 (positional order in the diffusion_policy deploy).
-# ---------------------------------------------------------------------------------------
+# Both the CameraAlign env (what you calibrate WITH) and the DataCollection/Play envs (what
+# collects) use these, so one edit updates the whole pipeline -- the cfgs read this dict at
+# construction. Real D405s: front 409122273078, side 323622272232, wrist 409122272284
+# (positional order in the diffusion_policy deploy).
+#
+# Calibrated 2026-07-16 (ArUco, anchor = TCP touch-off [0.455, 0, 0]; one D405 at a time on
+# the laptop; arm held at pendant joints [69.58, -98.08, 138.53, -130.43, -89.95, -20.42]).
+# front/side are base-frame from 2_get_isaacsim_extrinsics.py directly (robot at origin);
+# wrist is link-relative: inv(T_base_robotiq_base_link) @ T_base_cam, link pose read from
+# sim at the capture joints (get_link_pose_ur10e.py, sim q1 = pendant q1 - 90 deg).
+# FOCAL: the intrinsics-derived value (fx * 20.955 / 640 ~= 12.8) does NOT reproduce the
+# real FOV -- the renderer's effective FOV is ~11% wider than the USD focal/aperture math
+# (and than TiledCamera.data.intrinsic_matrices claims). Focals here are therefore fitted
+# EMPIRICALLY with sweep_camera_align.py (edge-map score against the real capture; the
+# front sweep showed a clean peak: 12.82 -> 0.42, 14.32 -> 0.48, 14.82 -> 0.43).
+# Refine further by eye with align_cameras.py; per-camera calib archived in diffusion_policy
+# scripts/sim2real/perception/calibrations/{front,side,wrist}_camera_calib.json.
 _UR10E_CAMERA_POSES = {
+    # ArUco warm start + sweep_camera_align refinement (2026-07-16: focal 12.82->14.32,
+    # yaw -0.5 deg, roll +1.0 deg, x +15 mm; blend residual ~0 -- see table_swap_snaps/sweep_front)
     "front_camera": dict(
-        pos=(1.0770121, -0.1679045, 0.4486344),
-        rot=(0.70564552, 0.46613815, 0.25072644, 0.47107948),
-        focal=13.20,
+        pos=(1.0143132, -0.2340576, 0.2753867),
+        rot=(0.6296674, 0.5090740, 0.3741183, 0.4521041),
+        focal=14.32,
     ),
+    # sweep 2026-07-16 (focal 12.84->13.34, pitch -1.0, yaw -0.5, roll -0.5 deg, x -15 mm)
+    # + align_cameras hand-tune same day (final: +x/+y/+z few mm, small rot nudge,
+    # focal 13.34->13.64)
     "side_camera": dict(
-        pos=(0.8323904, 0.5877843, 0.2805111),
-        rot=(0.29008842, 0.22122445, 0.51336143, 0.77676798),
-        focal=20.10,
+        pos=(1.0052121, 0.3149001, 0.2685370),
+        rot=(0.30918181, 0.26638421, 0.58000093, 0.70501417),
+        focal=13.64,
     ),
+    # LINK-relative offset (robotiq_base_link), straight from the ArUco calibration --
+    # kept over the sweep result (user eyeball 2026-07-16): with the jaws properly OPEN
+    # the ArUco values already blend cleanly (table_swap_snaps/18_openjaws); the sweep's
+    # +15 mm x was fitting the OSC-hold settle artifact, not a real offset error.
     "wrist_camera": dict(
-        pos=(0.0182505, -0.00408447, -0.0689107),
-        rot=(0.34254336, -0.61819255, -0.6160212, 0.347879),
-        focal=24.55,
+        pos=(0.0098791, -0.1087037, 0.0389222),
+        rot=(0.0018127, -0.0175937, 0.91723, -0.3979652),
+        focal=12.74,
+        # the gripper visual mesh models the D405 body; the calibrated optical center sits
+        # ~8 mm INSIDE it (exits 15 mm along the view axis) -> raise the near clip past the
+        # modeled glass. 5 cm also matches the real D405's minimum range.
+        clip=(0.05, 1.0e5),
     ),
 }
 
@@ -119,6 +146,8 @@ def _apply_camera_poses(cfg) -> None:
             cam.offset.rot = p["rot"]
             if getattr(cam, "spawn", None) is not None and hasattr(cam.spawn, "focal_length"):
                 cam.spawn.focal_length = p["focal"]
+                if "clip" in p:
+                    cam.spawn.clipping_range = p["clip"]
         # keep the reset-time camera-pose jitter centered on the calibrated pose
         rc = _event_term(f"randomize_{name}")
         if rc is not None and "base_position" in rc.params:
@@ -130,6 +159,76 @@ def _apply_camera_poses(cfg) -> None:
             lo, hi = fc.params["focal_length_range"]
             hw = (hi - lo) / 2.0
             fc.params["focal_length_range"] = (p["focal"] - hw, p["focal"] + hw)
+
+
+# ---------------------------------------------------------------------------------------
+# Curtain placement -- measured on the real rig 2026-07-16 (tape, table edge -> fabric):
+# viewer at the green mat facing the robot (= the front camera's side), so viewer-left = -y.
+# left 14 cm past y=-0.35, back 25 cm past x=-0.35, right 19 cm past y=+0.35. Rotations
+# stay the authors'; planes are sized up so the longer UR10e table's background stays
+# covered (visual-only, collision off -- oversizing is harmless). The fabric reaches the
+# FLOOR (z=-0.676, see table_dims.yaml) and rises well above the arm: planes span
+# z -0.68..+1.75. Default color = the real fabric's grey (collection DR retextures per
+# episode anyway; this is what CameraAlign and non-DR frames show).
+# ---------------------------------------------------------------------------------------
+_UR10E_CURTAIN_POSES = {
+    "curtain_left": dict(pos=(0.3, -0.49, 0.535), size=(0.01, 1.8, 2.43)),
+    "curtain_back": dict(pos=(-0.60, 0.025, 0.535), size=(0.01, 1.25, 2.43)),
+    "curtain_right": dict(pos=(0.3, 0.54, 0.535), size=(0.01, 1.8, 2.43)),
+}
+_UR10E_CURTAIN_COLOR = (0.32, 0.32, 0.33)  # real grey fabric (photo-matched, slightly cool)
+
+
+def _apply_curtain_poses(cfg) -> None:
+    """Place the background curtain planes where the real rig's fabric hangs."""
+    for name, p in _UR10E_CURTAIN_POSES.items():
+        curtain = getattr(cfg.scene, name, None)
+        if curtain is not None:
+            curtain.init_state.pos = p["pos"]
+            curtain.spawn.size = p["size"]
+            if getattr(curtain.spawn, "visual_material", None) is not None:
+                curtain.spawn.visual_material.diffuse_color = _UR10E_CURTAIN_COLOR
+
+
+def _apply_wrist_camera_tracking(cfg) -> None:
+    """Make the wrist camera's RENDERED pose track the gripper link.
+
+    In this Isaac build a link-mounted camera renders from a frozen spawn-time pose: the
+    sensor view pins its world matrix in Fabric at spawn. One re-author of the camera's
+    USD transform op un-pins it -- Fabric then composes the local offset with the live
+    physics link every frame (see ``task_mdp.track_link_mounted_camera``). This installs:
+
+    * a reset-time write of the link->camera offset (sufficient for tracking);
+    * a replacement for the authors' per-episode wrist camera-pose DR: the direct prim
+      write (``randomize_tiled_cameras``) is superseded by jittering the LINK->CAMERA
+      offset the tracker authors (``sample_link_camera_offset_jitter``, same delta ranges).
+    """
+    p = _UR10E_CAMERA_POSES["wrist_camera"]
+    # per-episode pose DR -> offset jitter (ranges inherited from the authors' term)
+    old = getattr(cfg.events, "randomize_wrist_camera", None)
+    if old is not None and hasattr(old, "params") and "position_deltas" in old.params:
+        cfg.events.randomize_wrist_camera = EventTerm(
+            func=task_mdp.sample_link_camera_offset_jitter,
+            mode="reset",
+            params={
+                "camera_name": "wrist_camera",
+                "base_position": p["pos"],
+                "base_rotation": p["rot"],
+                "position_deltas": old.params["position_deltas"],
+                "euler_deltas": old.params["euler_deltas"],
+            },
+        )
+    # un-pin + track (runs after the jitter sampler: declaration order = execution order)
+    cfg.events.track_wrist_camera = EventTerm(
+        func=task_mdp.track_link_mounted_camera,
+        mode="reset",
+        params={
+            "camera_path_template": _WRIST_CAM_TEMPLATE,
+            "base_position": p["pos"],
+            "base_rotation": p["rot"],
+            "camera_name": "wrist_camera",
+        },
+    )
 
 
 # ---------------------------------------------------------------------------------------
@@ -154,6 +253,8 @@ class Ur10eLinearGripperCameraAlignEnvCfg(CameraAlignEnvCfg):
         self.actions = Ur10eLinearGripperSysidOSCAction()
         _fix_wrist_camera_path(self)
         _apply_camera_poses(self)
+        _apply_curtain_poses(self)
+        _apply_wrist_camera_tracking(self)
 
 
 # ---------------------------------------------------------------------------------------
@@ -180,8 +281,12 @@ def _apply_ur10e_rgb(cfg) -> None:
             setattr(cfg.events, term, None)
     # Wrist camera prim path -> our nested gripper link (+ its DR event templates).
     _fix_wrist_camera_path(cfg)
-    # Calibrated (currently placeholder) camera poses/focals.
+    # Calibrated camera poses/focals.
     _apply_camera_poses(cfg)
+    # Curtain planes at the measured real-rig fabric positions.
+    _apply_curtain_poses(cfg)
+    # Wrist camera: per-step USD tracking + offset-jitter DR (renders frozen otherwise).
+    _apply_wrist_camera_tracking(cfg)
 
 
 @configclass
