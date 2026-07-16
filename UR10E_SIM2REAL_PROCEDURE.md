@@ -838,6 +838,24 @@ The debug window now shows labeled triads — BIG = robot base @ origin, MID = m
 view direction + tilt; use them as the per-camera sanity check.
 
 ### 10.4 — Collect the 80k RGB demos (distillation doc Step 3) — SIM, needs `--enable_cameras`
+
+> ⚠ **Rendering-machine requirements (learned the hard way, 2026-07-16):**
+> 1. **A100/H100 CANNOT render** — no graphics engine, so any `--enable_cameras` run
+>    segfaults in `carb.glinterop`/`gpu.foundation` 1 s into startup (state training and
+>    reset recording are unaffected). Collection needs an RTX-class GPU (4090/L40S/A40...).
+> 2. **NVIDIA driver must be in the kit-validated window**: driver **595.71 (CUDA 13.2)
+>    segfaults `rtx.scenedb` at hydra-engine creation** on Isaac Sim 5.1 / kit 107.3.3;
+>    the **580 branch works** (validated: 580.159.03 laptop + 4090 box after downgrade
+>    via `sudo apt install nvidia-driver-580`). Non-rendering runs work on 595, which
+>    makes this easy to misdiagnose.
+> 3. First DR run downloads ~957 texture assets (~4.7 GB) to `~/.cache/uwlab/assets` —
+>    one-time per machine; the run looks idle during it (kit log quiet, python busy).
+> 4. **Export-vs-table note:** loading the 2026-07-13 finetune checkpoint requires the
+>    PILLARED table (its critic saw 7 table colliders = 172 obs dims; pillar-free = 160
+>    -> size-mismatch on load). Toggle `pillars.enabled: true` + regenerate the table USD
+>    for the §10.1 export, then back to `false` for collection — the exported policy.pt
+>    is actor-only (195 dims, no table-material obs) and doesn't care. A future finetune
+>    on the pillar-free table gets a 160-dim critic and drops this dance.
 **What it does:** films the expert working. Builds the RGB DataCollection env — the
 "stage-set" task: 3 calibrated cameras rendering, curtain/table/object textures re-randomized
 every episode, camera poses jittered around YOUR calibrated values, lighting/object DR. The
