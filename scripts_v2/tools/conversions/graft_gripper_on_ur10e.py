@@ -167,6 +167,19 @@ def main() -> None:
     for name in stripped:
         del frfj.properties[name]
     print(f"  full-robot follower: stripped {len(stripped)} inert mimic prop(s) post-flatten")
+
+    # 5b) de-instance the gripper VISUAL prims: the URDF importer marks them instanceable,
+    #     but instance proxies are read-only -- the RGB collection's per-episode gripper
+    #     appearance DR (the authors' randomize_wrist_mount/inner_finger_appearance
+    #     equivalents) cannot bind per-env materials to them. Visual-only change: rendering
+    #     memory grows by 3 small meshes per env; physics/collisions untouched.
+    deinstanced = 0
+    for link in ("robotiq_base_link", "left_inner_finger", "right_inner_finger"):
+        spec = flat.GetPrimAtPath(f"{gpath}/{link}/visuals")
+        if spec is not None and spec.instanceable:
+            spec.instanceable = False
+            deinstanced += 1
+    print(f"  gripper visuals: de-instanced {deinstanced} prim(s) (per-env appearance DR)")
     flat.Export(args.output)
     print(f"Wrote {args.output}")
     print(f"  standoff along wrist_3 +Z = {args.standoff} m (identity rotation; approach +Z = wrist_3 +Z)")

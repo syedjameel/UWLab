@@ -16,10 +16,10 @@ planes are repositioned to our measured rig -- see ``_UR10E_CURTAIN_POSES``).
 What is UR10e / linear-gripper specific here:
 * robot + action swapped via ``_apply_linear_gripper`` (RGB collection/play) or directly
   (camera align, which has no grasp/reset events);
-* the two 2F-85 gripper-appearance randomization terms are dropped -- their mesh paths
-  (``robotiq_base_link/visuals/D415_to_Robotiq_Mount``, ``*_inner_finger/visuals/mesh_1``)
-  do not exist on our linear gripper (its visuals are instanced prototypes with different
-  names). The gripper still renders; only its per-mesh appearance DR is disabled for now;
+* the two 2F-85 gripper-appearance randomization terms are REPOINTED at our gripper's
+  meshes (2026-07-17): the graft de-instances the gripper visuals (instance proxies cannot
+  take per-env materials) and the wrist-mount term retextures the whole base_visual mesh
+  (housing + camera-mount bracket + D405 body) while the finger term covers both jaw tips;
 * resets read the UR10e datasets (``./Datasets_ur10e/OmniReset``, CLI-overridable);
 * motor delay pinned to the measured 0 (matches Finetune-Play deployment dynamics).
 
@@ -53,10 +53,6 @@ from .ur10e_linear_gripper_cfg import _apply_real_gripper_speed
 
 # Reset states are robot-specific; the RGB collection resets from the UR10e datasets.
 _UR10E_RESET_DIR = "./Datasets_ur10e/OmniReset"
-
-# 2F-85-specific per-mesh gripper-appearance DR terms that reference meshes absent on the
-# linear gripper (its base/finger visuals are instanced prototypes with different names).
-_ROBOTIQ_APPEARANCE_TERMS = ("randomize_wrist_mount_appearance", "randomize_inner_finger_appearance")
 
 # Our graft nests the gripper under ``/Robot/gripper/robotiq_base_link`` (the 2F-85 cloud
 # asset has ``robotiq_base_link`` directly under ``/Robot``). Body-name obs lookups are
@@ -275,10 +271,22 @@ def _apply_ur10e_rgb(cfg) -> None:
     # Reset from the UR10e datasets, not the cloud 2F-85 default (CLI-overridable).
     if getattr(cfg.events, "reset_from_reset_states", None) is not None:
         cfg.events.reset_from_reset_states.params["dataset_dir"] = _UR10E_RESET_DIR
-    # Drop the 2F-85-specific per-mesh gripper-appearance DR (meshes absent on our gripper).
-    for term in _ROBOTIQ_APPEARANCE_TERMS:
-        if getattr(cfg.events, term, None) is not None:
-            setattr(cfg.events, term, None)
+    # Repoint the 2F-85 per-mesh gripper-appearance DR at OUR gripper meshes (2026-07-17;
+    # previously dropped). The graft de-instances the gripper visuals so these are bindable.
+    # The wrist-mount term now covers the whole base_visual mesh = housing + camera-mount
+    # bracket + D405 body (the authors' D415_to_Robotiq_Mount equivalent); all other params
+    # stay the authors' verbatim.
+    _GRIPPER_DR_MESHES = {
+        "randomize_wrist_mount_appearance": ["gripper/robotiq_base_link/visuals/base/node_STL_BINARY_/mesh"],
+        "randomize_inner_finger_appearance": [
+            "gripper/left_inner_finger/visuals/tip/node_STL_BINARY_/mesh",
+            "gripper/right_inner_finger/visuals/tip/node_STL_BINARY_/mesh",
+        ],
+    }
+    for term, meshes in _GRIPPER_DR_MESHES.items():
+        ev = getattr(cfg.events, term, None)
+        if ev is not None and hasattr(ev, "params") and "mesh_names" in ev.params:
+            ev.params["mesh_names"] = meshes
     # Wrist camera prim path -> our nested gripper link (+ its DR event templates).
     _fix_wrist_camera_path(cfg)
     # Calibrated camera poses/focals.
