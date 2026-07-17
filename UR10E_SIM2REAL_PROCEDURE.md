@@ -536,9 +536,10 @@ is **`dataset_dir`-only** (`config/task/sim2real_image.yaml`).
    original `/Robot/robotiq_base_link` path errored). Smoke-tested on the laptop
    (`smoke_test_rgb_ur10e.py`): both envs build, all 3 cameras render, obs shapes exact —
    `policy` group `(3,224,224)` float + `data_collection` group `(224,224,3)` uint8, matching
-   the diffusion_policy `shape_meta`. Camera pos/rot/focal are still the authors'
-   **placeholders** (front frames the UR10e low; wrist renders black) — replace with §C
-   calibrated values before the 80k. Collection command (A100/4090, after export + calib):
+   the diffusion_policy `shape_meta`. ✅ RESOLVED 2026-07-16/17: camera pos/rot/focal are the
+   calibrated real-rig values (§10.3), and the black wrist render was a framework bug (frozen
+   link-mounted cameras — fixed, see §10.4 trap 7). Collection command (RTX GPU — see §10.4
+   machine requirements; after export + calib):
    `collect_demos.py --task ...-RGB-DataCollection-v0 --dataset_file <x>.zarr --num_envs 32
    --num_demos 80000 --enable_cameras --headless $OBJ
    agent...behavior_cloning_cfg.experts_path=[<run>/exported/policy.pt]` (zarr files merge
@@ -697,8 +698,9 @@ linked from the sim2real doc) flat on the table 0.455 m (TCP touch-off) from the
 
 > ✅ **DONE 2026-07-16 (full pass on the real rig):** all three cameras calibrated
 > (ArUco anchored at a TCP touch-off `[0.455, 0, 0]`) + refined with the automated sweep
-> (step (b)) and written into `_UR10E_CAMERA_POSES`: front focal **14.32**, side **13.34**,
-> wrist **12.74** (wrist kept at the raw ArUco offset — see the sweep caveats below).
+> (step (b)) + interactive align (step (c)) and written into `_UR10E_CAMERA_POSES`:
+> front focal **14.32** (sweep), side **13.64** (sweep 13.34 + hand-tune),
+> wrist **12.74** (raw ArUco offset kept — see the sweep caveats below).
 > Verification blends: `table_swap_snaps/19_final_verify/` (+ per-stage frames in
 > `table_swap_snaps/sweep_{front,side,wrist3}/`). Re-run this section only if a camera
 > (or the marker) moves.
@@ -773,7 +775,7 @@ CAL=~/work/repos/diffusion_policy/scripts/sim2real/perception/calibrations
 ⚠ **Findings baked into the current values (2026-07-16):**
 - **Do NOT derive the focal from intrinsics** (`fx*20.955/640` ≈ 12.8): the renderer's
   effective FOV is up to ~11% wider than the USD focal/aperture math (and than
-  `TiledCamera.data.intrinsic_matrices` claims). The sweep found front 14.32 / side 13.34
+  `TiledCamera.data.intrinsic_matrices` claims). The sweep found front 14.32 / side 13.34 (side later hand-tuned to 13.64 in align_cameras)
   empirically — clean single-peak curves, night-and-day blends.
 - **Wrist:** the sweep's position result was rejected by eyeball (it fits the residual
   OSC-hold settle, not a real offset); the raw ArUco offset + open jaws already blend
@@ -839,50 +841,104 @@ view direction + tilt; use them as the per-camera sanity check.
 
 ### 10.4 — Collect the 80k RGB demos (distillation doc Step 3) — SIM, needs `--enable_cameras`
 
-> ⚠ **Rendering-machine requirements (learned the hard way, 2026-07-16):**
-> 1. **A100/H100 CANNOT render** — no graphics engine, so any `--enable_cameras` run
->    segfaults in `carb.glinterop`/`gpu.foundation` 1 s into startup (state training and
->    reset recording are unaffected). Collection needs an RTX-class GPU (4090/L40S/A40...).
-> 2. **NVIDIA driver must be in the kit-validated window**: driver **595.71 (CUDA 13.2)
->    segfaults `rtx.scenedb` at hydra-engine creation** on Isaac Sim 5.1 / kit 107.3.3;
->    the **580 branch works** (validated: 580.159.03 laptop + 4090 box after downgrade
->    via `sudo apt install nvidia-driver-580`). Non-rendering runs work on 595, which
->    makes this easy to misdiagnose.
-> 3. First DR run downloads TWO one-time asset sets to `~/.cache/uwlab/assets`:
->    ~957 appearance textures (~4.7 GB) AND ~920 HDRI environment maps (~15+ GB, the
->    sky-light DR). The run looks idle during both (kit log quiet, python busy) — watch
->    `find ~/.cache/uwlab/assets -type f | wc -l` as the progress bar.
-> 3b. If a download hiccups, the run dies at the FIRST RESET with a misleading
->    `TypeError: ManagerTermBase.reset() missing 1 required positional argument: 'self'`:
->    the DR terms are class-based and initialize inside Isaac's deferred play callback,
->    which SWALLOWS the real exception and leaves later terms uninstantiated. Remedy:
->    just rerun — downloads resume from the cache (verified 2026-07-17: identical rerun
->    passed once the cache completed).
-> 4. **Export-vs-table note:** loading the 2026-07-13 finetune checkpoint requires the
->    PILLARED table (its critic saw 7 table colliders = 172 obs dims; pillar-free = 160
->    -> size-mismatch on load). Toggle `pillars.enabled: true` + regenerate the table USD
->    for the §10.1 export, then back to `false` for collection — the exported policy.pt
->    is actor-only (195 dims, no table-material obs) and doesn't care. A future finetune
->    on the pillar-free table gets a 160-dim critic and drops this dance.
+> ✅ **SMOKE GATE PASSED 2026-07-17 (4090):** 103/100 demos, anomaly scan clean (no
+> flat/wall frames, no cross-env views; the handful of NOISE-like flags at std 80–90 are
+> false positives from close-up high-contrast DR textures — eyeball-confirmed). Measured
+> throughput: **~1.25 min/100 demos at 16 envs, ~2 demos/s at 32 envs → 80k ≈ 11 h.**
+
 **What it does:** films the expert working. Builds the RGB DataCollection env — the
-"stage-set" task: 3 calibrated cameras rendering, curtain/table/object textures re-randomized
-every episode, camera poses jittered around YOUR calibrated values, lighting/object DR. The
-STATE expert (secretly reading object poses — allowed in sim) drives; every step the env
-records what the cameras see + robot state + the expert's action. Successful episodes append
-to the zarr; failures are discarded. You are building "here's what the world looks like →
-here's what the expert did", 80k times. Sanity: open a few frames — robot/objects framed like
-your real photos, textures varying wildly.
+"stage-set" task: 3 calibrated cameras rendering, curtain/table/object/gripper textures
+re-randomized every episode, camera poses jittered around YOUR calibrated values,
+lighting/object DR. The STATE expert (secretly reading object poses — allowed in sim)
+drives; every step the env records what the cameras see + robot state + the expert's
+action. Successful episodes append to the zarr; failures are discarded. You are building
+"here's what the world looks like → here's what the expert did", 80k times.
+
+**Workflow on the collection machine (RTX GPU — see the trap list below):**
 ```bash
 conda activate env_uwlab && cd ~/work/repos/UWLab
+OBJ="env.scene.insertive_object=pcb env.scene.receptive_object=openbox"
+git pull fork omnireset/ur10e-custom-table
+
+# (a) regenerate the LOCAL USDs after every pull that touches assets/graft:
+grep "enabled:" source/uwlab_assets/uwlab_assets/local/Props/Mounts/CustomLabTable/table_dims.yaml  # want: false
+python scripts_v2/tools/conversions/make_custom_table_usd.py
+python scripts_v2/tools/conversions/graft_gripper_on_ur10e.py
+#   MUST print "gripper visuals: de-instanced 3 prim(s)" (else gripper-appearance DR dies)
+
+# (b) 100-demo smoke (~2 min once assets are cached):
+./uwlab.sh -p scripts_v2/tools/collect_demos.py \
+  --task OmniReset-UR10eLinearGripper-RelCartesianOSC-RGB-DataCollection-v0 \
+  --dataset_file datasets/ur10e_pcb/rgb_smoke.zarr --num_envs 32 --num_demos 100 \
+  --enable_cameras --headless $OBJ \
+  agent.algorithm.offline_algorithm_cfg.behavior_cloning_cfg.experts_path='["<ckpt_dir>/exported/policy.pt"]'
+
+# (c) QC GATE — eyeball before the long run (plain python, no Isaac):
+python scripts_v2/tools/visualize_rgb_demos.py \
+  --dataset datasets/ur10e_pcb/rgb_smoke.zarr --out demo_viz --episodes 8
+#   prints episode stats + an anomaly scan over ALL episodes (FLAT std<10 / NOISE std>80
+#   frames per camera; flagged episodes are auto-added to the MP4 export), writes
+#   per-episode MP4s (front|side|wrist side by side) + contact_sheet.png (rows=episodes).
+#   CHECK: wrist view tracks the gripper (never black/frozen); mats+curtains+objects+
+#   GRIPPER retexture across contact-sheet rows; framing matches the real captures; demos
+#   finish the assembly; no wall/solid-color or cross-env frames. NOISE flags in the
+#   80-90 std band with clean MP4s = false positives (busy textures) — ignore.
+
+# (d) the 80k (run under tmux/nohup; check disk first -- ~5M frames x 3 cams @224^2):
 ./uwlab.sh -p scripts_v2/tools/collect_demos.py \
   --task OmniReset-UR10eLinearGripper-RelCartesianOSC-RGB-DataCollection-v0 \
   --dataset_file datasets/ur10e_pcb/rgb0.zarr --num_envs 32 --num_demos 80000 \
   --enable_cameras --headless $OBJ \
   agent.algorithm.offline_algorithm_cfg.behavior_cloning_cfg.experts_path='["<ckpt_dir>/exported/policy.pt"]'
-# only SUCCESSFUL episodes are saved; ~24 GPU-h for 80k (10k ~2 h for a sim-only smoke test).
-# Zarr files MERGE across runs -- split collection by rerunning into rgb1.zarr, rgb2.zarr, ...
-# in the same datasets/ur10e_pcb/ dir.
+# only SUCCESSFUL episodes are saved. ~2 demos/s at 32 envs on a 4090 -> ~11 h.
+# A crash loses only in-flight episodes BUT a restart begins a FRESH dataset -- collect
+# additional runs into rgb1.zarr, rgb2.zarr, ... (zarr files in the same dir merge at
+# training). Re-run the (c) scan on rgb0.zarr when done as the final QC.
 ```
+
+> ⚠ **Trap list (every one of these cost a debugging round, 2026-07-16/17):**
+> 1. **A100/H100 CANNOT render** — no graphics engine; any `--enable_cameras` run
+>    segfaults in `carb.glinterop`/`gpu.foundation` 1 s into startup (state training and
+>    reset recording are unaffected). Collection needs an RTX-class GPU (4090/L40S/A40...).
+> 2. **NVIDIA driver must be in the kit-validated window**: driver **595.71 (CUDA 13.2)
+>    segfaults `rtx.scenedb` at hydra-engine creation** on Isaac Sim 5.1 / kit 107.3.3;
+>    the **580 branch works** (validated: 580.159.03 on both the laptop and the 4090 box,
+>    `sudo apt install nvidia-driver-580`). Non-rendering runs work on 595, which makes
+>    this easy to misdiagnose. Also set the CPU governor to `performance`.
+> 3. First DR run downloads TWO one-time asset sets to `~/.cache/uwlab/assets`:
+>    ~957 appearance textures (~4.7 GB) AND ~920 HDRI environment maps (~15+ GB). The run
+>    looks idle during both — watch `find ~/.cache/uwlab/assets -type f | wc -l`.
+>    Downloads retry transient failures 3x with backoff; if one still hard-fails, an
+>    [ERROR] banner names the URL and the run dies at the FIRST RESET with a misleading
+>    `TypeError: ManagerTermBase.reset() missing ... 'self'` (the DR terms initialize
+>    inside Isaac's deferred play callback, which swallows the real exception). Remedy:
+>    rerun — downloads resume from the cache.
+> 4. **Export-vs-table:** loading the 2026-07-13 finetune checkpoint requires the
+>    PILLARED table (its critic saw 7 table colliders = 172 obs dims; pillar-free = 160
+>    → size-mismatch on load). Toggle `pillars.enabled: true` + regenerate the table USD
+>    for the §10.1 export, then back to `false` + regenerate for collection — the
+>    exported policy.pt is actor-only (195 dims) and doesn't care. **Forgetting the
+>    toggle-back is how pillars end up visible in demos.**
+> 5. **Env spacing** is 3.0 m in the RGB cfgs (baked in): our scene is ~1.8 m long in x,
+>    so at the authors' 1.5 m the +x neighbor's back curtain stood 10 cm in front of the
+>    front/side cameras — whole episodes stared at a "wall", and jitter at the curtain
+>    edge produced impossible robot-from-behind views. 2-env laptop smokes never showed
+>    it (2 envs get placed along y); ≥4-env grids did.
+> 6. **Gripper appearance DR** (the authors' camera-mount + inner-finger randomization)
+>    needs the graft's de-instancing step — the URDF importer marks the gripper visuals
+>    instanceable and instance proxies can't take per-env materials. The DR mesh patterns
+>    are naming-agnostic regexes (`gripper/<link>/visuals/.*`) because converter-internal
+>    node names differ between machines (`base/node_STL_BINARY_` vs
+>    `base_visual/node_STL_ASCII_`).
+> 7. **Link-mounted cameras render from a frozen spawn pose** on this Isaac build (the
+>    wrist camera was silently black/garbage in every env, the authors' 2F-85 align env
+>    included). Fixed by `task_mdp.track_link_mounted_camera` (reset-time re-author of
+>    the camera op un-pins it) + the 5 cm wrist near-clip; installed automatically by the
+>    UR10e RGB cfgs — nothing to do, listed so nobody "cleans it up".
+> 8. **Wrist-yaw cable constraint (tried + reverted):** `filter_reset_states.py
+>    --wrist3-window -150 -30` and the `joint_outside_window` termination can confine the
+>    wrist-camera mount to face the viewer, but the discards cut throughput ~3x — the
+>    real rig's cabling is routed for full ±180° instead. Tools remain if this returns.
 
 ### 10.5 — Train the RGB student (distillation doc Step 4) — ROBODIFF
 **What it does:** supervised imitation, no simulator — just the zarr. A ResNet-18 encodes the
