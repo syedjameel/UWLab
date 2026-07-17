@@ -276,11 +276,16 @@ def _apply_ur10e_rgb(cfg) -> None:
     # The wrist-mount term now covers the whole base_visual mesh = housing + camera-mount
     # bracket + D405 body (the authors' D415_to_Robotiq_Mount equivalent); all other params
     # stay the authors' verbatim.
+    # REGEX patterns (the term matches via rep.functional.get.prims): naming-agnostic to the
+    # URDF converter's internal node names, which differ between conversion vintages
+    # (".../visuals/base/node_STL_BINARY_/mesh" on one machine bit us on another). The
+    # visuals subtrees only become matchable once the graft has DE-INSTANCED them --
+    # re-run graft_gripper_on_ur10e.py after pulling, expect "de-instanced 3 prim(s)".
     _GRIPPER_DR_MESHES = {
-        "randomize_wrist_mount_appearance": ["gripper/robotiq_base_link/visuals/base/node_STL_BINARY_/mesh"],
+        "randomize_wrist_mount_appearance": ["gripper/robotiq_base_link/visuals/.*"],
         "randomize_inner_finger_appearance": [
-            "gripper/left_inner_finger/visuals/tip/node_STL_BINARY_/mesh",
-            "gripper/right_inner_finger/visuals/tip/node_STL_BINARY_/mesh",
+            "gripper/left_inner_finger/visuals/.*",
+            "gripper/right_inner_finger/visuals/.*",
         ],
     }
     for term, meshes in _GRIPPER_DR_MESHES.items():

@@ -180,6 +180,10 @@ def main() -> None:
             spec.instanceable = False
             deinstanced += 1
     print(f"  gripper visuals: de-instanced {deinstanced} prim(s) (per-env appearance DR)")
+    if deinstanced == 0:
+        print("  WARNING: no gripper visuals were de-instanced -- if they are also not plain "
+              "prims, the RGB collection's gripper-appearance DR will fail with 'No prims "
+              "found matching ... visuals/.*'.")
     flat.Export(args.output)
     print(f"Wrote {args.output}")
     print(f"  standoff along wrist_3 +Z = {args.standoff} m (identity rotation; approach +Z = wrist_3 +Z)")
