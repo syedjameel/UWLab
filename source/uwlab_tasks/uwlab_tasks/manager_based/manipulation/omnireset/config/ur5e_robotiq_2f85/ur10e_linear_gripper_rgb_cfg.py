@@ -39,6 +39,7 @@ from __future__ import annotations
 import uwlab_assets.robots.ur10e_linear_gripper as ur10e_linear_gripper
 
 from isaaclab.managers import EventTermCfg as EventTerm
+from isaaclab.managers import TerminationTermCfg as DoneTerm
 from isaaclab.utils import configclass
 
 from ... import mdp as task_mdp
@@ -287,6 +288,14 @@ def _apply_ur10e_rgb(cfg) -> None:
     _apply_curtain_poses(cfg)
     # Wrist camera: per-step USD tracking + offset-jitter DR (renders frozen otherwise).
     _apply_wrist_camera_tracking(cfg)
+    # Real-rig cable constraint: the wrist-camera mount must face the viewer side. End (and
+    # thereby DISCARD -- only successes are recorded) any episode where wrist_3 leaves
+    # +-60 deg around the -90 deg home. Pair with the dataset-side filter
+    # (filter_reset_states.py --wrist3-window -150 -30) so episode STARTS comply too.
+    cfg.terminations.wrist_outside_window = DoneTerm(
+        func=task_mdp.joint_outside_window,
+        params={"joint_name": "wrist_3_joint", "window": (-2.6180, -0.5236)},
+    )
 
 
 @configclass

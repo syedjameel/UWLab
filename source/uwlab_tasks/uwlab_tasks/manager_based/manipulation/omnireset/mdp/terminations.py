@@ -862,3 +862,24 @@ def corrupted_camera_detected(
         is_corrupted |= std_per_env < std_threshold
 
     return is_corrupted
+
+
+def joint_outside_window(
+    env: ManagerBasedRLEnv,
+    joint_name: str,
+    window: tuple[float, float],
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Terminate environments whose joint (wrapped to (-pi, pi]) leaves ``window`` (rad).
+
+    Added for the RGB collection's real-rig cable constraint (2026-07-17): the wrist-camera
+    mount must keep facing the viewer/front-camera side, i.e. wrist_3 within +-60 deg of the
+    -90 deg home. Since the recorder only saves SUCCESSFUL episodes, terminating on a window
+    exit silently discards any demo where the expert spins the mount away -- the distilled
+    student then never imitates cable-tangling wrist rotations.
+    """
+    robot = env.scene[asset_cfg.name]
+    jid = robot.find_joints([joint_name])[0][0]
+    q = robot.data.joint_pos[:, jid]
+    q = torch.remainder(q + torch.pi, 2 * torch.pi) - torch.pi
+    return (q < window[0]) | (q > window[1])

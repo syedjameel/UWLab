@@ -50,7 +50,34 @@ def main() -> None:
     print(f"[viz] episode length: min {lengths.min()} / mean {lengths.mean():.1f} / max {lengths.max()}")
 
     os.makedirs(args.out, exist_ok=True)
-    picks = np.unique(np.linspace(0, n_eps - 1, min(args.episodes, n_eps)).astype(int))
+
+    # ---- anomaly scan over ALL episodes (subsampled frames) ----
+    # Flat frames (std < 10, the corrupted_camera signature) AND noise-like frames
+    # (std > 80; textured scenes sit ~30-70, uniform random noise ~74+) both indicate
+    # renderer corruption. Flagged episodes are added to the MP4 export for eyeballing.
+    flagged: dict[int, str] = {}
+    for ep in range(n_eps):
+        s, e = (0 if ep == 0 else int(ends[ep - 1])), int(ends[ep])
+        ts = np.linspace(s, e - 1, min(6, e - s)).astype(int)
+        for c in cams:
+            stds = np.asarray([np.asarray(obs[c][int(t)]).std() for t in ts])
+            if (stds < 10.0).any():
+                flagged[ep] = f"{c}: FLAT frame (min std {stds.min():.1f})"
+            elif (stds > 80.0).any():
+                flagged[ep] = f"{c}: NOISE-like frame (max std {stds.max():.1f})"
+    if flagged:
+        print(f"[viz] SUSPECT episodes ({len(flagged)}/{n_eps}):")
+        for ep, why in sorted(flagged.items()):
+            print(f"[viz]   episode {ep}: {why}")
+    else:
+        print(f"[viz] anomaly scan clean: no flat/noise frames in {n_eps} episodes")
+
+    picks = np.unique(
+        np.concatenate([
+            np.linspace(0, n_eps - 1, min(args.episodes, n_eps)).astype(int),
+            np.array(sorted(flagged)[:10], dtype=int),
+        ])
+    )
 
     sheet_rows = []
     for ep in picks:
