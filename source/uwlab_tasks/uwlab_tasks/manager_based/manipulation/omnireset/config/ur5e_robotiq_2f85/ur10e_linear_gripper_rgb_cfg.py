@@ -295,6 +295,15 @@ def _apply_ur10e_rgb(cfg) -> None:
     _apply_curtain_poses(cfg)
     # Wrist camera: per-step USD tracking + offset-jitter DR (renders frozen otherwise).
     _apply_wrist_camera_tracking(cfg)
+    # Env spacing: our real-rig scene is LONGER than the authors' (back curtain x=-0.60,
+    # front camera x=+1.01 -> ~1.8 m x-span vs their ~1.25 m). At the inherited 1.5 m
+    # spacing, the +x neighbor's back curtain stands ~10 cm IN FRONT of this env's
+    # front/side cameras -- entire episodes stare at a close "wall" (and camera jitter at
+    # the curtain edge peeks into the neighbor's cell: the "robot seen from behind"
+    # frames). Verified in the 2026-07-17 4090 smoke (59/102 episodes flagged); 2-env
+    # laptop smokes never showed it because 2 envs get placed along y. 3.0 m clears the
+    # span with margin.
+    cfg.scene.env_spacing = 3.0
     # NOTE (2026-07-17): a wrist_3 +-60 deg cable-constraint (joint_outside_window
     # termination + filter_reset_states --wrist3-window) was tried and REVERTED: the
     # discards cut collection throughput ~2-3x (100 demos took ~36 min -> 80k would take
