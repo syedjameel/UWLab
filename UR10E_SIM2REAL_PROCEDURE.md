@@ -994,6 +994,38 @@ python eval_real_robot.py --input <student>.ckpt --output ./demo --robot_ip 192.
 # front/side/wrist, torque_max 330/330/150/56/56/56, setPayload 0.575 kg, home pose above.
 ```
 
+### ✅ First-deploy pre-flight checklist (verified 2026-07-20; do this every real run)
+
+**Software chain — audited end-to-end, all consistent (no action, listed so it stays true):**
+- Action scale deploy `CARTESIAN_SCALE=[0.01,0.01,0.002,0.02,0.02,0.2]` == sim
+  `UR10E_LINEAR_GRIPPER_RELATIVE_OSC_EVAL.scale_xyz_axisangle`.
+- OSC gains Kp 1000/50, damping 1.0; torque cap `[330,330,150,56,56,56]`; payload 0.575 kg
+  — all match the sim eval action. **Bounded task-space error clamp (0.05 m / 0.3 rad)** is
+  the "can't go mad" guarantee: a wild policy target still yields ≤50 N/axis, torque hard-
+  capped, and the OSC is COMPLIANT (soft push on contact, not a position fight).
+- 90° rig frame: `real_to_sim_joints` (q1−90°) applied to `ActualQ` obs AND the startup
+  homing target; torques are per-joint (shift-invariant). Startup is a bounded-OSC move to
+  home, not a fast moveJ.
+- Gripper `>0 = open` (matches the sim binary action); camera serials front `409122273078`
+  / side `323622272232` / wrist `409122272284`; all 6 policy `shape_meta` obs keys provided;
+  image resolution read from the checkpoint (auto 224²).
+
+**Physical — the ONLY real risk is world ≠ training distribution. Verify before "C":**
+1. ⭐ **Cameras have not moved since the 80k-collection calibration** (they were unplugged
+   one-at-a-time during §10.3 — confirm all three are rigidly back in their calibrated
+   mounts, nothing bumped). #1 cause of odd/hesitant behavior. If unsure, re-run one
+   `0_camera_calibrate.py` and compare the front pose to `_UR10E_CAMERA_POSES`.
+2. Green mat, openbox, 40 mm pcb placed like collection; workspace otherwise clear of
+   anything the arm could reach.
+3. `/dev/ttyACM0` present; press `g` and confirm the jaws physically OPEN before handing off.
+4. Pendant payload/TCP set, protective stop cleared, **hand on the e-stop.**
+
+**First-run protocol:**
+1. `-j` startup → the arm homes to YOUR home pose, gently. Lunge or 90°-sideways ⇒ e-stop
+   (frame bug). 2. Hand to policy (`C`) → first motions must head TOWARD the workspace,
+   slowly; bounded force makes a mistake a soft drift, e-stop anything sideways/accelerating.
+3. `S` returns control, `R` resets — keep the first episodes short.
+
 ### ⚠ Known sim↔real gaps to watch
 - **Gripper stroke ~1 s on the real robot vs near-instant sim jaw — now MODELED (2026-07-13).**
   The finetune/RGB envs cap the jaw `velocity_limit_sim` at 0.068 m/s (`REAL_GRIPPER_JAW_SPEED`
