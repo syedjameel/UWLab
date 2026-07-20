@@ -1003,9 +1003,12 @@ python eval_real_robot.py --input <student>.ckpt --output ./demo --robot_ip 192.
   — all match the sim eval action. **Bounded task-space error clamp (0.05 m / 0.3 rad)** is
   the "can't go mad" guarantee: a wild policy target still yields ≤50 N/axis, torque hard-
   capped, and the OSC is COMPLIANT (soft push on contact, not a position fight).
-- 90° rig frame: `real_to_sim_joints` (q1−90°) applied to `ActualQ` obs AND the startup
-  homing target; torques are per-joint (shift-invariant). Startup is a bounded-OSC move to
-  home, not a fast moveJ.
+- 90° rig frame: `real_to_sim_joints` (q1−90°) applied to `ActualQ` obs (policy sees sim
+  frame) and to the `'R'`-reset OSC homing target; torques are per-joint (shift-invariant).
+  ⚠ **Startup homing is a stiff `moveJ`** to `joints_init` (real frame, ~1.05 rad/s,
+  position-controlled — NOT compliant) that fires the instant `RealEnv` starts, before any
+  keypress: clear the arm's path to home and hold the e-stop from launch. The compliant
+  bounded-OSC governs policy control (after `C`) and the `'R'` reset only.
 - Gripper `>0 = open` (matches the sim binary action); camera serials front `409122273078`
   / side `323622272232` / wrist `409122272284`; all 6 policy `shape_meta` obs keys provided;
   image resolution read from the checkpoint (auto 224²).
