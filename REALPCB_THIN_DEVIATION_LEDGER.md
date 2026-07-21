@@ -155,6 +155,18 @@ the operator. Verified wired (Termination Manager shows `wrist_camera_window`). 
 Retraining-gated: takes effect on the next Stage-1/2 run. Tunable: tighten the +-60deg window or
 adjust the -24deg center if a future measurement refines it.
 
+**Dataset-side companion (REQUIRED before training with D3):** the reset datasets were recorded
+WITHOUT the window, and most recorded states start outside it (measured on the realpcb sets:
+C1 40% / C2 27% / C3 44% / C4 0% in-window; C4 is one +151deg cluster). Out-of-window starts are
+terminated at step 1 -> stillborn episodes; C4 (the near-goal engine of OmniReset's backward
+curriculum) contributes no learning, and its "success" metric reads ~90% hollow (states begin at
+the goal). Fix WITHOUT re-recording: `flip_wrist_into_window.py` exploits the parallel-jaw 2-fold
+symmetry (wrist_3 += 180deg + swap the two jaw joint values = physically identical grasp, camera
+flipped to the other side): C4 recovers 100%, C1-C3 keep 63-73% (the residual 120deg band is
+genuinely camera-sideways and dropped). Run it on all four resets_*.pt (then --min-grip on C4)
+before Stage-1. First H100 run (2026-07-21) was launched unflipped -- symptom: task3 90% at iter 1,
+task2 stuck at 0 -- and restarted after flipping.
+
 ## Files changed (branch omnireset/realpcb-thin, uncommitted)
 - NEW: `Props/Custom/RealPcb/{realpcb.usd,metadata.yaml}`, `scripts_v2/tools/build_realpcb_usd.py`,
   `scripts_v2/tools/conversions/{measure_fingertip_vs_table.py,sweep_thin_reset_augmentation.py}`,
