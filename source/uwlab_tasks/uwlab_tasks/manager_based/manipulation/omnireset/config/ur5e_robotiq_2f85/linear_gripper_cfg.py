@@ -39,7 +39,10 @@ import math
 import uwlab_assets.robots.ur5e_linear_gripper as ur5e_linear_gripper
 
 from isaaclab.managers import SceneEntityCfg
+from isaaclab.managers import TerminationTermCfg as DoneTerm
 from isaaclab.utils import configclass
+
+from ... import mdp as task_mdp
 
 from .actions import Ur5eLinearGripperRelativeOSCAction, Ur5eLinearGripperRelativeOSCEvalAction
 from .grasp_sampling_cfg import Robotiq2f85GraspSamplingCfg
@@ -97,6 +100,42 @@ def _apply_linear_gripper(cfg, robot, action) -> None:
         pr = dict(ee.params["pose_range_b"])
         pr["pitch"] = (3.0 * math.pi / 4.0, 5.0 * math.pi / 4.0)
         ee.params["pose_range_b"] = pr
+
+
+def _enable_fingertip_floor(cfg, table_top: float = 0.004, tip_offset: float = 0.144, tol: float = 0.001) -> None:
+    """Enable the fingertip-vs-table floor (deviation A) on a linear-gripper EEGrasped reset cfg.
+
+    Rejects recorded reset states whose jaw tip is driven below the table -- physically
+    unrealizable on the real robot, but invisible to the object/EE-base success checks. Only for
+    EEGrasped reset tasks (where the gripper grips a table-resting object). Custom-table surface is
+    at world z=0.004; the jaw tip is 0.144 m from robotiq_base_link along +Z. See
+    REALPCB_THIN_DEVIATION_LEDGER.md (A).
+    """
+    succ = getattr(cfg.terminations, "success", None)
+    if succ is not None:
+        succ.params["fingertip_offset"] = tip_offset
+        succ.params["table_top"] = table_top
+        succ.params["fingertip_clearance_tol"] = tol
+
+
+def _enable_wrist_camera_anchor(cfg, window: tuple[float, float] = (-1.47, 0.62)) -> None:
+    """Anchor wrist_3 so the wrist camera settles toward +X (the operator side) during STATE-expert
+    training (deviation -- see REALPCB_THIN_DEVIATION_LEDGER.md).
+
+    WHY this is an addition, not an author mechanism: the authors' success check ignores yaw
+    (``euler_xy_distance`` = roll+pitch only, commands.py:149), so the wrist/camera yaw is
+    unconstrained by design (their task is a symmetric peg/cube). Verified empirically: the authors'
+    2F-85 expert settles the camera SPREAD across 0-180deg (concentration R=0.45, never +X), and our
+    UR10e expert settles it tightly at -90deg (-Y). Our sim2real vision student needs a stable
+    operator-facing viewpoint, so we terminate any episode whose wrist_3 leaves the camera=+X window.
+    Since only SUCCESSFUL episodes are rewarded/recorded, this teaches the policy to keep the camera
+    on the operator's side. Window (rad) measured on the D405 mount: wrist_3 -24deg gives camera +X;
+    +-60deg -> [-1.47, +0.62]. Only for the linear gripper (its own camera mount + convention).
+    """
+    cfg.terminations.wrist_camera_window = DoneTerm(
+        func=task_mdp.joint_outside_window,
+        params={"joint_name": "wrist_3_joint", "window": window},
+    )
 
 
 # ---------------------------------------------------------------------------------------

@@ -62,6 +62,14 @@ class grasp_sampling_event(ManagerTermBase):
         self.gripper_maximum_aperture = metadata.get("maximum_aperture")
         self.finger_offset = metadata.get("finger_offset")
         self.finger_clearance = metadata.get("finger_clearance")
+        # Jaw-tip offset from the gripper base (robotiq_base_link) along the +Z approach axis.
+        # Used by the top-down sampler to keep the tip at/above a (thin) object's bottom face so a
+        # table-resting object is gripped at the fingertip, not with the finger driven past its
+        # bottom. Defaults to finger_offset+finger_clearance -> object-aware sweep == original sweep
+        # (a no-op) when unset, so the antipodal 2F-85 path is unaffected. See REALPCB_THIN_DEVIATION_LEDGER.md (D1).
+        self.finger_tip_offset = metadata.get(
+            "finger_tip_offset", (self.finger_offset or 0.0) + max(0.0, self.finger_clearance or 0.0)
+        )
         self.gripper_approach_direction = tuple(metadata.get("gripper_approach_direction"))
         self.grasp_align_axis = tuple(metadata.get("grasp_align_axis"))
         self.orientation_sample_axis = tuple(metadata.get("orientation_sample_axis"))
@@ -174,9 +182,20 @@ class grasp_sampling_event(ManagerTermBase):
 
         num_orient = max(1, int(self.num_orientations))
         num_standoff = max(1, int(self.num_standoff_samples))
-        standoffs = np.linspace(
-            self.finger_offset, self.finger_offset + max(0.0, self.finger_clearance), num_standoff
-        )
+        # Object-aware standoff (thin-object fix, D1). The jaw tip sits finger_tip_offset from the
+        # gripper base along the (downward) approach; the tip's depth below the grasp centre is
+        # (finger_tip_offset - standoff). Capping that at the object's half-thickness puts the tip
+        # at the object's bottom face, so a table-resting object is gripped at the fingertip instead
+        # of the finger being driven below the table. `ideal` = standoff putting the tip exactly at
+        # the bottom; sweep from there up toward the tip (shallower grip on the lower edge). For a
+        # thick object ideal <= finger_offset, so this reduces to the original finger_offset ..
+        # finger_offset+finger_clearance sweep (a no-op). See REALPCB_THIN_DEVIATION_LEDGER.md.
+        clearance = max(0.0, self.finger_clearance)
+        ideal = self.finger_tip_offset - 0.5 * float(ext[2])
+        lo = max(self.finger_offset, ideal)
+        hi = min(self.finger_tip_offset, max(self.finger_offset + clearance, ideal + clearance))
+        hi = max(lo, hi)
+        standoffs = np.linspace(lo, hi, num_standoff)
         rp = np.radians(self.topdown_roll_pitch_deg)
 
         # Face-aligned closing directions: the object-FRAME horizontal axes X and Y (valid because
@@ -717,6 +736,24 @@ class reset_end_effector_round_fixed_asset(ManagerTermBase):
         _wrap_joints_into_limits(self.robot, self.joint_ids, env_ids)
 
 
+def _infer_object_thickness(asset) -> float | None:
+    """Best-effort vertical thickness (m) of a task object from its metadata ``bottom_offset``.
+
+    Task objects are modeled with the origin at the bbox centre, so the bottom face sits at
+    ``bottom_offset.z = -thickness/2`` -> ``thickness = 2*|bottom_offset.z|``. Returns ``None`` when
+    unavailable (no metadata / no bottom_offset), so callers fall back to unmodified behavior. Used
+    only to gate the thin-object reset augmentation (D2/B); see REALPCB_THIN_DEVIATION_LEDGER.md.
+    """
+    try:
+        meta = utils.read_metadata_from_usd_directory(asset.cfg.spawn.usd_path)
+        bo = (meta or {}).get("bottom_offset", {}).get("pos", None)
+        if bo is not None and len(bo) >= 3:
+            return abs(2.0 * float(bo[2]))
+    except Exception:
+        pass
+    return None
+
+
 class reset_end_effector_from_grasp_dataset(ManagerTermBase):
     """Reset end effector pose using saved grasp dataset from grasp sampling."""
 
@@ -736,6 +773,21 @@ class reset_end_effector_from_grasp_dataset(ManagerTermBase):
         # Pose range for sampling variations
         pose_range_b: dict[str, tuple[float, float]] = cfg.params.get("pose_range_b", dict())
         range_list = [pose_range_b.get(key, (0.0, 0.0)) for key in ["x", "y", "z", "roll", "pitch", "yaw"]]
+        # Object-aware reset augmentation for THIN insertive objects (D2/B, see
+        # REALPCB_THIN_DEVIATION_LEDGER.md). A thin board resting on a table can only be edge-grasped
+        # with the fingertip at ~table level, leaving ~0 headroom, so the authors' symmetric z /
+        # large roll-pitch jitter (pose_range_b is in the gripper BODY frame; +z is the downward
+        # approach) drives the tip deep under the table. For a thin fixed asset, bias z shallower-only
+        # (z in [-1cm, 0]) and clamp roll/pitch to +/-3 deg; yaw / x / y are height-neutral and kept.
+        # Empirically cuts deep (>2mm) burial ~38% -> ~11%. No-op for thick objects (e.g. the 40mm cube).
+        thickness = _infer_object_thickness(self.fixed_asset)
+        if thickness is not None and thickness < 0.02:
+            rp_cap = math.pi / 60.0  # 3 deg
+            zlo, zhi = range_list[2]
+            range_list[2] = (max(zlo, -0.01), min(zhi, 0.0))
+            for _i in (3, 4):  # roll, pitch
+                lo, hi = range_list[_i]
+                range_list[_i] = (max(lo, -rp_cap), min(hi, rp_cap))
         self.ranges = torch.tensor(range_list, device=env.device)
 
         robot_ik_solver_cfg = DifferentialInverseKinematicsActionCfg(

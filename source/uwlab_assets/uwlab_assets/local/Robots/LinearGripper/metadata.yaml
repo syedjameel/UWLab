@@ -15,6 +15,10 @@
 # standoffs sweep finger_offset .. finger_offset+finger_clearance = 0.13 .. 0.14.
 finger_offset: 0.13
 finger_clearance: 0.01
+finger_tip_offset: 0.144     # jaw-tip Z from robotiq_base_link (grip-zone tip). Top-down sampler
+                             # keeps the tip at/above a thin object's bottom face so a table-resting
+                             # object is gripped at the fingertip (thin-object fix D1; no-op for thick
+                             # objects). See REALPCB_THIN_DEVIATION_LEDGER.md.
 maximum_aperture: 0.13       # usable jaw opening (inner-face gap at OPEN ~0.137; slight margin)
 gripper_approach_direction: [0, 0, 1]   # fingers reach +Z; top-down = this axis points DOWN
 grasp_align_axis: [1, 0, 0]             # jaw closing axis (horizontal when approaching top-down)

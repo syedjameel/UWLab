@@ -535,6 +535,8 @@ variants = {
         "rectangle": make_insertive_object(f"{UWLAB_CLOUD_ASSETS_DIR}/Props/Custom/Rectangle/rectangle.usd"),
         # Local dev asset (PCB slab). Switch to UWLAB_CLOUD_ASSETS_DIR when sharing.
         "pcb": make_insertive_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/Pcb/pcb.usd"),
+        # Local dev asset (real thin PCB, 140x100x3 mm -- thin-object grasp study).
+        "realpcb": make_insertive_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/RealPcb/realpcb.usd"),
         # Local dev asset (telescoping cover/lid). Switch to UWLAB_CLOUD_ASSETS_DIR when sharing.
         "cover": make_insertive_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/Cover/cover.usd"),
     },
@@ -551,6 +553,8 @@ variants = {
         "wall": make_receptive_object(f"{UWLAB_CLOUD_ASSETS_DIR}/Props/Custom/Wall/wall.usd"),
         # Local dev asset (open-top box). Switch to UWLAB_CLOUD_ASSETS_DIR when sharing.
         "openbox": make_receptive_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/OpenBox/open_box.usd"),
+        # Real-PCB-sized receptacle (cavity 150x110 mm) for the realpcb near-goal/insertion task.
+        "realopenbox": make_receptive_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/RealOpenBox/realopenbox.usd"),
         # Local dev asset (box with seated PCB; lid task receptive, mating point at the top rim).
         "boxwithpcb": make_receptive_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/BoxWithPcb/box_with_pcb.usd"),
     },

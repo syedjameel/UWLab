@@ -232,6 +232,20 @@ class check_grasp_success(ManagerTermBase):
         return grasp_success
 
 
+def _infer_thickness(asset) -> float | None:
+    """Vertical thickness (m) of a task object from its metadata ``bottom_offset`` (origin at bbox
+    centre -> thickness = 2*|bottom_offset.z|). None if unavailable. Gates the fingertip floor (A)
+    to thin objects only; see REALPCB_THIN_DEVIATION_LEDGER.md."""
+    try:
+        meta = utils.read_metadata_from_usd_directory(asset.cfg.spawn.usd_path)
+        bo = (meta or {}).get("bottom_offset", {}).get("pos", None)
+        if bo is not None and len(bo) >= 3:
+            return abs(2.0 * float(bo[2]))
+    except Exception:
+        pass
+    return None
+
+
 class check_reset_state_success(ManagerTermBase):
     """Check if grasp is successful based on object stability, gripper closure, and collision detection."""
 
@@ -266,6 +280,21 @@ class check_reset_state_success(ManagerTermBase):
         self.robot_asset = env.scene[self.robot_cfg.name]
         self.assets_to_check = self.object_assets + [self.robot_asset]
         self.ee_body_idx = self.robot_asset.data.body_names.index(self.ee_body_name)
+
+        # Optional fingertip-vs-table floor (A, thin-object fix; see REALPCB_THIN_DEVIATION_LEDGER.md).
+        # Rejects reset states whose jaw tip is driven below the table surface -- physically
+        # unrealizable on the real robot, but invisible to the object/EE-base checks above. Opt-in:
+        # disabled (no-op) unless BOTH fingertip_offset and table_top are provided, so it does not
+        # affect the 2F-85 or any non-table task. Enabled on the linear-gripper EEGrasped reset tasks.
+        self.fingertip_offset = cfg.params.get("fingertip_offset")
+        self.table_top = cfg.params.get("table_top")
+        self.fingertip_clearance_tol = cfg.params.get("fingertip_clearance_tol", 0.001)
+        # Gate the floor to THIN insertive objects (default) so thick-object pipelines (e.g. the
+        # 40mm cube) are entirely unaffected -- object_cfgs[0] is the insertive object by convention.
+        self._fingertip_floor_active = self.fingertip_offset is not None and self.table_top is not None
+        if self._fingertip_floor_active and cfg.params.get("fingertip_thin_only", True):
+            thk = _infer_thickness(self.object_assets[0])
+            self._fingertip_floor_active = thk is not None and thk < cfg.params.get("fingertip_thin_threshold", 0.02)
 
         # Optional assembly alignment filter
         self.assembly_success_prob = cfg.params.get("assembly_success_prob")
@@ -339,6 +368,11 @@ class check_reset_state_success(ManagerTermBase):
         max_object_pos_deviation: float = 0.1,
         pos_z_threshold: float = -0.01,
         consecutive_stability_steps: int = 5,
+        fingertip_offset: float | None = None,
+        table_top: float | None = None,
+        fingertip_clearance_tol: float = 0.001,
+        fingertip_thin_only: bool = True,
+        fingertip_thin_threshold: float = 0.02,
         insertive_asset_cfg: SceneEntityCfg | None = None,
         receptive_asset_cfg: SceneEntityCfg | None = None,
         assembly_success_prob: float | None = None,
@@ -415,6 +449,15 @@ class check_reset_state_success(ManagerTermBase):
             dim=0,
         )
 
+        # Fingertip-vs-table floor (A). tip = ee_body + finger_tip_offset along the (unit) approach
+        # axis; reject states whose tip is below table_top - tol. No-op when disabled / thick object.
+        if self._fingertip_floor_active:
+            ee_pos = self.robot_asset.data.body_link_pos_w[:, self.ee_body_idx]
+            tip_z = ee_pos[:, 2] + gripper_approach_world[:, 2] * self.fingertip_offset
+            fingertip_above_table = tip_z >= (self.table_top - self.fingertip_clearance_tol)
+        else:
+            fingertip_above_table = torch.ones(env.num_envs, device=env.device, dtype=torch.bool)
+
         reset_success = (
             (~abnormal_gripper_state)
             & gripper_orientation_within_range
@@ -422,6 +465,7 @@ class check_reset_state_success(ManagerTermBase):
             & (~excessive_pose_deviation)
             & (~pos_below_threshold)
             & collision_free
+            & fingertip_above_table
             & time_out
         )
 
@@ -435,7 +479,8 @@ class check_reset_state_success(ManagerTermBase):
                 f"stable={int(stability_reached.sum())} "
                 f"not_far={int((~excessive_pose_deviation).sum())} "
                 f"above_ground={int((~pos_below_threshold).sum())} "
-                f"coll_free={int(collision_free.sum())} -> success={int(reset_success.sum())}",
+                f"coll_free={int(collision_free.sum())} "
+                f"tip_ok={int(fingertip_above_table.sum())} -> success={int(reset_success.sum())}",
                 flush=True,
             )
             # Per-asset velocity detail for the stability condition (median over envs of the

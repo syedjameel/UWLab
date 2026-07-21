@@ -179,6 +179,8 @@ variants = {
         "rectangle": make_object(f"{UWLAB_CLOUD_ASSETS_DIR}/Props/Custom/Rectangle/rectangle.usd"),
         # Local dev asset (PCB slab). Switch to UWLAB_CLOUD_ASSETS_DIR when sharing.
         "pcb": make_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/Pcb/pcb.usd"),
+        # Local dev asset (real thin PCB, 140x100x3 mm -- thin-object grasp study).
+        "realpcb": make_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/RealPcb/realpcb.usd"),
         # Local dev asset (telescoping cover/lid). Switch to UWLAB_CLOUD_ASSETS_DIR when sharing.
         "cover": make_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/Cover/cover.usd"),
     }

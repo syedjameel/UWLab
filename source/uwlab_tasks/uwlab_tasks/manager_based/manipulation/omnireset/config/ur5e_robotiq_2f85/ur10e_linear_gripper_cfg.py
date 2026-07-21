@@ -46,7 +46,7 @@ from .actions import (
     Ur10eLinearGripperRelativeOSCEvalAction,
     Ur10eLinearGripperSysidOSCAction,
 )
-from .linear_gripper_cfg import _apply_linear_gripper
+from .linear_gripper_cfg import _apply_linear_gripper, _enable_fingertip_floor, _enable_wrist_camera_anchor
 from .reset_states_cfg import (
     ObjectAnywhereEEAnywhereResetStatesCfg,
     ObjectAnywhereEEGraspedResetStatesCfg,
@@ -102,6 +102,7 @@ class Ur10eLinearGripperObjectRestingEEGraspedResetStatesCfg(ObjectRestingEEGras
         _apply_linear_gripper(
             self, ur10e_linear_gripper.IMPLICIT_UR10E_LINEAR_GRIPPER, Ur10eLinearGripperRelativeOSCAction()
         )
+        _enable_fingertip_floor(self)  # deviation A (thin-object fingertip-vs-table floor)
 
 
 @configclass
@@ -111,6 +112,7 @@ class Ur10eLinearGripperObjectAnywhereEEGraspedResetStatesCfg(ObjectAnywhereEEGr
         _apply_linear_gripper(
             self, ur10e_linear_gripper.IMPLICIT_UR10E_LINEAR_GRIPPER, Ur10eLinearGripperRelativeOSCAction()
         )
+        _enable_fingertip_floor(self)  # deviation A (thin-object fingertip-vs-table floor)
 
 
 @configclass
@@ -133,6 +135,7 @@ class Ur10eLinearGripperObjectPartiallyAssembledEEGraspedResetStatesCfg(
         _apply_linear_gripper(
             self, ur10e_linear_gripper.IMPLICIT_UR10E_LINEAR_GRIPPER, Ur10eLinearGripperRelativeOSCAction()
         )
+        _enable_fingertip_floor(self)  # deviation A (thin-object fingertip-vs-table floor)
 
 
 # ---------------------------------------------------------------------------------------
@@ -147,6 +150,7 @@ class Ur10eLinearGripperRelCartesianOSCTrainCfg(Ur5eRobotiq2f85RelCartesianOSCTr
         _apply_linear_gripper(
             self, ur10e_linear_gripper.IMPLICIT_UR10E_LINEAR_GRIPPER, Ur10eLinearGripperRelativeOSCAction()
         )
+        _enable_wrist_camera_anchor(self)  # wrist_3 window -> camera settles toward +X (operator)
 
 
 # Real gripper jaw speed (m/s per jaw joint): the physical gripper takes ~1.0 s for the
@@ -184,6 +188,7 @@ class Ur10eLinearGripperRelCartesianOSCFinetuneCfg(Ur5eRobotiq2f85RelCartesianOS
             self, ur10e_linear_gripper.EXPLICIT_UR10E_LINEAR_GRIPPER, Ur10eLinearGripperRelativeOSCAction()
         )
         _apply_real_gripper_speed(self)
+        _enable_wrist_camera_anchor(self)  # wrist_3 window -> camera settles toward +X (operator)
         # Motor delay: the CMA-ES "identified delay=4" was never actually simulated (the
         # scripts reset AFTER applying it, re-randomizing the buffers; fixed 2026-07-06).
         # Re-measured by sweeping delay 0..8 over the frozen 24-param fit: RMSE rises
