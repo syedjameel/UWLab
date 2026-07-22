@@ -5,6 +5,53 @@ Goal: grasp a real **140 × 100 × 3 mm** PCB (`realpcb`) with the linear parall
 Governing rule: follow the OmniReset authors' implementation; deviate only when physically
 forced, and log it here for approval.
 
+This file is now the SINGLE consolidated deviation ledger: the P-series below back-fills the
+port adaptations inherited from `omnireset/ur10e-custom-table` (made before this ledger existed);
+the D-series are the realpcb-branch deviations. New deviations go here.
+
+---
+
+## Inherited port adaptations (P-series — pre-ledger, VALIDATED by the ~90%-real cube deployment)
+
+All of these were physically forced by the hardware substitution and were proven end-to-end by the
+deployed cube pipeline (UR10e, custom table, 3x D405, ~90% real success). Documented originally in
+code comments / commit messages / UR10E_OMNIRESET_GUIDE.md; collected here for one authoritative list.
+
+- **P1 — Hardware substitution (the root deviation).** UR5e + 2F-85 + D415 -> UR10e + custom linear
+  parallel-jaw gripper + 3x RealSense D405; authors' bench -> measured custom lab table + mount
+  plate (`make_custom_table_usd.py` from `table_dims.yaml`). Everything below follows from this.
+- **P2 — Top-down grasp-sampling mode.** `grasp_sample_mode: topdown` (face-aligned closing axis,
+  +/-6 deg wobble) added alongside the authors' antipodal sampler: our gripper's approach axis is
+  PERPENDICULAR to its closing axis, so antipodal sampling can only orient it side-on.
+- **P3 — Dual-drive gripper articulation.** Both jaws independently driven to the same target
+  (`add_gripper_mimic.py --dual-drive`); the real single-motor linkage is not modeled. Known
+  residual: jaw asymmetry under load (up to a few mm) — the real gripper self-centers. Accepted.
+- **P4 — Graft-time bakes** (`graft_gripper_on_ur10e.py`): gripper mass 1.100 -> 0.575 kg
+  (measured), wrist joint limits -> +/-180 deg (real cabling), de-instanced gripper visuals (so the
+  authors' gripper-appearance DR works on our meshes).
+- **P5 — Reset-EE pitch range shifted +pi/2** (`_apply_linear_gripper`): our approach axis is +Z vs
+  the 2F-85's +X; the shift reproduces the authors' top-down exploration EFFECT exactly
+  (validated 45% vs 46% top-down fraction).
+- **P6 — EE z-floor 0.017 vs authors' literal 0.0**: preserves the authors' EFFECT (13 mm minimum
+  fingertip clearance) on our different work-surface height (+0.004 vs their -0.013).
+- **P7 — Gripper-gain DR on BOTH jaw joints**: the authors' single `finger_joint` regex silently
+  left our second jaw un-randomized (permanently asymmetric jaws); pointed the event at both.
+- **P8 — Object spawn band shifted** (+5 cm x, centered y) onto the real rig's green workspace mat.
+- **P9 — Finetune-only real-dynamics adaptations** (Stage-1 keeps the authors' idealized dynamics):
+  measured UR10e sysid (chirp + CMA-ES, per-joint fit <2 deg), motor-delay DR narrowed (0,2)->(0,1)
+  to clear the ADR p=0.75 wall, jaw speed capped at the measured 0.068 m/s stroke rate.
+- **P10 — RGB/collection adaptations**: calibrated real camera poses (ArUco + alignment sweep),
+  wrist-camera prim repointing + pose tracking for the nested link, env spacing 1.5 -> 3.0 m
+  (neighbor curtains blocked cameras), real-rig curtains in the scene.
+- **P11 — Recording bugfixes**: wrist_3 velocity-limit runaway fix; IK wrist wrap into limits.
+- **P12 — Table corner pillars removed** (real rig, 2026-07-16; `pillars.enabled: false`) —
+  privileged critic obs 172 -> 160. Permanent for all future training.
+
+Deviations TRIED and REVERTED to stay faithful to the authors: rigid-assembly jitter (restored
+authors' jitter design, commit 62bb03a); wrist_3 cable-constraint window in RGB collection
+(reverted for throughput, commit aa54541 — later reborn, measured and corrected, as D3).
+Laptop PhysX buffer trims are operational (6 GB GPU), not methodological.
+
 ## Empirical findings (this sub-task, laptop RTX 3060)
 
 All runs use the author asset pattern (`omnireset_asset_utils.create_stage`: baked friction
