@@ -167,6 +167,29 @@ genuinely camera-sideways and dropped). Run it on all four resets_*.pt (then --m
 before Stage-1. First H100 run (2026-07-21) was launched unflipped -- symptom: task3 90% at iter 1,
 task2 stuck at 0 -- and restarted after flipping.
 
+## Deviation D4 (IMPLEMENTED) — C2 recorded as "low-hover grip" (table-resting grip is physically unrecordable)
+
+Stage-1 stalled at 0.65 overall (task0/task1 both ~36% at iter 1887 while task2 87% / task3 96%;
+the cube Stage-1 hit ~97% on ALL tasks by iter 500). Diagnosis chain:
+1. C2 (ObjectRestingEEGrasped) contained **0% true grips** — 100% of states had the jaws closed
+   PAST the 3 mm board (fj 0.068). task1 == task0 statistically = C2 conferred nothing; the
+   C1<->C3 curriculum bridge ("object in hand at table level") was missing.
+2. `diagnose_c2_grip_slip.py` (replays the C2 reset + close command, classifies episode ends):
+   52% of resets close ABOVE the board (tips median +4.9 mm, p90 +17 mm — B's shallower-only
+   jitter), and **0/29 catch-band episodes hold**: on the table the pinned board cannot
+   self-center between the jaws, so the closing drive rides OVER the 3 mm edge and closes empty
+   (41% PASSED, 3% squirt). The identical grasp holds ~100% mid-air (C3) and 69-98% floating
+   (grasp sampling). Re-recording C2 with a grip gate would therefore starve (~0% accept).
+
+Fix (zero code): record C2 via the C3 mechanism with the object's spawn height overridden to a
+low hover — `--task ...ObjectAnywhereEEGrasped-v0 --reset_type ObjectRestingEEGrasped` +
+`env.events.reset_insertive_object_pose.params.pose_range.z=[0.005,0.03]` — the board is gripped
+mid-air (which holds) 5-30 mm above its resting spot. Laptop smoke: 59% true width grips (vs 0%),
+object 100% within 3.5 cm of the table. Then `filter_reset_states --min-grip 0.012 --max-grip
+0.045` (new --max-grip flag) keeps only true grips. DEVIATION: changes C2's semantics from
+"gripped at rest" to "gripped just above rest" — physically forced for a 3 mm board; the authors'
+thick objects never faced this (their resting grip works).
+
 ## Files changed (branch omnireset/realpcb-thin, uncommitted)
 - NEW: `Props/Custom/RealPcb/{realpcb.usd,metadata.yaml}`, `scripts_v2/tools/build_realpcb_usd.py`,
   `scripts_v2/tools/conversions/{measure_fingertip_vs_table.py,sweep_thin_reset_augmentation.py}`,

@@ -56,6 +56,9 @@ def main():
         "away; the student would imitate that.",
     )
     ap.add_argument("--min-grip", type=float, default=None, help="Drop states with finger_joint below this (m).")
+    ap.add_argument("--max-grip", type=float, default=None,
+                    help="Drop states with finger_joint above this (m) -- e.g. 0.045 removes jaws "
+                         "closed PAST a thin object (empty grip) while keeping true width grips.")
     ap.add_argument("--in-place", action="store_true", help="Overwrite the input file (keeps a .bak copy).")
     args = ap.parse_args()
 
@@ -84,6 +87,11 @@ def main():
         open_jaw = jp[:, FINGER_COL] < args.min_grip
         keep &= ~open_jaw
         print(f"[FILTER] finger_joint < {args.min_grip}: dropping {int(open_jaw.sum())}/{n}")
+
+    if args.max_grip is not None:
+        closed_past = jp[:, FINGER_COL] > args.max_grip
+        keep &= ~closed_past
+        print(f"[FILTER] finger_joint > {args.max_grip}: dropping {int(closed_past.sum())}/{n}")
 
     kept = int(keep.sum())
     print(f"[FILTER] keeping {kept}/{n} states ({100 * kept / n:.1f}%)")
