@@ -175,8 +175,16 @@ small VISUALIZATION runs; re-record at scale (~10k each) before training.
    jaws are independent prismatic drives with no linkage, so under asymmetric load they settle
    off-center -- a real single-motor rack-pinion gripper self-centers. Fix = a mimic/coupling
    constraint (deviation; ties to [[gripper-jaw-width-deferred]]).
-2. **Object sunk into table.** ~half of C1/C2 resting states have the PCB ~3-5 mm below the table
-   surface (the `above_ground` floor is a loose -0.02 m). Consider tightening for thin objects.
+2. **Object sunk into table — RESOLVED (2026-07-23).** 35% of C1 states had the board z < 0.003
+   (top face BELOW the 4 mm mat top -> invisible + ungrippable; confirmed on video: "PCB not
+   present"). Root cause: thin-board TUNNELING — the C1 recording drops the board from up to
+   0.3 m; the thin flat collider punches into the mat collider, wedges (near-zero velocity), and
+   passes the stability check. The 40 mm cube never tunneled, which is why this is realpcb-only.
+   These states are unwinnable and accounted for most of the C1 "pick failure": of PICKABLE
+   episodes the model_3600 policy already succeeds ~78%. Fix: `filter_reset_states --min-obj-z
+   0.0045 --max-obj-z 0.05` (new flags) drops embedded boards + on-robot floaters (keeps 64%,
+   incl. the 31% legitimately leaning on the box). For future C1 re-records: lower the object
+   drop band (z jitter (0,0.3) -> e.g. (0,0.05)) so the thin board cannot slam-tunnel.
 3. **C3/C4 low accept + flying** (11% / 6%): a flat plate carried at arbitrary poses on a 3 mm
    pinch is inherently unstable; C4 also limited by fingers hitting the box walls (coll_free).
 

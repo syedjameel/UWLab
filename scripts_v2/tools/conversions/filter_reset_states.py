@@ -59,6 +59,13 @@ def main():
     ap.add_argument("--max-grip", type=float, default=None,
                     help="Drop states with finger_joint above this (m) -- e.g. 0.045 removes jaws "
                          "closed PAST a thin object (empty grip) while keeping true width grips.")
+    ap.add_argument("--min-obj-z", type=float, default=None,
+                    help="Drop states with the insertive object's root z below this (m). E.g. 0.0045 "
+                         "removes thin boards TUNNELED into the 4 mm mat during the recording drop "
+                         "(invisible + ungrippable; resting center on the +0.004 surface is 0.0055).")
+    ap.add_argument("--max-obj-z", type=float, default=None,
+                    help="Drop states with the insertive object's root z above this (m). E.g. 0.05 "
+                         "removes boards that settled ON the robot arm / mid-air outliers.")
     ap.add_argument("--in-place", action="store_true", help="Overwrite the input file (keeps a .bak copy).")
     args = ap.parse_args()
 
@@ -67,6 +74,19 @@ def main():
     jp = torch.stack([t.cpu() for t in robot["joint_position"]]).numpy()
     n = jp.shape[0]
     keep = np.ones(n, dtype=bool)
+
+    if args.min_obj_z is not None or args.max_obj_z is not None:
+        oz = torch.stack(
+            [t.cpu() for t in data["initial_state"]["rigid_object"]["insertive_object"]["root_pose"]]
+        ).numpy()[:, 2]
+        if args.min_obj_z is not None:
+            sunk = oz < args.min_obj_z
+            keep &= ~sunk
+            print(f"[FILTER] insertive_object z < {args.min_obj_z}: dropping {int(sunk.sum())}/{n}")
+        if args.max_obj_z is not None:
+            high = oz > args.max_obj_z
+            keep &= ~high
+            print(f"[FILTER] insertive_object z > {args.max_obj_z}: dropping {int(high.sum())}/{n}")
 
     if args.drop_wrist_beyond:
         tol = np.radians(0.1)
