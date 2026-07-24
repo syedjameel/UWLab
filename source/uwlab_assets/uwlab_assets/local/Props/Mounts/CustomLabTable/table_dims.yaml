@@ -1,0 +1,64 @@
+# Real UR10e lab-table dimensions (measured by the user, 2026-07-10).
+#
+# FRAME CONVENTION: the asset frame IS the robot base frame -- origin at the base flange
+# center, z = 0 at the flange plane, +x toward the workspace (sim +X). The scene then
+# places this asset at the robot's nominal position, and the robot/support/table are
+# jittered TOGETHER (rigid assembly -- the base is bolted to this table).
+#
+# Photos: ~/Pictures/front_reference.jpg, side_reference.jpg.
+# All units meters.
+
+table:
+  # structural tabletop: the surface the robot base bolts to (top at z = 0)
+  top:
+    x_min: -0.35        # rear edge (behind the robot)
+    x_max: 1.05         # front edge (toward the workspace)
+    y_half: 0.35        # 700 mm wide
+    thickness: 0.030    # cosmetic (visible edge under the mats)
+  # under-table detail (visual polish; the arm never goes below the top):
+  # cabinet-style side WALLS enclosing the under-table volume, with short legs
+  # visible at the bottom
+  body:
+    z_bottom: -0.676    # floor level (680 mm floor->work surface, incl. the 4 mm mat)
+    walls:
+      inset: 0.01             # panels slightly inside the top's footprint
+      thickness: 0.02
+      bottom_clearance: 0.10  # walls stop this high above the floor (legs show below)
+    legs:
+      cross_section: 0.05     # 50 x 50 mm legs, visible only below the walls
+      inset: 0.05             # leg center inset from the table corners
+  # two 4 mm mats ON the structural top; their top = the WORK SURFACE at +0.004
+  mats:
+    thickness: 0.004
+    split_x: 0.35       # black mat covers x_min..split_x, green covers split_x..x_max
+    hole:
+      center: [0.0, 0.0]  # the robot base (black mat has a circular cutout around it)
+      diameter: 0.200     # UR10e base is 0.190 -> 5 mm radial clearance, base recessed 4 mm
+  # curtain-mounting pillars at the 4 tabletop corners, rising from the mat top.
+  # REMOVED from the real rig 2026-07-16 (curtains now hang from behind the table) --
+  # enabled: false keeps them out of the USD; dims kept in case they ever return.
+  pillars:
+    enabled: false
+    cross_section: 0.04   # 40 x 40 mm
+    height: 1.0           # 1 m above the mat top
+    inset: 0.02           # pillar center inset from the table corner (half cross-section)
+
+# flush proxy plate = the `ur5_metal_support` scene entity (placement-datum + the visible
+# structural surface inside the mat cutout). No physical plate exists on the real rig.
+mount_plate:
+  diameter: 0.196        # slightly under the mat hole so it never z-fights the mat wall
+  thickness: 0.004       # from the structural top (z=0) DOWN -- visually fills the cutout floor
+  # The plate USD's ROOT is authored at the WORK-SURFACE level (+0.004 above its top face),
+  # mirroring the authors' convention (their plate root z == mat-top height). The scene
+  # places this root at the placement datum; object resets add this root z + bottom_offset.
+  root_at_work_surface: true
+
+# material constants (authors' exact values from pat_vention.usd / ur5plate.usd; the RGB
+# collection DR repaints the mats every episode anyway)
+materials:
+  mat_black:   {diffuse: [0.0, 0.0000007, 0.000001], metallic: 0.0, roughness: 0.9}
+  mat_green:   {diffuse: [0.09, 0.42, 0.09], metallic: 0.0, roughness: 0.9}   # photo-matched
+  # white cabinet body/walls; BLACK curtain pillars (user request 2026-07-10)
+  table_frame: {diffuse: [0.85, 0.85, 0.85], metallic: 0.05, roughness: 0.55}
+  pillars:     {diffuse: [0.01, 0.01, 0.012], metallic: 0.3, roughness: 0.5}
+  mount_plate: {diffuse: [0.178, 0.179, 0.120], metallic: 0.18, roughness: 0.82}

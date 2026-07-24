@@ -534,7 +534,22 @@ def _download_cloud_assets(cloud_urls: list[str], cache_subdir: str = "", num_wo
         for url in to_download:
             futures[pool.submit(resolve_cloud_path, url)] = url
         for future in as_completed(futures):
-            future.result()
+            try:
+                future.result()
+            except Exception as exc:
+                # Make the primary cause UNMISSABLE: this download runs inside Isaac's
+                # deferred play callback, which swallows the exception -- the run then
+                # limps on and dies at the first reset with a cryptic
+                # "ManagerTermBase.reset() missing 1 required positional argument: 'self'".
+                print(
+                    f"\n[ERROR] {tag} asset download FAILED for {futures[future]}: {exc!r}\n"
+                    "[ERROR] DR term initialization is now incomplete; the run will crash at the "
+                    "first reset with a misleading ManagerTermBase.reset() TypeError.\n"
+                    "[ERROR] Remedy: fix the network and RERUN -- downloads resume from "
+                    "~/.cache/uwlab/assets.",
+                    flush=True,
+                )
+                raise
             downloaded += 1
             elapsed = time.monotonic() - t0
             rate = downloaded / elapsed

@@ -62,7 +62,9 @@ parser.add_argument(
     default=[2.28, -95.58, 99.07, -93.36, -86.57, 4.33],
     help="Arm joint angles in degrees (6 joints). Default matches real_env.py default init pose.",
 )
-parser.add_argument("--gripper_pos", type=float, default=1.0, help="Gripper position (0=closed, 1=open)")
+parser.add_argument("--gripper_pos", type=float, default=1.0,
+                    help="Gripper binary command: positive/zero = OPEN, negative = CLOSE "
+                    "(BinaryJointAction convention). Keep the default 1.0 to hold the jaws open.")
 parser.add_argument("--warmup_steps", type=int, default=30, help="Simulation warmup steps before interaction")
 parser.add_argument(
     "--robot",
@@ -128,11 +130,21 @@ class CameraAligner:
         # Read initial LOCAL pose from the USD prim XformOps (offset relative to parent).
         # We work in local space because USD XformOps are authoritative and survive
         # the USD→Fabric sync that happens each sim step (unlike Fabric-only writes).
+        # NOTE: for the wrist camera the pose is the LINK->CAMERA offset (its parent is the
+        # moving gripper link), so the printed values paste straight into the wrist entry of
+        # _UR10E_CAMERA_POSES. The wrist prim carries a single matrix op (authored by the
+        # track_link_mounted_camera reset event) instead of translate+orient -- handle both.
         prim = self.camera._sensor_prims[0]
         xformable = UsdGeom.Xformable(prim)
         self._xform_ops = {op.GetOpType(): op for op in xformable.GetOrderedXformOps()}
-        self.pos = np.array(self._xform_ops[UsdGeom.XformOp.TypeTranslate].Get(), dtype=np.float64)
-        quat = self._xform_ops[UsdGeom.XformOp.TypeOrient].Get()
+        self._transform_op = self._xform_ops.get(UsdGeom.XformOp.TypeTransform)
+        if self._transform_op is not None:
+            m = Gf.Matrix4d(self._transform_op.Get())
+            self.pos = np.array(m.ExtractTranslation(), dtype=np.float64)
+            quat = m.ExtractRotationQuat()
+        else:
+            self.pos = np.array(self._xform_ops[UsdGeom.XformOp.TypeTranslate].Get(), dtype=np.float64)
+            quat = self._xform_ops[UsdGeom.XformOp.TypeOrient].Get()
         self.rot = np.array([quat.GetReal(), *quat.GetImaginary()], dtype=np.float64)
 
         # Tuning step sizes
@@ -146,6 +158,18 @@ class CameraAligner:
         self.action = None
 
     # ---- quaternion ↔ euler helpers (OpenGL convention) ----
+    @staticmethod
+    def quat_mul(q1, q2):
+        """Hamilton product, wxyz. q1 ∘ q2 = rotation q2 applied in q1's local frame."""
+        w1, x1, y1, z1 = q1
+        w2, x2, y2, z2 = q2
+        return np.array([
+            w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
+            w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
+            w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
+            w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,
+        ])
+
     @staticmethod
     def quat_to_euler(q):
         w, x, y, z = q
@@ -169,8 +193,12 @@ class CameraAligner:
     # ---- update sim ----
     def apply_camera_pose(self):
         w, x, y, z = self.rot.tolist()
-        self._xform_ops[UsdGeom.XformOp.TypeTranslate].Set(Gf.Vec3d(*self.pos.tolist()))
-        self._xform_ops[UsdGeom.XformOp.TypeOrient].Set(Gf.Quatd(w, x, y, z))
+        if self._transform_op is not None:
+            rot = Gf.Rotation(Gf.Quatd(w, Gf.Vec3d(x, y, z)))
+            self._transform_op.Set(Gf.Matrix4d(1.0).SetTransform(rot, Gf.Vec3d(*self.pos.tolist())))
+        else:
+            self._xform_ops[UsdGeom.XformOp.TypeTranslate].Set(Gf.Vec3d(*self.pos.tolist()))
+            self._xform_ops[UsdGeom.XformOp.TypeOrient].Set(Gf.Quatd(w, x, y, z))
 
     def step_and_render(self):
         self.obs, _, _, _, _ = self.env.step(self.action)
@@ -228,21 +256,22 @@ class CameraAligner:
             self.pos[2] -= self.pos_step
 
         # --- rotation ---
+        # Deltas about the CAMERA'S OWN axes (right-multiplied local rotation), so the keys
+        # feel like handling the physical camera regardless of its mounting orientation:
+        # i/k tilt the view up/down, j/l pan it left/right, u/o spin the image. (The old
+        # fixed-frame euler increments rotated about WORLD axes -- for a tilted camera two
+        # of the three pairs degenerated into what looked like translations.)
         elif k in ("i", "k", "j", "l", "u", "o"):
-            e = self.quat_to_euler(self.rot)
-            if k == "i":
-                e[1] += self.rot_step
-            elif k == "k":
-                e[1] -= self.rot_step
-            elif k == "j":
-                e[2] += self.rot_step
-            elif k == "l":
-                e[2] -= self.rot_step
-            elif k == "u":
-                e[0] += self.rot_step
-            elif k == "o":
-                e[0] -= self.rot_step
-            self.rot = self.euler_to_quat(e)
+            axis, sign = {
+                "i": (0, +1), "k": (0, -1),  # pitch about camera x (right)
+                "j": (1, +1), "l": (1, -1),  # yaw   about camera y (up)
+                "u": (2, +1), "o": (2, -1),  # roll  about camera z (optical axis)
+            }[k]
+            half = sign * self.rot_step / 2.0
+            dq = np.array([np.cos(half), 0.0, 0.0, 0.0])
+            dq[1 + axis] = np.sin(half)
+            self.rot = self.quat_mul(self.rot, dq)
+            self.rot = self.rot / np.linalg.norm(self.rot)
 
         # --- focal length ---
         elif k in ("left", "right"):

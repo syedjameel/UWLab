@@ -1,6 +1,9 @@
+# 40x40x40 mm cube (task simplified for deployment, 2026-07-10; was a 40x40x20 slab).
+# Offsets = half-thickness: root at the cube center, mating point / resting point at the
+# bottom-center face. Real object: RED cube fabricated to match.
 assembled_offset:
-  pos: [0.0, 0.0, -0.01]
+  pos: [0.0, 0.0, -0.02]
   quat: [1.0, 0.0, 0.0, 0.0]
 bottom_offset:
-  pos: [0.0, 0.0, -0.01]
+  pos: [0.0, 0.0, -0.02]
   quat: [1.0, 0.0, 0.0, 0.0]

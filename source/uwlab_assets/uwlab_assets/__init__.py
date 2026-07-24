@@ -7,6 +7,7 @@
 
 import logging
 import os
+import time
 import toml
 import urllib.request
 from urllib.parse import urlparse
@@ -77,14 +78,25 @@ def resolve_cloud_path(path: str) -> str:
 
     os.makedirs(os.path.dirname(local), exist_ok=True)
     tmp = f"{local}.tmp.{os.getpid()}"
-    try:
-        logger.info(f"Downloading {rel} ...")
-        _urlretrieve_quiet(path, tmp)
-        os.rename(tmp, local)
-    except Exception:
-        if os.path.exists(tmp):
-            os.remove(tmp)
-        raise
+    # Retry transient network failures (SSL resets, timeouts): a single hiccup used to
+    # abort whole multi-GB batch downloads at file N of ~1000 (seen 2026-07-16: an
+    # ssl.SSLError at texture 606/957 killed a 45-minute download and surfaced later as
+    # a cryptic manager TypeError -- see UR10E_SIM2REAL_PROCEDURE.md section 10.4).
+    attempts = 4
+    for attempt in range(attempts):
+        try:
+            logger.info(f"Downloading {rel} ...")
+            _urlretrieve_quiet(path, tmp)
+            os.rename(tmp, local)
+            break
+        except Exception as exc:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+            if attempt == attempts - 1:
+                raise
+            delay = 2.0 * 2**attempt  # 2, 4, 8 s
+            logger.warning(f"Download failed ({exc!r}), retry {attempt + 1}/{attempts - 1} in {delay:.0f}s: {rel}")
+            time.sleep(delay)
 
     return local
 

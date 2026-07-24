@@ -29,7 +29,8 @@ must run Part 1 first.
 
 ## 1. Rebuild the USDs
 
-Three USDs, built in order (arm → gripper → graft). Needed once per machine / fresh checkout.
+Four gitignored asset builds, in order (arm → gripper → graft → TABLE). Needed once per
+machine / fresh checkout.
 
 ```bash
 conda activate leisaac
@@ -58,6 +59,15 @@ python scripts_v2/tools/conversions/graft_gripper_on_ur10e.py
 #   URDF importer's zero-mass frame links (base/base_link/flange/tool0) 0.01 kg.
 #   Mount standoff along wrist_3 +Z defaults to 0.049 m (--standoff to retune; eyeball in
 #   the GUI during Part 3 — it is inherited from the UR5e and not yet visually confirmed).
+
+# 1d. ⭐ CUSTOM LAB TABLE (this branch): generate the real-rig table + mount-plate USDs
+#     from measured dimensions (pure python + pxr, ~2 s, no Isaac app needed)
+python scripts_v2/tools/conversions/make_custom_table_usd.py
+#   reads source/.../local/Props/Mounts/CustomLabTable/table_dims.yaml
+#   -> custom_lab_table.usd + custom_mount_plate.usd (same dir; gitignored like all USDs)
+#   The scene cfgs on this branch point at these -- WITHOUT this step every env build fails
+#   with a missing-USD error. Old Datasets_ur10e reset states (authors'-table era) are
+#   INVALID on this branch and must be re-recorded (Step C / §4).
 ```
 
 Sanity check (optional, ~2 min): build + step one env.
@@ -179,6 +189,83 @@ VIZ="--num_envs 4 --dataset_dir ./Datasets_ur10e/OmniReset --reset_interval 2.0 
 
 Laptop caveat: Isaac sometimes deadlocks at window close on this machine — `Ctrl+C`/`kill`
 the process; the session's visuals were already valid.
+
+---
+
+## 3b. Fresh-server setup (H100) — custom-table branch
+
+Complete bring-up on a brand-new GPU server for branch **`omnireset/ur10e-custom-table`**
+(the real-rig table swap; re-records all resets + retrains both stages). NO PhysX trims on
+server GPUs.
+
+```bash
+# 1. clone + branch
+mkdir -p ~/work/repos && cd ~/work/repos
+git clone https://github.com/syedjameel/UWLab.git && cd UWLab
+git remote rename origin fork
+git checkout omnireset/ur10e-custom-table
+
+# 2. env: conda + Isaac Sim 5.1.0 (pip) + CUDA torch + UWLab extensions
+#    (follows the official pip-installation page; python 3.11 + GLIBC >= 2.35 required)
+./uwlab.sh --conda env_uwlab      # creates env from environment.yml, python=3.11 for Isaac >= 5.0
+                                  # (equivalent per official docs: conda create -n env_uwlab python=3.11)
+conda activate env_uwlab
+pip install --upgrade pip
+pip install "isaacsim[all,extscache]==5.1.0" --extra-index-url https://pypi.nvidia.com
+pip install -U torch==2.7.0 torchvision==0.22.0 --index-url https://download.pytorch.org/whl/cu128
+# H100-server quirks found on first run (both sudo-free):
+conda install -y -c conda-forge libglu     # missing libGLU.so.1 kills MDL/shaders -> "HydraEngine rtx failed"
+export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH   # add to ~/.bashrc (every Isaac shell needs it)
+export CUDA_VISIBLE_DEVICES=0              # pin ONE free GPU (check nvidia-smi); avoids the multi-GPU
+                                           # P2P cudaErrorMemoryAllocation spam on shared 4x nodes
+isaacsim --headless               # first-run verify: accept the EULA ("Yes"); 10+ min extension cache.
+                                  # Headless noise is NORMAL (GLFW/window/audio/ROS2-bridge errors);
+                                  # what must NOT appear after the libglu fix: libGLU.so.1 errors,
+                                  # "Cannot load shader file", "HydraEngine rtx failed creating scene renderer"
+# build toolchain (needed by the extension build). No sudo on the server? Use conda-forge:
+which gcc g++ make cmake || conda install -y -c conda-forge cmake make ninja c-compiler cxx-compiler
+# (c-compiler/cxx-compiler set CC/CXX via env activation -- re-activate the env after install.
+#  With sudo, the official equivalent is: sudo apt install cmake build-essential)
+./uwlab.sh --install              # (-i) UWLab extensions + rsl_rl etc.
+# --install NOTES (observed on the H100 run, all expected):
+#  * skrl transiently upgrades torch to 2.13 mid-install; the script's FINAL step restores
+#    torch==2.7.0+cu128 + torchvision 0.22.0 + triton 3.3.0 itself -- final state is correct.
+#  * rsl-rl-lib ends at the UW-Lab fork (3.1.2, replacing upstream 5.0.1) -- that is the one
+#    our training code targets.
+#  * pip conflict errors at the end are BENIGN except one: restore torchaudio (dropped in
+#    the torch shuffle):
+pip install torchaudio==2.7.0 --index-url https://download.pytorch.org/whl/cu128
+#    ignore: stable-baselines3 wants torch>=2.8 (we use rsl_rl); isaacsim-kernel wants
+#    click==8.1.7/typing_extensions==4.12.2 (classic IsaacLab friction); fastapi/starlette
+#    (isaacsim-internal); "libtinfo.so.6 no version information" bash lines (conda ncurses).
+python -c "import torch; print(torch.__version__, torch.cuda.is_available())"  # 2.7.0+cu128 True
+./uwlab.sh -p scripts/tutorials/00_sim/create_empty.py   # install verify (first scene load
+                                                         # may sit quiet minutes: shader warm-up)
+
+# 3. rebuild ALL gitignored USDs (Part 1 steps 1a-1c) PLUS the custom table:
+python scripts_v2/tools/conversions/make_custom_table_usd.py
+
+# 4. input datasets (fresh server has none; both arm-independent): Step A (partial
+#    assemblies, ~30 s) + Step B (grasps, ~min) below.
+
+# 5. Step C with TWO custom-table branch changes:
+#    * C4: record ~2500 (slow; ~2/3 open-jaw hovers are expected) then salvage:
+#        python scripts_v2/tools/conversions/filter_reset_states.py --in-place \
+#          --input ./Datasets_ur10e/OmniReset/Resets/OpenBox__Pcb/resets_ObjectPartiallyAssembledEEGrasped.pt \
+#          --min-grip 0.03
+#    * gate before training: qc_reset_states_ur10e.py must print [QC_RESULT] [PASS]
+
+# 6. Stage 1 (Step D as-is), then Stage 2:
+./uwlab.sh -p scripts/reinforcement_learning/rsl_rl/train.py \
+  --task OmniReset-UR10eLinearGripper-RelCartesianOSC-State-Finetune-v0 \
+  --num_envs 4096 --headless --logger tensorboard $OBJ \
+  --resume_path logs/rsl_rl/<experiment>/<stage1_run>/model_<iter>.pt \
+  env.events.reset_from_reset_states.params.dataset_dir=./Datasets_ur10e/OmniReset
+# watch Curriculum/adr_sysid/scale_progress -> 1.0 @ success ~0.95 (procedure doc 8.1)
+```
+
+Old `Datasets_ur10e` reset datasets from the authors'-table era are INVALID on this branch
+(they bake the old table pose; the loader force-restores it) — always re-record.
 
 ---
 

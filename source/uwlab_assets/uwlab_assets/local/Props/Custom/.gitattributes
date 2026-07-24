@@ -1,0 +1,4 @@
+# These tiny (4 KB) task-object USDs do NOT go through Git LFS -- the account LFS
+# budget blocks both pushes and fresh-clone downloads, and LFS buys nothing at this size.
+# Overrides the upstream blanket *.usd LFS rule (dir-level attributes win).
+*.usd -filter -diff -merge -text

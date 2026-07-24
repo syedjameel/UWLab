@@ -69,28 +69,32 @@ class ResetStatesSceneCfg(InteractiveSceneCfg):
         init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, 0.0), rot=(1.0, 0.0, 0.0, 0.0)),
     )
 
-    # Environment
+    # Environment -- the REAL lab table (see rl_state_cfg.py for the full rationale;
+    # this block is duplicated there -- keep both in sync). Asset frame == robot base
+    # frame; work surface at +0.004; reset_robot_pose jitters robot+support+table
+    # TOGETHER (rigid assembly -- the base is bolted to this table).
     table = RigidObjectCfg(
         prim_path="{ENV_REGEX_NS}/Table",
-        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.4, 0.0, -0.881), rot=(0.707, 0.0, 0.0, -0.707)),
+        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, 0.0), rot=(1.0, 0.0, 0.0, 0.0)),
         spawn=sim_utils.UsdFileCfg(
-            usd_path=f"{UWLAB_CLOUD_ASSETS_DIR}/Props/Mounts/UWPatVention/pat_vention.usd",
+            usd_path=f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Mounts/CustomLabTable/custom_lab_table.usd",
             rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
         ),
     )
 
+    # Flush proxy plate (placement datum): ROOT z = work surface (+0.004).
     ur5_metal_support = RigidObjectCfg(
         prim_path="{ENV_REGEX_NS}/UR5MetalSupport",
-        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0, -0.013), rot=(1.0, 0.0, 0.0, 0.0)),
+        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0, 0.004), rot=(1.0, 0.0, 0.0, 0.0)),
         spawn=sim_utils.UsdFileCfg(
-            usd_path=f"{UWLAB_CLOUD_ASSETS_DIR}/Props/Mounts/UWPatVention2/Ur5MetalSupport/ur5plate.usd",
+            usd_path=f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Mounts/CustomLabTable/custom_mount_plate.usd",
             rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
         ),
     )
 
     ground = AssetBaseCfg(
         prim_path="/World/GroundPlane",
-        init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, 0.0, -0.868)),
+        init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, 0.0, -0.676)),
         spawn=sim_utils.GroundPlaneCfg(),
     )
 
@@ -157,14 +161,24 @@ class ResetStatesBaseEventCfg:
         params={
             "pose_range": {
                 "x": (-0.01, 0.01),
-                "y": (-0.059, -0.019),
+                # AUTHORS' design verbatim: robot + support jitter against a STATIC
+                # table (their base-placement DR, z included). Only the y CENTER differs:
+                # theirs was -0.039 (their rig's measured base placement); ours is 0 by
+                # construction (table asset frame == robot base frame). Width identical.
+                # Authors-authentic artifact: the jittered base can visually clip the
+                # static mat's cutout edge -- their kinematic plate clipped their table
+                # the same way.
+                "y": (-0.02, 0.02),
                 "z": (-0.01, 0.01),
                 "roll": (0.0, 0.0),
                 "pitch": (0.0, 0.0),
                 "yaw": (0.0, 0.0),
             },
             "velocity_range": {},
-            "asset_cfgs": {"robot": SceneEntityCfg("robot"), "ur5_metal_support": SceneEntityCfg("ur5_metal_support")},
+            "asset_cfgs": {
+                "robot": SceneEntityCfg("robot"),
+                "ur5_metal_support": SceneEntityCfg("ur5_metal_support"),
+            },
         },
     )
 
@@ -173,8 +187,16 @@ class ResetStatesBaseEventCfg:
         mode="reset",
         params={
             "pose_range": {
-                "x": (0.3, 0.55),
-                "y": (-0.1, 0.3),
+                # x (authors: 0.3, 0.55) shifted +5 cm, band size kept: on our rig the
+                # black mat (x < 0.35, with the base cutout) is the base's zone and the
+                # green mat starting at x = 0.35 is the physical workspace -- objects
+                # spawn fully on the green mat, clear of the base. Same shift in the two
+                # insertive events below; C3/C4 inherit (C1 restores / receptive-relative).
+                "x": (0.35, 0.60),
+                # y centered (authors: -0.1, 0.5 -- their rig's workspace was off to one
+                # side; ours is symmetric): same 0.40 m width, centered on the base/mat
+                # centerline, 12 cm margin to both mat edges (y +-0.35).
+                "y": (-0.2, 0.2),
                 "z": (0.0, 0.0),
                 "roll": (0.0, 0.0),
                 "pitch": (0.0, 0.0),
@@ -195,8 +217,10 @@ class ObjectAnywhereEEAnywhereEventCfg(ResetStatesBaseEventCfg):
         mode="reset",
         params={
             "pose_range": {
-                "x": (0.3, 0.55),
-                "y": (-0.1, 0.5),
+                # x shifted +5 cm onto the green workspace mat (see reset_receptive_object_pose).
+                "x": (0.35, 0.60),
+                # y centered, same 0.40 m width (see reset_receptive_object_pose).
+                "y": (-0.2, 0.2),
                 "z": (0.0, 0.3),
                 # PCB stays essentially top-up: only a small +/-0.1 rad (~6 deg) roll/pitch
                 # jitter for robustness to placement error; yaw stays free (in-plane spin
@@ -221,7 +245,12 @@ class ObjectAnywhereEEAnywhereEventCfg(ResetStatesBaseEventCfg):
             "pose_range_b": {
                 "x": (0.3, 0.7),
                 "y": (-0.4, 0.4),
-                "z": (0.0, 0.5),
+                # floor 0.017 (authors' literal: 0.0) = the authors' EFFECT exactly: their
+                # surface was at -0.013, so their floor gave 13 mm minimum clearance; our
+                # surface is at +0.004 -> 0.017 gives the identical 13 mm. Their literal 0.0
+                # wedges fingers into our mat (H100 C1: 1.9% fingertips below the top ->
+                # wrist chatter at eval gains).
+                "z": (0.017, 0.5),
                 "roll": (0.0, 0.0),
                 "pitch": (np.pi / 4, 3 * np.pi / 4),
                 "yaw": (np.pi / 2, 3 * np.pi / 2),
@@ -274,8 +303,10 @@ class ObjectAnywhereEEGraspedEventCfg(ResetStatesBaseEventCfg):
         mode="reset",
         params={
             "pose_range": {
-                "x": (0.3, 0.55),
-                "y": (-0.1, 0.3),
+                # x shifted +5 cm onto the green workspace mat (see reset_receptive_object_pose).
+                "x": (0.35, 0.60),
+                # y centered, same 0.40 m width (see reset_receptive_object_pose).
+                "y": (-0.2, 0.2),
                 "z": (0.0, 0.3),
                 # PCB stays essentially top-up: only a small +/-0.1 rad (~6 deg) roll/pitch
                 # jitter for robustness to placement error; yaw stays free (in-plane spin
