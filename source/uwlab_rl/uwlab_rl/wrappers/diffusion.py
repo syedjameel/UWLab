@@ -163,6 +163,12 @@ class DiffusionPolicyWrapper:
         else:
             self.obs_history_manager = LowDimObservationHistory(num_envs, n_obs_steps, device)
 
+        # Keys the policy was trained on (from its normalizer). The env may expose MORE image
+        # streams than a given checkpoint consumes (e.g. a 3-camera env evaluating a 2-camera
+        # policy) -- feeding an unknown key crashes the normalizer, so we filter to this set.
+        params = getattr(getattr(policy, "normalizer", None), "params_dict", None)
+        self._policy_obs_keys = {k for k in params.keys() if k != "action"} if params is not None else None
+
         # Initialize action queue as list of lists for each environment
         self.action_queue = [[] for _ in range(num_envs)]
 
@@ -251,6 +257,8 @@ class DiffusionPolicyWrapper:
         """
         processed_obs = {}
         for key, value in obs.items():
+            if self._policy_obs_keys is not None and key not in self._policy_obs_keys:
+                continue  # env exposes streams this checkpoint was not trained on (see __init__)
             if isinstance(value, torch.Tensor):
                 tensor = value.to(self.device)
             else:

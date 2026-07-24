@@ -1,0 +1,16 @@
+# Box-assembly cover (lid). Insertive only (Pair C: cap->bottom, cover-close).
+# REDESIGNED 2026-06-25 for trainability: a skirted lid authored in its CLOSED (functional)
+# orientation (identity quat -> NO +90deg rotation). It genuinely covers the box+object:
+#   - thick top plate (92x62x3mm) rests on the object top (box rim 0.020 + 3mm object poke = 0.023),
+#   - a snug throat skirt slides over the 80x50 box walls (tight close),
+#   - a flared mouth funnels the box rim in (self-seating capture),
+#   - a CENTERED grip knob on top (COM xy-centered = 0,0 -> level top-down grasp).
+# Origin = top-plate center. Plate bottom at local z=-0.0015 rests on the object top (box z=0.023),
+# so the cap origin sits at box z=+0.0245 -> assembled_offset z is its inverse, -0.0245.
+assembled_offset:
+  pos: [0.0, 0.0, -0.0245]
+  quat: [1.0, 0.0, 0.0, 0.0]   # wxyz; authored already in closed orientation
+# Origin-to-lowest-collision-point: skirt/flare bottom at local z=-0.0215 -> bottom_offset z = 0.0215.
+bottom_offset:
+  pos: [0.0, 0.0, 0.0215]
+  quat: [1.0, 0.0, 0.0, 0.0]

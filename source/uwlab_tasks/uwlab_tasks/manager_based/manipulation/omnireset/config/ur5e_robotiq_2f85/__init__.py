@@ -392,3 +392,125 @@ gym.register(
         "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_cfg:Base_DAggerRunnerCfg",
     },
 )
+
+
+# ==== UR10e + linear-gripper box-assembly PAPER stages (A/B/C end-to-end pipeline) ====
+gym.register(
+    id="OmniReset-Ur10eLinearGripper-BoxCenterPaper-State-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.ur10e_linear_gripper_cfg:Ur10eLinearGripperBoxCenterPaperTrainCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_cfg:Base_PPORunnerCfg",
+    },
+)
+
+gym.register(
+    id="OmniReset-Ur10eLinearGripper-ObjectInBoxPaper-State-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.ur10e_linear_gripper_cfg:Ur10eLinearGripperObjectInBoxPaperTrainCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_cfg:Base_PPORunnerCfg",
+    },
+)
+
+gym.register(
+    id="OmniReset-Ur10eLinearGripper-CoverCloseRimPaper-State-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.ur10e_linear_gripper_cfg:Ur10eLinearGripperCoverCloseRimPaperTrainCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_cfg:Base_PPORunnerCfg",
+    },
+)
+
+# ---- Stage 2 finetune (-Finetune-v0) + finetune-eval (-Finetune-Play-v0) per stage ----
+gym.register(
+    id="OmniReset-Ur10eLinearGripper-BoxCenterPaper-State-Finetune-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.ur10e_linear_gripper_cfg:Ur10eLinearGripperBoxCenterPaperFinetuneCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_cfg:Base_PPORunnerCfg",
+    },
+)
+
+gym.register(
+    id="OmniReset-Ur10eLinearGripper-BoxCenterPaper-State-Finetune-Play-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.ur10e_linear_gripper_cfg:Ur10eLinearGripperBoxCenterPaperFinetuneEvalCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_cfg:Base_PPORunnerCfg",
+    },
+)
+
+gym.register(
+    id="OmniReset-Ur10eLinearGripper-ObjectInBoxPaper-State-Finetune-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.ur10e_linear_gripper_cfg:Ur10eLinearGripperObjectInBoxPaperFinetuneCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_cfg:Base_PPORunnerCfg",
+    },
+)
+
+gym.register(
+    id="OmniReset-Ur10eLinearGripper-ObjectInBoxPaper-State-Finetune-Play-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.ur10e_linear_gripper_cfg:Ur10eLinearGripperObjectInBoxPaperFinetuneEvalCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_cfg:Base_PPORunnerCfg",
+    },
+)
+
+gym.register(
+    id="OmniReset-Ur10eLinearGripper-CoverCloseRimPaper-State-Finetune-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.ur10e_linear_gripper_cfg:Ur10eLinearGripperCoverCloseRimPaperFinetuneCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_cfg:Base_PPORunnerCfg",
+    },
+)
+
+gym.register(
+    id="OmniReset-Ur10eLinearGripper-CoverCloseRimPaper-State-Finetune-Play-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.ur10e_linear_gripper_cfg:Ur10eLinearGripperCoverCloseRimPaperFinetuneEvalCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_cfg:Base_PPORunnerCfg",
+    },
+)
+
+
+# ==== UR10e + linear-gripper RGB (vision distillation) — 3 stages × {DataCollection, Play} ====
+# Built on the generic RGB pipeline with FinetuneEval dynamics (EXPLICIT actuator + eval action +
+# fixed sysid) since the distilled experts are the stage-2 finetuned policies; wrist camera rebound
+# onto the grafted gripper base (see ur10e_linear_gripper_rgb_cfg.py).
+for _stg, _cls in [
+    ("BoxCenterPaper", "Ur10eLinearGripperBoxCenterPaperRGB"),
+    ("ObjectInBoxPaper", "Ur10eLinearGripperObjectInBoxPaperRGB"),
+    ("CoverCloseRimPaper", "Ur10eLinearGripperCoverCloseRimPaperRGB"),
+]:
+    gym.register(
+        id=f"OmniReset-Ur10eLinearGripper-{_stg}-RGB-DataCollection-v0",
+        entry_point="isaaclab.envs:ManagerBasedRLEnv",
+        disable_env_checker=True,
+        kwargs={
+            "env_cfg_entry_point": f"{__name__}.ur10e_linear_gripper_rgb_cfg:{_cls}DataCollectionCfg",
+            "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_cfg:Base_DAggerRunnerCfg",
+        },
+    )
+    gym.register(
+        id=f"OmniReset-Ur10eLinearGripper-{_stg}-RGB-Play-v0",
+        entry_point="isaaclab.envs:ManagerBasedRLEnv",
+        disable_env_checker=True,
+        kwargs={
+            "env_cfg_entry_point": f"{__name__}.ur10e_linear_gripper_rgb_cfg:{_cls}EvalCfg",
+            "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_cfg:Base_DAggerRunnerCfg",
+        },
+    )

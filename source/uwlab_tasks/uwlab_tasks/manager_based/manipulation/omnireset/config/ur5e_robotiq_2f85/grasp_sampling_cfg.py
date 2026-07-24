@@ -18,7 +18,7 @@ from isaaclab.utils import configclass
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 
 import uwlab_assets.robots.ur5e_robotiq_gripper as ur5e_robotiq_gripper
-from uwlab_assets import UWLAB_CLOUD_ASSETS_DIR, UWLAB_LOCAL_ASSETS_DIR
+from uwlab_assets import UWLAB_ASSETS_DATA_DIR, UWLAB_CLOUD_ASSETS_DIR, UWLAB_LOCAL_ASSETS_DIR
 
 from ... import mdp as task_mdp
 
@@ -181,6 +181,11 @@ variants = {
         "pcb": make_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/Pcb/pcb.usd"),
         # Local dev asset (telescoping cover/lid). Switch to UWLAB_CLOUD_ASSETS_DIR when sharing.
         "cover": make_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/Cover/cover.usd"),
+        # Box-assembly insertive objects (local data assets) -- for grasp regeneration.
+        "bottom": make_object(f"{UWLAB_ASSETS_DATA_DIR}/Props/BoxAssembly/Bottom/bottom.usd"),
+        "mid": make_object(f"{UWLAB_ASSETS_DATA_DIR}/Props/BoxAssembly/Mid/mid.usd"),
+        "cap": make_object(f"{UWLAB_ASSETS_DATA_DIR}/Props/BoxAssembly/Cap/cap.usd"),
+        "caprim": make_object(f"{UWLAB_ASSETS_DATA_DIR}/Props/BoxAssembly/CapRim/caprim.usd"),
     }
 }
 

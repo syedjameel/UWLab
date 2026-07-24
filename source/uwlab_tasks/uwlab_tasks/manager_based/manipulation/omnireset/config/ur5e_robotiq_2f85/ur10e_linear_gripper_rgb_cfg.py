@@ -3,7 +3,8 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""UR10e + linear-gripper RGB configs: camera alignment + RGB data collection / play.
+"""UR10e + linear-gripper RGB configs: camera alignment, generic RGB data collection / play,
+and the box-assembly Stage-A/B/C RGB (vision-distillation) variants.
 
 Mirrors the 2F-85 RGB stack (``camera_align_cfg.py`` + ``data_collection_rgb_cfg.py``) with
 the UR10e arm + custom linear gripper, using the same subclass-and-swap pattern as
@@ -32,6 +33,26 @@ Registered gym ids (mirroring the 2F-85 ones):
 * ``OmniReset-UR10eLinearGripper-CameraAlign-v0``
 * ``OmniReset-UR10eLinearGripper-RelCartesianOSC-RGB-DataCollection-v0``
 * ``OmniReset-UR10eLinearGripper-RelCartesianOSC-RGB-Play-v0``
+
+Box-assembly stage variants (bottom of the file) build on the same generic RGB pipeline via the
+extracted ``_paper_stage_{box_center,object_in_box,cover_close}`` helpers, with two deltas:
+
+1. **Dynamics mirror FinetuneEval (not the stage-1 train action).** The experts distilled there are
+   the STAGE-2 FINETUNED policies, which converged under the stiff eval action + fixed sysid/OSC gains
+   (see ``Ur10eLinearGripperRelCartesianOSCFinetuneEvalCfg``): EXPLICIT UR10e-linear actuator +
+   ``Ur10eLinearGripperRelativeOSCEvalAction``, the inherited fixed ``randomize_arm_sysid`` /
+   ``randomize_osc_gains`` (scale_progress=1) KEPT, and the motor delay pinned to (0, 0).
+2. **Wrist camera REBOUND with a retuned mount** (``_rebind_wrist_camera``): the upstream D415 offset
+   is calibrated in the 2F-85 base frame and looks into empty space on the graft; the retuned pose was
+   render-verified to keep both jaw tips + the object/target seam in frame.
+
+The expert STATE obs group is injected by ``collect_demos.py`` at collection time; the RGB student
+sees front + side + wrist images + proprioception only. Their reset loader is repointed at the
+UR10e-linear reset datasets (``_repoint_ur10e_resets``).
+
+Stage gym ids: ``OmniReset-Ur10eLinearGripper-{BoxCenterPaper,ObjectInBoxPaper,CoverCloseRimPaper}-RGB-{DataCollection,Play}-v0``.
+
+NOTE (P6): front/side camera poses are UR5e-workspace-tuned (~0.85 m reach); the UR10e reaches ~1.3 m.
 """
 
 from __future__ import annotations
@@ -45,11 +66,15 @@ from ... import mdp as task_mdp
 from .actions import Ur10eLinearGripperRelativeOSCEvalAction, Ur10eLinearGripperSysidOSCAction
 from .camera_align_cfg import CameraAlignEnvCfg
 from .data_collection_rgb_cfg import (
+    DataCollectionRGBEventCfg,
+    RGBEventCfg,
     Ur5eRobotiq2f85DataCollectionRGBRelCartesianOSCCfg,
     Ur5eRobotiq2f85EvalRGBRelCartesianOSCCfg,
+    Ur5eRobotiq2f85RGBRelCartesianOSCEvalCfg,
 )
 from .linear_gripper_cfg import _apply_linear_gripper
-from .ur10e_linear_gripper_cfg import _apply_real_gripper_speed
+from .rl_state_cfg import _paper_stage_box_center, _paper_stage_cover_close, _paper_stage_object_in_box
+from .ur10e_linear_gripper_cfg import _apply_real_gripper_speed, _repoint_ur10e_resets
 
 # Reset states are robot-specific; the RGB collection resets from the UR10e datasets.
 _UR10E_RESET_DIR = "./Datasets_ur10e/OmniReset"
@@ -332,3 +357,123 @@ class Ur10eLinearGripperEvalRGBCfg(Ur5eRobotiq2f85EvalRGBRelCartesianOSCCfg):
     def __post_init__(self):
         super().__post_init__()
         _apply_ur10e_rgb(self)
+
+
+# ---------------------------------------------------------------------------------------
+# Box-assembly PAPER stage RGB variants (vision distillation of the stage-2 finetuned experts).
+# See the module docstring: FinetuneEval dynamics + retuned wrist mount.
+# ---------------------------------------------------------------------------------------
+# Retuned wrist mount for the linear gripper (the upstream numbers are D415-bracket-calibrated in the
+# 2F-85 base frame and look into empty space here). Linear-gripper base frame: +Z -> fingertips
+# (9.4 cm ahead), jaws travel +/-X, +Y up at the rest pose. This pose sits 5.5 cm above / 2 cm ahead
+# of the base looking down the approach axis with a ~25 deg pitch — both jaw tips, the grasped object
+# and the workspace below stay in frame (visually verified on renders, 2026-07-08).
+_WRIST_POS = (0.0, 0.055, 0.02)
+_WRIST_ROT = (0.2164, -0.9763, 0.0, 0.0)
+
+
+def _rebind_wrist_camera(cfg) -> None:
+    """Rebind the inherited wrist camera onto the linear gripper's base link instead of dropping it.
+
+    OmniReset is a 3-camera setup, so we keep ``scene.wrist_camera``, the ``wrist_rgb`` obs in both the
+    policy + data_collection groups, the ``wrist_camera`` entry in the corrupted-camera termination, and
+    the ``randomize_wrist_camera``(+focal) events -- repointing the prim path / path templates at the
+    grafted gripper base and installing the retuned mount pose (``_WRIST_POS``/``_WRIST_ROT``) both on
+    the sensor cfg and as the DR event's base pose. Still NULL the 2F-85 wrist-mount + inner-finger
+    appearance DR: those target mesh prims (robotiq_base_link/visuals/D415_to_Robotiq_Mount,
+    left/right_inner_finger/visuals/mesh_1) are absent on the linear gripper -> "No prims found
+    matching"."""
+    _fix_wrist_camera_path(cfg)
+    cfg.scene.wrist_camera.offset.pos = _WRIST_POS
+    cfg.scene.wrist_camera.offset.rot = _WRIST_ROT
+    cfg.events.randomize_wrist_camera.params["base_position"] = _WRIST_POS
+    cfg.events.randomize_wrist_camera.params["base_rotation"] = _WRIST_ROT
+    for term in _ROBOTIQ_APPEARANCE_TERMS:
+        setattr(cfg.events, term, None)
+
+
+def _to_ur10e_linear(cfg) -> None:
+    """Swap robot+action to the UR10e linear gripper with FinetuneEval dynamics, and rebind the wrist
+    camera. Call BEFORE the ``_paper_stage_*`` helper + ``_repoint_ur10e_resets`` (which need the pair).
+
+    Mirrors ``Ur10eLinearGripperRelCartesianOSCFinetuneEvalCfg``: EXPLICIT actuator + eval action, and
+    the inherited fixed sysid pinned to the measured residual motor delay (0, 0). The RGB events
+    (``RGBEventCfg`` / ``DataCollectionRGBEventCfg``) subclass ``FinetuneEvalEventCfg``, so the fixed
+    ``randomize_arm_sysid`` / ``randomize_osc_gains`` (scale_progress=1) are already present and kept."""
+    _apply_linear_gripper(
+        cfg, ur10e_linear_gripper.EXPLICIT_UR10E_LINEAR_GRIPPER, Ur10eLinearGripperRelativeOSCEvalAction()
+    )
+    # Pin the motor delay to the measured residual (0 steps @ this env's rate), matching the FinetuneEval
+    # cfg (the inherited FinetuneEvalEventCfg draws (0, 1)). UR10e-only override.
+    cfg.events.randomize_arm_sysid.params["delay_range"] = (0, 0)
+    _rebind_wrist_camera(cfg)
+
+
+# ---------------------------------------------------------------------------------------
+# Stage A (BoxCenterPaper): box -> table-center target
+# ---------------------------------------------------------------------------------------
+@configclass
+class Ur10eLinearGripperBoxCenterPaperRGBEvalCfg(Ur5eRobotiq2f85RGBRelCartesianOSCEvalCfg):
+    """Stage-A RGB Play/Eval (UR10e + linear gripper, front+side+wrist cameras)."""
+
+    events: RGBEventCfg = RGBEventCfg()
+
+    def __post_init__(self):
+        super().__post_init__()  # generic RGB scene/obs/terminations/render + FinetuneEval fixed sysid
+        _to_ur10e_linear(self)  # EXPLICIT robot + eval action + delay pin + wrist rebind
+        _paper_stage_box_center(self)  # box -> table-center pair + canonical-handoff yaw gate
+        _repoint_ur10e_resets(self)
+
+
+@configclass
+class Ur10eLinearGripperBoxCenterPaperRGBDataCollectionCfg(Ur10eLinearGripperBoxCenterPaperRGBEvalCfg):
+    """Stage-A RGB data-collection (all 4 reset types, 0.25 each)."""
+
+    events: DataCollectionRGBEventCfg = DataCollectionRGBEventCfg()
+
+
+# ---------------------------------------------------------------------------------------
+# Stage B (ObjectInBoxPaper): object -> box cavity
+# ---------------------------------------------------------------------------------------
+@configclass
+class Ur10eLinearGripperObjectInBoxPaperRGBEvalCfg(Ur5eRobotiq2f85RGBRelCartesianOSCEvalCfg):
+    """Stage-B RGB Play/Eval (UR10e + linear gripper, front+side+wrist cameras)."""
+
+    events: RGBEventCfg = RGBEventCfg()
+
+    def __post_init__(self):
+        super().__post_init__()  # generic RGB scene/obs/terminations/render + FinetuneEval fixed sysid
+        _to_ur10e_linear(self)  # EXPLICIT robot + eval action + delay pin + wrist rebind
+        _paper_stage_object_in_box(self)  # object -> box cavity pair (default success, no yaw gate)
+        _repoint_ur10e_resets(self)
+
+
+@configclass
+class Ur10eLinearGripperObjectInBoxPaperRGBDataCollectionCfg(Ur10eLinearGripperObjectInBoxPaperRGBEvalCfg):
+    """Stage-B RGB data-collection (all 4 reset types)."""
+
+    events: DataCollectionRGBEventCfg = DataCollectionRGBEventCfg()
+
+
+# ---------------------------------------------------------------------------------------
+# Stage C (CoverCloseRimPaper): caprim edge-rim cover -> box (object inside)
+# ---------------------------------------------------------------------------------------
+@configclass
+class Ur10eLinearGripperCoverCloseRimPaperRGBEvalCfg(Ur5eRobotiq2f85RGBRelCartesianOSCEvalCfg):
+    """Stage-C RGB Play/Eval (UR10e + linear gripper, front+side+wrist cameras). Built from the generic
+    RGB eval + the Stage-C caprim pair/augment (object restored inside the box)."""
+
+    events: RGBEventCfg = RGBEventCfg()
+
+    def __post_init__(self):
+        super().__post_init__()  # generic RGB scene/obs/terminations/render + FinetuneEval fixed sysid
+        _to_ur10e_linear(self)  # EXPLICIT robot + eval action + delay pin + wrist rebind
+        _paper_stage_cover_close(self)  # caprim -> box pair + object-inside-box augment
+        _repoint_ur10e_resets(self)
+
+
+@configclass
+class Ur10eLinearGripperCoverCloseRimPaperRGBDataCollectionCfg(Ur10eLinearGripperCoverCloseRimPaperRGBEvalCfg):
+    """Stage-C RGB data-collection (all 4 reset types)."""
+
+    events: DataCollectionRGBEventCfg = DataCollectionRGBEventCfg()

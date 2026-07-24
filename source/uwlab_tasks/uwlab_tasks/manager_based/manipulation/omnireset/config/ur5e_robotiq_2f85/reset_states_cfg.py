@@ -18,7 +18,7 @@ from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.utils import configclass
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 
-from uwlab_assets import UWLAB_CLOUD_ASSETS_DIR, UWLAB_LOCAL_ASSETS_DIR
+from uwlab_assets import UWLAB_ASSETS_DATA_DIR, UWLAB_CLOUD_ASSETS_DIR, UWLAB_LOCAL_ASSETS_DIR
 from uwlab_assets.robots.ur5e_robotiq_gripper import IMPLICIT_UR5E_ROBOTIQ_2F85
 
 from uwlab_tasks.manager_based.manipulation.omnireset.config.ur5e_robotiq_2f85.actions import (
@@ -537,6 +537,11 @@ variants = {
         "pcb": make_insertive_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/Pcb/pcb.usd"),
         # Local dev asset (telescoping cover/lid). Switch to UWLAB_CLOUD_ASSETS_DIR when sharing.
         "cover": make_insertive_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/Cover/cover.usd"),
+        # Box-assembly insertive objects (local data assets) -- for reset-state regeneration.
+        "bottom": make_insertive_object(f"{UWLAB_ASSETS_DATA_DIR}/Props/BoxAssembly/Bottom/bottom.usd"),
+        "mid": make_insertive_object(f"{UWLAB_ASSETS_DATA_DIR}/Props/BoxAssembly/Mid/mid.usd"),
+        "cap": make_insertive_object(f"{UWLAB_ASSETS_DATA_DIR}/Props/BoxAssembly/Cap/cap.usd"),
+        "caprim": make_insertive_object(f"{UWLAB_ASSETS_DATA_DIR}/Props/BoxAssembly/CapRim/caprim.usd"),
     },
     "scene.receptive_object": {
         "fbtabletop": make_receptive_object(
@@ -553,6 +558,9 @@ variants = {
         "openbox": make_receptive_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/OpenBox/open_box.usd"),
         # Local dev asset (box with seated PCB; lid task receptive, mating point at the top rim).
         "boxwithpcb": make_receptive_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/BoxWithPcb/box_with_pcb.usd"),
+        # Box-assembly receptive objects (local data assets): table-center target (Stage A) + box (B/C).
+        "target": make_receptive_object(f"{UWLAB_ASSETS_DATA_DIR}/Props/BoxAssembly/TableCenterTarget/target.usd"),
+        "bottom": make_receptive_object(f"{UWLAB_ASSETS_DATA_DIR}/Props/BoxAssembly/Bottom/bottom.usd"),
     },
 }
 

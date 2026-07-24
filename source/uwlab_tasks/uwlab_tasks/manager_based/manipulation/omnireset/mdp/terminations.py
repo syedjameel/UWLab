@@ -252,6 +252,42 @@ class check_reset_state_success(ManagerTermBase):
         self.max_object_pos_deviation = cfg.params.get("max_object_pos_deviation")
         self.pos_z_threshold = cfg.params.get("pos_z_threshold")
         self.consecutive_stability_steps = cfg.params.get("consecutive_stability_steps", 5)
+        # Down-cone threshold for the gripper-orientation gate (approach_world.z < this). Default -0.5
+        # (60deg). Relax (toward 0) for grasped flat-lid types whose held gripper tilts a few deg.
+        self.gripper_approach_z_max = cfg.params.get("gripper_approach_z_max", -0.5)
+        # When False, accept moving (e.g. airborne / falling) objects -- the state is validated by
+        # collision + below-ground + workspace only, after a few stabilization steps. Used for the
+        # "object anywhere incl. in the air" distribution (paper-faithful), where requiring full
+        # settling would discard every airborne sample.
+        self.require_stability = cfg.params.get("require_stability", True)
+        # Optional workspace AABB (relative to env origin); states with any checked object outside
+        # are rejected (non-applicable to our table setting).
+        self.workspace_xy = cfg.params.get("workspace_xy")
+        self.workspace_z = cfg.params.get("workspace_z")
+        # Optional grasp-contact gate: for *EEGrasped* reset types the object MUST be held by the
+        # gripper, not merely resting nearby. We require the gripper finger meshes to be in contact
+        # with the insertive object (signed distance below the analyzer's min_dist). Without this,
+        # a slipped object resting on the table passes every other check and pollutes the dataset
+        # with non-grasps (the "grasped states don't hold the object" bug).
+        self.grasp_contact_analyzer_cfg = cfg.params.get("grasp_contact_analyzer_cfg")
+        self.grasp_contact_analyzer = None
+        if self.grasp_contact_analyzer_cfg is not None:
+            # resolve body/obstacle ids from names before the analyzer samples point clouds per body
+            self.grasp_contact_analyzer_cfg.asset_cfg.resolve(env.scene)
+            for _o in self.grasp_contact_analyzer_cfg.obstacle_cfgs:
+                _o.resolve(env.scene)
+            self.grasp_contact_analyzer = self.grasp_contact_analyzer_cfg.class_type(
+                self.grasp_contact_analyzer_cfg, self._env
+            )
+
+        # Explicit "is the object actually held" gate via the gripper drive joint. When the gripper
+        # closes on NOTHING it reaches (near) full close; an object between the pads stops them at the
+        # object width (a smaller angle). So finger_joint >= gripper_close_joint_max means empty ->
+        # reject. This catches the failures the proximity/deviation gates miss (a supported object that
+        # rests at the goal while the gripper shut on air still has small deviation + nearby fingers).
+        self.gripper_close_joint_name = cfg.params.get("gripper_close_joint_name")
+        self.gripper_close_joint_max = cfg.params.get("gripper_close_joint_max")
+        self._close_joint_idx = None
 
         # Load gripper_approach_direction from metadata
         robot_asset = env.scene[self.robot_cfg.name]
@@ -339,10 +375,17 @@ class check_reset_state_success(ManagerTermBase):
         max_object_pos_deviation: float = 0.1,
         pos_z_threshold: float = -0.01,
         consecutive_stability_steps: int = 5,
+        require_stability: bool = True,
+        workspace_xy: tuple | None = None,
+        workspace_z: tuple | None = None,
+        grasp_contact_analyzer_cfg: CollisionAnalyzerCfg | None = None,
         insertive_asset_cfg: SceneEntityCfg | None = None,
         receptive_asset_cfg: SceneEntityCfg | None = None,
         assembly_success_prob: float | None = None,
         assembly_threshold_scale: float = 1.0,
+        gripper_close_joint_name: str | None = None,
+        gripper_close_joint_max: float | None = None,
+        gripper_approach_z_max: float = -0.5,
     ) -> torch.Tensor:
 
         # Check time out
@@ -359,9 +402,12 @@ class check_reset_state_success(ManagerTermBase):
             self.gripper_approach_direction, device=env.device, dtype=torch.float32
         ).expand(env.num_envs, -1)
         gripper_approach_world = math_utils.quat_apply(ee_quat, gripper_approach_local)
-        gripper_orientation_within_range = (
-            gripper_approach_world[:, 2] < -0.5
-        )  # cos(60°) = 0.5, so z < -0.5 for 60° cone
+        # Down-cone half-angle gate: approach_world.z must be < -cos(half_angle). Default -0.5 (60deg).
+        # A wide flat lid held by its rim legitimately tilts the gripper a few degrees during settle;
+        # for such parts the 60deg cone rejects nearly every held state (the dominant gate failure).
+        # Expose the threshold so grasped-lid reset types can relax it (e.g. -0.34 ~= 70deg). Default
+        # preserves the original 60deg behaviour for all other parts.
+        gripper_orientation_within_range = gripper_approach_world[:, 2] < self.gripper_approach_z_max
 
         # Check if asset velocities are small
         current_step_stable = torch.ones(env.num_envs, device=env.device, dtype=torch.bool)
@@ -408,6 +454,19 @@ class check_reset_state_success(ManagerTermBase):
             # Asset is above ground if position is greater than z threshold
             pos_below_threshold |= asset_pos[:, 2] < self.pos_z_threshold
 
+        # Workspace filter: reject states where any checked object lies outside the workspace AABB
+        # (relative to env origin). Non-applicable to our table setting.
+        out_of_workspace = torch.zeros(env.num_envs, device=env.device, dtype=torch.bool)
+        if self.workspace_xy is not None or self.workspace_z is not None:
+            for asset in self.object_assets:
+                p = asset.data.root_pos_w - env.scene.env_origins
+                if self.workspace_xy is not None:
+                    (x0, x1), (y0, y1) = self.workspace_xy
+                    out_of_workspace |= (p[:, 0] < x0) | (p[:, 0] > x1) | (p[:, 1] < y0) | (p[:, 1] > y1)
+                if self.workspace_z is not None:
+                    z0, z1 = self.workspace_z
+                    out_of_workspace |= (p[:, 2] < z0) | (p[:, 2] > z1)
+
         # Check for collisions between gripper and object
         all_env_ids = torch.arange(env.num_envs, device=env.device)
         collision_free = torch.all(
@@ -415,18 +474,42 @@ class check_reset_state_success(ManagerTermBase):
             dim=0,
         )
 
+        # Grasp-contact gate: object must be held by the gripper (finger meshes touching the object).
+        # The analyzer returns collision_free=True when the gripper is >= min_dist from the object;
+        # "in contact" (held) is therefore its negation.
+        grasp_contact_ok = torch.ones(env.num_envs, device=env.device, dtype=torch.bool)
+        if self.grasp_contact_analyzer is not None:
+            grasp_contact_ok = ~self.grasp_contact_analyzer(env, all_env_ids)
+
+        # Held-joint gate: gripper drive joint below its full-close angle => an object is between the
+        # pads (empty gripper closes (near) fully). Rejects "shut on air" states the other gates miss.
+        held_joint_ok = torch.ones(env.num_envs, device=env.device, dtype=torch.bool)
+        if self.gripper_close_joint_max is not None:
+            if self._close_joint_idx is None:
+                names = list(self.robot_asset.joint_names)
+                jn = self.gripper_close_joint_name or "finger_joint"
+                self._close_joint_idx = names.index(jn) if jn in names else -1
+            if self._close_joint_idx >= 0:
+                fj = self.robot_asset.data.joint_pos[:, self._close_joint_idx]
+                held_joint_ok = fj < self.gripper_close_joint_max
+
+        stability_ok = stability_reached if self.require_stability else torch.ones_like(stability_reached)
         reset_success = (
             (~abnormal_gripper_state)
             & gripper_orientation_within_range
-            & stability_reached
+            & stability_ok
             & (~excessive_pose_deviation)
             & (~pos_below_threshold)
+            & (~out_of_workspace)
+            & grasp_contact_ok
+            & held_joint_ok
             & collision_free
             & time_out
         )
 
         # Opt-in diagnostic (mirrors check_grasp_success): UWLAB_GRASP_DEBUG=1 prints which
-        # condition rejects candidates, once per episode round (at the timeout step).
+        # condition rejects candidates, once per episode round (at the timeout step). Extends the
+        # upstream block with this term's extra gates (in_workspace / grasp_contact / held_joint).
         if os.environ.get("UWLAB_GRASP_DEBUG") and time_out.any():
             n = env.num_envs
             print(
@@ -435,6 +518,9 @@ class check_reset_state_success(ManagerTermBase):
                 f"stable={int(stability_reached.sum())} "
                 f"not_far={int((~excessive_pose_deviation).sum())} "
                 f"above_ground={int((~pos_below_threshold).sum())} "
+                f"in_workspace={int((~out_of_workspace).sum())} "
+                f"grasp_contact={int(grasp_contact_ok.sum())} "
+                f"held_joint={int(held_joint_ok.sum())} "
                 f"coll_free={int(collision_free.sum())} -> success={int(reset_success.sum())}",
                 flush=True,
             )

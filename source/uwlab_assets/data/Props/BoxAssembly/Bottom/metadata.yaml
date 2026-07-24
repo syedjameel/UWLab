@@ -1,0 +1,18 @@
+# Box-assembly tray (box base). Insertive in Pair A (bottom->table-center target),
+# receptive base in Pairs B (mid->bottom) and C (cap->bottom).
+# assembled_offset is the transform from this object's origin to the shared mating
+# frame. Bottom defines the mating frame at its own origin (identity); the mid and
+# cap insertive offsets encode their seating relative to it, so one bottom metadata
+# serves all three pairs.
+assembled_offset:
+  pos: [0.0, 0.0, 0.0]
+  quat: [1.0, 0.0, 0.0, 0.0]   # wxyz
+# Origin-to-lowest-collision-point offset (compute_bottom_offset.py = 0.000000).
+# Quat must be (1,0,0,0) (asserted in reset_root_states_uniform).
+bottom_offset:
+  pos: [0.0, 0.0, 0.0]
+  quat: [1.0, 0.0, 0.0, 0.0]
+# Loose-fit success tolerance (used as the receptive base for mid/cap placement).
+success_thresholds:
+  position: 0.005
+  orientation: 0.05
