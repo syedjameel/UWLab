@@ -138,12 +138,19 @@ class ProgressContext(ManagerTermBase):
                 insertive_asset_alignment_quat_w,
             )
         )
-        # yaw could be different
-        e_x, e_y, _ = math_utils.euler_xyz_from_quat(insertive_asset_in_receptive_asset_frame_quat)
+        # yaw could be different -- unless the receptive metadata opts into the yaw gate
+        # (success_thresholds.yaw + yaw_symmetry; see TaskCommand): a rectangular part wedged
+        # 90 deg off can land within the position threshold, which must not count as success.
+        e_x, e_y, e_z = math_utils.euler_xyz_from_quat(insertive_asset_in_receptive_asset_frame_quat)
         self.euler_xy_distance[:] = math_utils.wrap_to_pi(e_x).abs() + math_utils.wrap_to_pi(e_y).abs()
         self.xyz_distance[:] = torch.norm(insertive_asset_in_receptive_asset_frame_pos, dim=1)
         self.position_aligned[:] = self.xyz_distance < success_position_threshold
         self.orientation_aligned[:] = self.euler_xy_distance < success_orientation_threshold
+        if getattr(task_command, "success_yaw_threshold", None) is not None:
+            period = 2.0 * torch.pi / task_command.success_yaw_symmetry
+            ez = math_utils.wrap_to_pi(e_z)
+            yaw_err = (ez - torch.round(ez / period) * period).abs()
+            self.orientation_aligned[:] &= yaw_err < task_command.success_yaw_threshold
         self.success[:] = self.orientation_aligned & self.position_aligned
 
         # Update continuous success counter

@@ -97,12 +97,16 @@ def main(env_cfg, agent_cfg) -> None:
     with contextlib.suppress(KeyboardInterrupt):
         while True:
             asset = env.unwrapped.scene["robot"]
-            # specific for robotiq
-            gripper_joint_positions = asset.data.joint_pos[:, asset.find_joints(["finger_joint"])[0][0]]
-            gripper_closed_fraction = (
-                torch.abs(gripper_joint_positions) / env_cfg.actions.gripper.close_command_expr["finger_joint"]
-            )
-            gripper_mask = gripper_closed_fraction > 0.1
+            # A grip means the jaws are OFF the open stop -- use an absolute 1 mm travel
+            # threshold, NOT a closed FRACTION: wide objects near the aperture close the
+            # jaws only a few % of stroke (the 129 mm jig: fj ~0.003 = 5%), and the old
+            # `fraction > 0.1` misclassified those grips as open and OPENED the jaws on
+            # replay (dropping the object). Verified: holdtest_grasped_resets shows 100%
+            # of jig grips hold under the close command. Check BOTH jaws (dual-drive asym
+            # can leave one jaw near 0 while the other presses).
+            jids = asset.find_joints(["finger_joint", "right_finger_joint"])[0]
+            jaw_travel = torch.abs(asset.data.joint_pos[:, jids]).amax(dim=1)
+            gripper_mask = jaw_travel > 0.001
             # Step the simulation
             for _ in range(5):
                 action = torch.zeros(env.action_space.shape, device=env.device, dtype=torch.float32)

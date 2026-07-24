@@ -186,10 +186,71 @@ class grasp_sampling_event(ManagerTermBase):
         faces = [(0, ext[0], 1, ext[1]), (1, ext[1], 0, ext[0])]
         n_pos = max(1, min(60, int(self.num_candidates // (len(faces) * num_orient * num_standoff))))
 
+        # CONTACT VALIDATION (jig-class objects): the simple face-pair model assumes the object's
+        # outer faces are SOLID walls everywhere, but real parts (e.g. the alignment jig) have
+        # cutouts -- a grasp centered on a cutout pinches little/no material, balances in free
+        # space (passes the sampler's checks), then drops the object on the grasped-reset reload.
+        # Precompute a solid-material map just inside each gripped face (trimesh contains grid)
+        # and reject grasp centers whose jaw contact patch is not backed by material on BOTH
+        # faces. For solid cuboids (cube/pcb/peg) every candidate passes -> exact no-op.
+        _GRID = 0.001          # map resolution (m; 1 mm so thin solid strips resolve cleanly)
+        _PATCH_HW = 0.010      # jaw contact patch half-width along the face (m)
+        # Required solid band half-height around the grasp center: +-3.5 mm = a 7 mm-tall
+        # fully-solid contact patch. Sized so the jig's 9 mm bottom strip (under the wall
+        # cutout) QUALIFIES -> careful middle grasps clamp low onto the strip, while grasp
+        # centers near wall tops/edges still clamp inward. (A 7 mm patch is ample for a
+        # squeeze grip -- the 3 mm PCB edge grips at 69-98%.)
+        _BAND_HH = 0.0035
+        _SOLID_FRAC = 0.85     # min solid fraction of the patch on each face
+        _INSET = 0.0015        # probe depth inside the outer face (m)
+        zmin, zmax = mesh.bounds[0][2], mesh.bounds[1][2]
+
+        def _solid_map(close_idx, perp_idx, width):
+            # Sample at CELL CENTERS (half-grid inset from the bounds): probing exactly on the
+            # mesh boundary makes contains() return False and falsely erodes thin solid strips.
+            ps = np.arange(mesh.bounds[0][perp_idx] + _GRID / 2, mesh.bounds[1][perp_idx], _GRID)
+            zs = np.arange(zmin + _GRID / 2, zmax, _GRID)
+            P, Z = np.meshgrid(ps, zs, indexing="ij")
+            pts = np.zeros((P.size, 3))
+            pts[:, perp_idx] = P.ravel()
+            pts[:, 2] = Z.ravel()
+            ok = np.ones(P.size, dtype=bool)
+            for sign in (-1.0, 1.0):
+                pts[:, close_idx] = centroid[close_idx] + sign * (width / 2.0 - _INSET)
+                ok &= mesh.contains(pts)
+            return ps, zs, ok.reshape(P.shape)  # solid on BOTH faces
+
+        def _clamp_to_solid_band(smap, p, z):
+            """Return a grasp height whose +-_BAND_HH band is backed by solid material at
+            face-position ``p`` -- the sampled ``z`` if already valid, else ``z`` clamped into
+            the nearest valid band; None if no solid band tall enough exists at ``p``.
+
+            This is how 'careful middle grasps' work: where a wall has a cutout above a solid
+            base strip (the jig), the grasp is clamped DOWN onto the strip instead of being
+            rejected. For solid cuboids every sampled z is already valid -> exact no-op.
+            """
+            ps, zs, ok = smap
+            pi = np.abs(ps - p) <= _PATCH_HW
+            if not pi.any():
+                return None
+            zprof = ok[pi, :].mean(axis=0) >= _SOLID_FRAC  # solid across the patch width, per z
+            need = max(1, int(round(_BAND_HH / _GRID)))
+            # valid gc heights: all z whose +-need window is fully solid
+            valid = np.array([
+                zprof[max(0, i - need): i + need + 1].all() for i in range(len(zs))
+            ])
+            if not valid.any():
+                return None
+            vz = zs[valid]
+            i = int(np.argmin(np.abs(vz - z)))
+            return float(vz[i])
+
         transforms = []
+        n_rej = 0
         for close_idx, width, perp_idx, perp_ext in faces:
             if width > self.gripper_maximum_aperture:
                 continue  # object too wide to grip flush on this face pair
+            smap = _solid_map(close_idx, perp_idx, width)
             target_theta = 0.0 if close_idx == 0 else np.pi / 2.0  # align closing axis to object X or Y
             for _ in range(num_orient):
                 dyaw = np.random.uniform(-rp, rp)  # small yaw wobble around the face-aligned azimuth
@@ -207,12 +268,30 @@ class grasp_sampling_event(ManagerTermBase):
                     gc = centroid.copy()
                     gc[perp_idx] += np.random.uniform(-0.3, 0.3) * perp_ext
                     gc[2] += np.random.uniform(-0.2, 0.2) * ext[2]
+                    z_ok = _clamp_to_solid_band(smap, gc[perp_idx], gc[2])
+                    if z_ok is None:
+                        n_rej += 1
+                        continue  # no solid band tall enough under the jaw patch at this position
+                    gc[2] = z_ok
+                    # Tip-depth coupling: the jaw TIP sits (tip_offset - standoff) below the grasp
+                    # center. For LOW grasps (e.g. clamped onto a bottom strip) a shallow standoff
+                    # would drive the tip below the object's bottom plane -- i.e. into the table
+                    # when the object rests on it (measured: violent depenetration, arm |qd| up to
+                    # 576 rad/s, C2 accept 48% -> 2%). Keep only standoffs whose tip stays at/above
+                    # the object bottom (+1 mm tolerance). Full-height grasps keep the whole sweep.
+                    tip_offset = self.finger_offset + max(0.0, self.finger_clearance) + 0.004  # =0.144, measured jaw tip
+                    gc_above_bottom = float(gc[2] - zmin)
                     for standoff in standoffs:
+                        if (tip_offset - float(standoff)) > gc_above_bottom + 0.001:
+                            continue  # tip would protrude below the object's bottom plane
                         base = gc - approach_world * float(standoff)
                         T = np.eye(4)
                         T[:3, :3] = R[:3, :3]
                         T[:3, 3] = base
                         transforms.append(T)
+        if n_rej:
+            print(f"[grasp sampler] contact validation rejected {n_rej} grasp centers "
+                  f"(no solid material under the jaw patch); kept {len(transforms)} candidates")
         return transforms
 
     def _extract_mesh_from_asset(self, asset):

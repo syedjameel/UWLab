@@ -99,6 +99,14 @@ class TaskCommand(TaskDependentCommand):
         )
         self.success_position_threshold: float = receptive_meta.get("success_thresholds").get("position")
         self.success_orientation_threshold: float = receptive_meta.get("success_thresholds").get("orientation")
+        # OPT-IN yaw gate (jig-class rectangular registrations): the default success metric drops
+        # yaw entirely (fine for rotationally-symmetric peg/cube), but a rectangular part wedged
+        # 90 deg off can land within the position threshold -> false success. When the receptive
+        # metadata provides success_thresholds.yaw (rad), the relative yaw must be within it of a
+        # symmetry-equivalent orientation (yaw_symmetry: N -> valid yaws k*2pi/N; the jig's pillar
+        # pattern is 2-fold). Absent for all other objects -> exact no-op.
+        self.success_yaw_threshold = receptive_meta.get("success_thresholds").get("yaw")
+        self.success_yaw_symmetry: int = int(receptive_meta.get("success_thresholds").get("yaw_symmetry", 1))
 
         self.metrics["average_rot_align_error"] = torch.zeros(self.num_envs, device=self.device)
         self.metrics["average_pos_align_error"] = torch.zeros(self.num_envs, device=self.device)
@@ -146,11 +154,16 @@ class TaskCommand(TaskDependentCommand):
                 insertive_asset_alignment_quat_w,
             )
         )
-        e_x, e_y, _ = math_utils.euler_xyz_from_quat(insertive_asset_in_receptive_asset_frame_quat)
+        e_x, e_y, e_z = math_utils.euler_xyz_from_quat(insertive_asset_in_receptive_asset_frame_quat)
         self.euler_xy_distance[:] = math_utils.wrap_to_pi(e_x).abs() + math_utils.wrap_to_pi(e_y).abs()
         self.xyz_distance[:] = torch.norm(insertive_asset_in_receptive_asset_frame_pos, dim=1)
         self.position_aligned[:] = self.xyz_distance < self.success_position_threshold
         self.orientation_aligned[:] = self.euler_xy_distance < self.success_orientation_threshold
+        if self.success_yaw_threshold is not None:
+            period = 2.0 * torch.pi / self.success_yaw_symmetry
+            ez = math_utils.wrap_to_pi(e_z)
+            yaw_err = (ez - torch.round(ez / period) * period).abs()
+            self.orientation_aligned[:] &= yaw_err < self.success_yaw_threshold
         self.metrics["average_rot_align_error"][:] = self.euler_xy_distance
         self.metrics["average_pos_align_error"][:] = self.xyz_distance
 

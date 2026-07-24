@@ -187,20 +187,19 @@ class ResetStatesBaseEventCfg:
         mode="reset",
         params={
             "pose_range": {
-                # x (authors: 0.3, 0.55) shifted +5 cm, band size kept: on our rig the
-                # black mat (x < 0.35, with the base cutout) is the base's zone and the
-                # green mat starting at x = 0.35 is the physical workspace -- objects
-                # spawn fully on the green mat, clear of the base. Same shift in the two
-                # insertive events below; C3/C4 inherit (C1 restores / receptive-relative).
-                "x": (0.35, 0.60),
-                # y centered (authors: -0.1, 0.5 -- their rig's workspace was off to one
-                # side; ours is symmetric): same 0.40 m width, centered on the base/mat
-                # centerline, 12 cm margin to both mat edges (y +-0.35).
-                "y": (-0.2, 0.2),
+                # Jig-enclosure task: bands sized so the WHOLE part stays on the green mat
+                # (x >= 0.35, y +-0.35) under ANY yaw. The enclosure's half-DIAGONAL is
+                # 99 mm -> x_min 0.45, |y| <= 0.25 (we use 0.24). Band width recovered by
+                # extending x_max to 0.70 (the UR10e reaches far beyond the UR5e-tuned
+                # 0.60; see the P6 reach note in ur10e_linear_gripper_cfg).
+                "x": (0.45, 0.70),
+                "y": (-0.24, 0.24),
                 "z": (0.0, 0.0),
                 "roll": (0.0, 0.0),
                 "pitch": (0.0, 0.0),
-                "yaw": (-np.pi / 12, np.pi / 12),
+                # Free yaw (was authors' +-15 deg): the enclosure can be presented at any
+                # orientation on the real rig; assembly success ignores yaw (euler_xy).
+                "yaw": (-np.pi, np.pi),
             },
             "velocity_range": {},
             "asset_cfgs": {"receptive_object": SceneEntityCfg("receptive_object")},
@@ -217,11 +216,14 @@ class ObjectAnywhereEEAnywhereEventCfg(ResetStatesBaseEventCfg):
         mode="reset",
         params={
             "pose_range": {
-                # x shifted +5 cm onto the green workspace mat (see reset_receptive_object_pose).
-                "x": (0.35, 0.60),
-                # y centered, same 0.40 m width (see reset_receptive_object_pose).
-                "y": (-0.2, 0.2),
-                "z": (0.0, 0.3),
+                # Jig-enclosure task: whole-part-on-green-mat margins under any yaw
+                # (jig half-diagonal 104 mm -> x_min 0.46, |y| <= 0.24; x_max extended to
+                # 0.70 for band width -- see reset_receptive_object_pose).
+                "x": (0.46, 0.70),
+                "y": (-0.24, 0.24),
+                # Low drop band (was 0.3): a 30 cm drop lets the settling part bounce/skid off
+                # the green-mat band (~3% of C1 states); 5 cm settles in place.
+                "z": (0.0, 0.05),
                 # PCB stays essentially top-up: only a small +/-0.1 rad (~6 deg) roll/pitch
                 # jitter for robustness to placement error; yaw stays free (in-plane spin
                 # is realistic and does not affect success, which checks roll+pitch only).
@@ -285,12 +287,16 @@ class ObjectRestingEEGraspedEventCfg(ResetStatesBaseEventCfg):
             ),
             "gripper_cfg": SceneEntityCfg("robot", joint_names=["finger_joint", ".*right.*", ".*left.*"]),
             "pose_range_b": {
-                "x": (-0.02, 0.02),
-                "y": (-0.02, 0.02),
-                "z": (-0.02, 0.02),
-                "roll": (-np.pi / 16, np.pi / 16),
-                "pitch": (-np.pi / 16, np.pi / 16),
-                "yaw": (-np.pi / 16, np.pi / 16),
+                # Jig task: the 129 mm jig leaves only ~2 mm of jaw clearance per side, so
+                # cm-scale grasp-pose jitter lands a jaw INSIDE the body and ejects it on
+                # reload (measured: C2 true grips 31% -> 99% after tightening). Jitter is
+                # shrunk to the clearance scale; holdtest_grasped_resets verifies 100% hold.
+                "x": (-0.003, 0.003),
+                "y": (-0.003, 0.003),
+                "z": (-0.005, 0.005),
+                "roll": (-0.05, 0.05),
+                "pitch": (-0.05, 0.05),
+                "yaw": (-0.035, 0.035),
             },
         },
     )
@@ -303,10 +309,11 @@ class ObjectAnywhereEEGraspedEventCfg(ResetStatesBaseEventCfg):
         mode="reset",
         params={
             "pose_range": {
-                # x shifted +5 cm onto the green workspace mat (see reset_receptive_object_pose).
-                "x": (0.35, 0.60),
-                # y centered, same 0.40 m width (see reset_receptive_object_pose).
-                "y": (-0.2, 0.2),
+                # Jig-enclosure task: whole-part-on-green-mat margins under any yaw
+                # (jig half-diagonal 104 mm -> x_min 0.46, |y| <= 0.24; x_max extended to
+                # 0.70 for band width -- see reset_receptive_object_pose).
+                "x": (0.46, 0.70),
+                "y": (-0.24, 0.24),
                 "z": (0.0, 0.3),
                 # PCB stays essentially top-up: only a small +/-0.1 rad (~6 deg) roll/pitch
                 # jitter for robustness to placement error; yaw stays free (in-plane spin
@@ -416,12 +423,16 @@ class ObjectPartiallyAssembledEEGraspedEventCfg(ResetStatesBaseEventCfg):
             ),
             "gripper_cfg": SceneEntityCfg("robot", joint_names=["finger_joint", ".*right.*", ".*left.*"]),
             "pose_range_b": {
-                "x": (-0.01, 0.01),
-                "y": (-0.01, 0.01),
-                "z": (-0.01, 0.01),
-                "roll": (-np.pi / 32, np.pi / 32),
-                "pitch": (-np.pi / 32, np.pi / 32),
-                "yaw": (-np.pi / 32, np.pi / 32),
+                # Jig task: the 129 mm jig leaves only ~2 mm of jaw clearance per side, so
+                # cm-scale grasp-pose jitter lands a jaw INSIDE the body and ejects it on
+                # reload (measured: C2 true grips 31% -> 99% after tightening). Jitter is
+                # shrunk to the clearance scale; holdtest_grasped_resets verifies 100% hold.
+                "x": (-0.003, 0.003),
+                "y": (-0.003, 0.003),
+                "z": (-0.005, 0.005),
+                "roll": (-0.05, 0.05),
+                "pitch": (-0.05, 0.05),
+                "yaw": (-0.035, 0.035),
             },
         },
     )
@@ -535,6 +546,8 @@ variants = {
         "rectangle": make_insertive_object(f"{UWLAB_CLOUD_ASSETS_DIR}/Props/Custom/Rectangle/rectangle.usd"),
         # Local dev asset (PCB slab). Switch to UWLAB_CLOUD_ASSETS_DIR when sharing.
         "pcb": make_insertive_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/Pcb/pcb.usd"),
+        # Local dev asset (alignment jig, 164x129x24 mm frame; new jig-onto-enclosure task).
+        "jig": make_insertive_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/Jig/jig.usd"),
         # Local dev asset (telescoping cover/lid). Switch to UWLAB_CLOUD_ASSETS_DIR when sharing.
         "cover": make_insertive_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/Cover/cover.usd"),
     },
@@ -551,6 +564,8 @@ variants = {
         "wall": make_receptive_object(f"{UWLAB_CLOUD_ASSETS_DIR}/Props/Custom/Wall/wall.usd"),
         # Local dev asset (open-top box). Switch to UWLAB_CLOUD_ASSETS_DIR when sharing.
         "openbox": make_receptive_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/OpenBox/open_box.usd"),
+        # Local dev asset (bottom enclosure, 156.6x121.6x22.6 mm shell; kinematic, open side up).
+        "bottomenclosure": make_receptive_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/BottomEnclosure/bottom_enclosure.usd"),
         # Local dev asset (box with seated PCB; lid task receptive, mating point at the top rim).
         "boxwithpcb": make_receptive_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/BoxWithPcb/box_with_pcb.usd"),
     },
