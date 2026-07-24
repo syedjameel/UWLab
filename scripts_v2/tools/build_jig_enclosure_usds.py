@@ -163,10 +163,35 @@ for sx in (+1, -1):  # end walls with two-stage pillar sockets at +-32 and post-
         _JIG_BOXES_MM.append((sx * 80.25, sy * 32.0, (24 + 10.5) / 2, 1.75, _POCKET, (24 - 10.5) / 2))
 
 
-def _add_jig_box_collider(stage, root_name, material_path):
-    for i, (cx, cy, cz, hx, hy, hz) in enumerate(_JIG_BOXES_MM):
+# HAND-BUILT enclosure collider. The exact-trimesh enclosure explodes the PhysX GPU
+# collision stack (35 jig boxes x 8878 triangles x thousands of in-contact envs: >2.3 GB
+# demand at 4096-env C4 resets -- above the int32 setting ceiling; training would drop
+# contacts silently). Structures measured from the mesh (heights above the enclosure
+# BOTTOM; only the pillars and post towers rise above the 17.6 mm seat plane, both of
+# which the jig's carved clearances/sockets accommodate -- verified vs the SDF seat):
+#   interior plateau top 9.4 | end shelves (|x| 69-78.3) top 9.4 | long wall ridges
+#   (y ~+-49.5, 13.6 tall, x +-66) | 4 pillars (+-76,+-32) r3.6 top 22.55 | 4 post
+#   towers (x 69-73.5, y 51.5-56) top 21.6. Small interior cutouts/fins (<15.2 mm,
+#   below the seat plane) are approximated away.
+_ENC_BOXES_MM = [
+    (0.0, 0.0, 4.7, 70.0, 48.0, 4.7),          # interior plateau slab z 0-9.4
+]
+for sx in (+1, -1):
+    _ENC_BOXES_MM.append((sx * 73.65, 0.0, 4.7, 4.65, 60.8, 4.7))   # end shelf x 69..78.3, z 0-9.4
+    for sy in (+1, -1):
+        _ENC_BOXES_MM.append((sx * 76.0, sy * 32.0, 15.975, 3.6, 3.6, 6.575))    # pillar z 9.4-22.55
+        _ENC_BOXES_MM.append((sx * 71.25, sy * 53.75, 15.5, 2.25, 2.25, 6.1))    # post tower z 9.4-21.6
+for sy in (+1, -1):
+    _ENC_BOXES_MM.append((0.0, sy * 49.5, 6.8, 66.0, 1.0, 6.8))     # long wall ridge z 0-13.6
+
+_BOX_TABLES = {"Jig": (_JIG_BOXES_MM, 12.0), "BottomEnclosure": (_ENC_BOXES_MM, 11.3)}
+
+
+def _add_hand_box_collider(stage, root_name, material_path):
+    boxes, bottom_mm = _BOX_TABLES[root_name]
+    for i, (cx, cy, cz, hx, hy, hz) in enumerate(boxes):
         add_box(stage, f"/{root_name}/collisions/box_{i:02d}",
-                center=(cx / 1000.0, cy / 1000.0, (cz - 12.0) / 1000.0),
+                center=(cx / 1000.0, cy / 1000.0, (cz - bottom_mm) / 1000.0),
                 half_extents=(hx / 1000.0, hy / 1000.0, hz / 1000.0),
                 collision=True, material_path=material_path)
 
@@ -186,7 +211,7 @@ def build(stl_path, usd_path, root_name, *, y_up=False, color, metadata_extra=No
     stage, _, mat = create_stage(usd_path, root_name=root_name)
     add_trimesh(stage, f"/{root_name}/visuals/mesh", mesh, collision=False, color=color)
     if approximation == "handBoxes":
-        _add_jig_box_collider(stage, root_name, mat)
+        _add_hand_box_collider(stage, root_name, mat)
     else:
         add_trimesh(stage, f"/{root_name}/collisions/mesh", mesh, collision=True, material_path=mat,
                     approximation=approximation)
@@ -236,7 +261,7 @@ def main() -> None:
             # authors' position/orientation values; yaw gate is jig-specific (the pillar
             # pattern is 2-fold symmetric: yaw 0/180 valid, 90 wedges -> false success without it)
             "position": 0.005, "orientation": 0.025, "yaw": 0.35, "yaw_symmetry": 2}},
-        approximation="none",  # kinematic in every task -> exact triangle mesh (real pillars)
+        approximation="handBoxes",  # measured boxes: trimesh blew the GPU contact stack (see _ENC_BOXES_MM)
     )
     # Set the enclosure's mating point to the (sim-measured) seated height of the jig's
     # bottom-center -- success then means "jig seated on the pillars" within the thresholds.
