@@ -56,6 +56,12 @@ def main():
         "away; the student would imitate that.",
     )
     ap.add_argument("--min-grip", type=float, default=None, help="Drop states with finger_joint below this (m).")
+    ap.add_argument("--require-upright", type=float, default=None, metavar="MAXDEG",
+                    help="Drop states whose insertive object is tilted more than this (deg roll/pitch). "
+                         "E.g. 20 removes flipped/tipped parts (spawn-interpenetration launches).")
+    ap.add_argument("--obj-x-min", type=float, default=None,
+                    help="Drop states with the insertive object's x below this (m) -- e.g. 0.34 "
+                         "removes parts launched off the workspace toward the robot base.")
     ap.add_argument("--in-place", action="store_true", help="Overwrite the input file (keeps a .bak copy).")
     args = ap.parse_args()
 
@@ -80,6 +86,23 @@ def main():
             f"[FILTER] wrist_3 outside [{args.wrist3_window[0]:.0f}, {args.wrist3_window[1]:.0f}] deg: "
             f"dropping {int(outside.sum())}/{n}"
         )
+    if args.require_upright is not None or args.obj_x_min is not None:
+        import math
+        rp_list = data["initial_state"]["rigid_object"]["insertive_object"]["root_pose"]
+        P = torch.stack([t.cpu() for t in rp_list]).numpy()
+        if args.require_upright is not None:
+            qw, qx, qy, qz = P[:, 3], P[:, 4], P[:, 5], P[:, 6]
+            # roll/pitch magnitude via the world-z of the object's z-axis: cos(tilt)
+            cz = 1.0 - 2.0 * (qx * qx + qy * qy)
+            tilt = np.degrees(np.arccos(np.clip(cz, -1.0, 1.0)))
+            bad = tilt > args.require_upright
+            keep &= ~bad
+            print(f"[FILTER] insertive object tilted > {args.require_upright} deg: dropping {int(bad.sum())}/{n}")
+        if args.obj_x_min is not None:
+            bad = P[:, 0] < args.obj_x_min
+            keep &= ~bad
+            print(f"[FILTER] insertive object x < {args.obj_x_min}: dropping {int(bad.sum())}/{n}")
+
     if args.min_grip is not None:
         open_jaw = jp[:, FINGER_COL] < args.min_grip
         keep &= ~open_jaw

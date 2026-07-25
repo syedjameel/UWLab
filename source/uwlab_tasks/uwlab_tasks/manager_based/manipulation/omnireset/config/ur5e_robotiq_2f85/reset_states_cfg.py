@@ -221,9 +221,14 @@ class ObjectAnywhereEEAnywhereEventCfg(ResetStatesBaseEventCfg):
                 # 0.70 for band width -- see reset_receptive_object_pose).
                 "x": (0.46, 0.70),
                 "y": (-0.24, 0.24),
-                # Low drop band (was 0.3): a 30 cm drop lets the settling part bounce/skid off
-                # the green-mat band (~3% of C1 states); 5 cm settles in place.
-                "z": (0.0, 0.05),
+                # Drop band [0.012, 0.05] (was authors' 0-0.3, then 0-0.05):
+                # * upper 0.05: a 30 cm drop lets the part bounce/skid off the band;
+                # * lower 0.012: the +-0.1 rad roll/pitch jitter dips a 164 mm part's corner
+                #   up to ~10 mm below the bottom-offset plane -- sampling z below that spawns
+                #   the corner INSIDE the table and the depenetration kick LAUNCHES the part
+                #   (flips + flights onto the black mat; verified by A/B/C/D/E recordings:
+                #   z 0-5mm -> 14.4% flipped, z 12-50mm -> 0.8%).
+                "z": (0.012, 0.05),
                 # PCB stays essentially top-up: only a small +/-0.1 rad (~6 deg) roll/pitch
                 # jitter for robustness to placement error; yaw stays free (in-plane spin
                 # is realistic and does not affect success, which checks roll+pitch only).
