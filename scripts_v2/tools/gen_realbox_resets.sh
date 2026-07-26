@@ -66,6 +66,9 @@ for S in A B C; do
     env.events.reset_end_effector_pose_from_grasp_dataset.params.dataset_dir="$GEN_DS"
 done
 
+# OREG hangs at env setup on the RealBox pairs (bead UWLab-111) and is the least-critical
+# type (training auto-trims to the reset types present on disk). Off by default.
+[ "${SKIP_OREG:-1}" = "1" ] && { echo "SKIP_OREG=1 -> skipping ObjectRestingEEGrasped"; } || \
 for S in A B C; do
   OBJ="env.scene.insertive_object=${INS[$S]} env.scene.receptive_object=${REC[$S]}"
   RUN 9000 "oreg_$S" scripts_v2/tools/record_reset_states.py \
