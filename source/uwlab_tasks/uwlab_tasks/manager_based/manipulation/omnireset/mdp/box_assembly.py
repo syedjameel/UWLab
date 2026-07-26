@@ -64,25 +64,28 @@ USD_FOLDER_TO_SEMANTIC = {
     "CapRim": "cover",
     "TableCenterTarget": "target",
 }
-# Explicit inverse (NOT auto-derived): the canonical cover USD spawned for a *context* cover (stages
-# A/B) stays "Cap", so the ablation lids do not change A/B. They only ever appear as the insertive in
-# their own cover-close task, where the cover USD is set explicitly.
-SEMANTIC_TO_USD_FOLDER = {"box": "Bottom", "object": "Mid", "cover": "Cap", "target": "TableCenterTarget"}
+# Explicit inverse (NOT auto-derived). With the RealBox models the canonical cover IS the
+# corner-tab cap authored into CapRim (there is no knob lid any more), so context covers in
+# stages A/B spawn the same asset the cover-close stage manipulates.
+SEMANTIC_TO_USD_FOLDER = {"box": "Bottom", "object": "Mid", "cover": "CapRim", "target": "TableCenterTarget"}
 
-# Half-extents / rects in each object's local frame (metres), transcribed from the authoring tool.
+# Half-extents / rects in each object's local frame (metres), transcribed from the authoring tool
+# (RealBox customer enclosure: tray 145 x 93.5 x 12.7, circuit 123 x 89.5, cap 125 x 90).
 GEOM = {
-    # box (Bottom): outer footprint and the inner cavity rect (between the tray walls).
-    "box_outer_half": (0.040, 0.025),
-    "box_inner_half": (0.035, 0.020),  # inside the 2.5 mm walls
+    # box (Bottom = tray): outer footprint and the inner cavity rect (between the tray walls).
+    # NOTE the cavity is 1.75 mm off-centre in +y; these are symmetric approximations.
+    "box_outer_half": (0.0725, 0.04675),
+    "box_inner_half": (0.061, 0.044),
     "box_floor_top_z": 0.005,
-    "box_wall_top_z": 0.020,
-    # object (Mid): solid box half extents.
-    "object_half": (0.0272, 0.0152, 0.009),
-    # cover (Cap): outer footprint and the inner rect the box seats into.
-    "cover_outer_half": (0.0275, 0.0275),
-    "cover_inner_half": (0.023, 0.023),
+    "box_wall_top_z": 0.0127,
+    # object (Mid = circuit board): bbox half extents (collision footprint x is 0.0607).
+    "object_half": (0.0607, 0.04475, 0.01275),
+    # cover (CapRim = cap rev-2): outer footprint and the tab-envelope rect that drops into
+    # the tray cavity corners (the cap sits ON the tray, tabs INSIDE the cavity).
+    "cover_outer_half": (0.0625, 0.045),
+    "cover_inner_half": (0.061, 0.04375),
     # assembly target: the on-table marker rect the box must sit fully inside.
-    "target_half": (0.045, 0.030),
+    "target_half": (0.0775, 0.0525),
 }
 
 # Per-stage cumulative goal chain: list of (insertive_semantic, receptive_semantic).

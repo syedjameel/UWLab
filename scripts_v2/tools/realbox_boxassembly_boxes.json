@@ -1,0 +1,920 @@
+{
+ "note": "RealBox (customer enclosure) hand-built collision boxes, metres. Frames: origin at the lowest point of each part (tray: base centre; circuit: lowest visual point; cap: tab bottoms), xy at the part bbox centre. Tray/cap boxes measured from the STEP meshes by ray-grid scans (0.25-0.5 mm). Circuit boxes inherited from the orel-repo circuit_boxes.json (plate 3-way split leaves 0.3 mm corner pockets for the cap tabs; assumes board corner notches, customer question pending). Cap tabs shaved 0.1 mm/side in x (insertion draft approximation; exact would be a zero-clearance fit). Cap seat: tabs rest on the tray corner posts (post top 11.1 mm, tab bottom at seat ~11.3 mm on the SDF model; boxes seat 0.2 mm lower on the posts).",
+ "circuit_note": "clipped to board footprint -1.5mm; under-wall boxes flattened to 0.2mm; y-edge terminal boxes z<=12.4mm board frame (cap louver slat undersides sit at 12.8; terminals pass through the louver windows in the real part) | 2026-07-24 run16: plate box re-clipped to cavity-fit 121.4x87.4mm on TRUE plate centre (plate 123x88 rectangle; bbox y=89.5 includes overhanging parts -> plate centre y=-0.75 in bbox frame); real plate exceeds the 122x88 cavity by 0.5mm/side in x and matches y exactly (CAD interference, question to customer) - box models an effective 0.3mm/side running fit so the cavity walls provide the lateral constraint. Y-edge terminal boxes clamped to z<=0.0024 centred (0.5mm below the cap louver slats at the fully seated pose, slats measured at 25.20 world by 0.25mm ray grid); prior 12.4 board-frame clamp left only 0.11mm - inside SDF-error + tilt noise, so the cap weight leaked through the circuit instead of the tray rim. | 2026-07-25 cap rev2 (corner-tab skirt): plate box split into 3 (centre slab + two x-end strips) leaving the 4 corner pockets open with 0.3mm margin for the cap tabs (10.25x8.75mm, bottoms 11.2mm world at seat) - ASSUMES the real board has corner notches, since the CAD tabs pass 1.49mm through the plate corners at the seated pose (customer question #7). Lateral wall constraint preserved via the end strips (x +-60.7) and slab y edges.",
+ "tray": [
+  {
+   "name": "floor",
+   "min": [
+    -0.061,
+    -0.04225,
+    0.004
+   ],
+   "max": [
+    0.061,
+    0.04575,
+    0.005
+   ]
+  },
+  {
+   "name": "wall_py_mid",
+   "min": [
+    -0.05075,
+    0.04575,
+    0.0
+   ],
+   "max": [
+    0.05075,
+    0.04675,
+    0.01205
+   ]
+  },
+  {
+   "name": "wall_py_w",
+   "min": [
+    -0.061,
+    0.04575,
+    0.0
+   ],
+   "max": [
+    -0.05075,
+    0.04675,
+    0.01265
+   ]
+  },
+  {
+   "name": "wall_py_e",
+   "min": [
+    0.05075,
+    0.04575,
+    0.0
+   ],
+   "max": [
+    0.061,
+    0.04675,
+    0.01265
+   ]
+  },
+  {
+   "name": "wall_ny_mid",
+   "min": [
+    -0.05075,
+    -0.04325,
+    0.0
+   ],
+   "max": [
+    0.05075,
+    -0.04225,
+    0.01205
+   ]
+  },
+  {
+   "name": "wall_ny_w",
+   "min": [
+    -0.061,
+    -0.04325,
+    0.0
+   ],
+   "max": [
+    -0.05075,
+    -0.04225,
+    0.01265
+   ]
+  },
+  {
+   "name": "wall_ny_e",
+   "min": [
+    0.05075,
+    -0.04325,
+    0.0
+   ],
+   "max": [
+    0.061,
+    -0.04225,
+    0.01265
+   ]
+  },
+  {
+   "name": "wall_px",
+   "min": [
+    0.061,
+    -0.04325,
+    0.0
+   ],
+   "max": [
+    0.0625,
+    0.04675,
+    0.01265
+   ]
+  },
+  {
+   "name": "wall_nx",
+   "min": [
+    -0.0625,
+    -0.04325,
+    0.0
+   ],
+   "max": [
+    -0.061,
+    0.04675,
+    0.01265
+   ]
+  },
+  {
+   "name": "shelf_px",
+   "min": [
+    0.0625,
+    -0.04675,
+    0.0
+   ],
+   "max": [
+    0.0725,
+    0.04675,
+    0.01
+   ]
+  },
+  {
+   "name": "shelf_nx",
+   "min": [
+    -0.0725,
+    -0.04675,
+    0.0
+   ],
+   "max": [
+    -0.0625,
+    0.04675,
+    0.01
+   ]
+  },
+  {
+   "name": "skirt_ny",
+   "min": [
+    -0.0725,
+    -0.04675,
+    0.0
+   ],
+   "max": [
+    0.0725,
+    -0.04325,
+    0.003
+   ]
+  },
+  {
+   "name": "post_ne",
+   "min": [
+    0.05375,
+    0.03775,
+    0.005
+   ],
+   "max": [
+    0.061,
+    0.04575,
+    0.0111
+   ]
+  },
+  {
+   "name": "post_nw",
+   "min": [
+    -0.061,
+    0.03775,
+    0.005
+   ],
+   "max": [
+    -0.05375,
+    0.04575,
+    0.0111
+   ]
+  },
+  {
+   "name": "post_se",
+   "min": [
+    0.05375,
+    -0.04225,
+    0.005
+   ],
+   "max": [
+    0.061,
+    -0.03425,
+    0.0111
+   ]
+  },
+  {
+   "name": "post_sw",
+   "min": [
+    -0.061,
+    -0.04225,
+    0.005
+   ],
+   "max": [
+    -0.05375,
+    -0.03425,
+    0.0111
+   ]
+  }
+ ],
+ "cap": [
+  {
+   "name": "tab_ne",
+   "min": [
+    0.05085,
+    0.035,
+    0.0
+   ],
+   "max": [
+    0.0609,
+    0.04375,
+    0.00155
+   ]
+  },
+  {
+   "name": "tab_nw",
+   "min": [
+    -0.0609,
+    0.035,
+    0.0
+   ],
+   "max": [
+    -0.05085,
+    0.04375,
+    0.00155
+   ]
+  },
+  {
+   "name": "tab_se",
+   "min": [
+    0.05085,
+    -0.04375,
+    0.0
+   ],
+   "max": [
+    0.0609,
+    -0.035,
+    0.00155
+   ]
+  },
+  {
+   "name": "tab_sw",
+   "min": [
+    -0.0609,
+    -0.04375,
+    0.0
+   ],
+   "max": [
+    -0.05085,
+    -0.035,
+    0.00155
+   ]
+  },
+  {
+   "name": "wall_px",
+   "min": [
+    0.061,
+    -0.035,
+    0.00155
+   ],
+   "max": [
+    0.0625,
+    0.035,
+    0.02745
+   ]
+  },
+  {
+   "name": "wall_nx",
+   "min": [
+    -0.0625,
+    -0.035,
+    0.00155
+   ],
+   "max": [
+    -0.061,
+    0.035,
+    0.02745
+   ]
+  },
+  {
+   "name": "gusset_ne",
+   "min": [
+    0.05075,
+    0.035,
+    0.00155
+   ],
+   "max": [
+    0.0625,
+    0.045,
+    0.02745
+   ]
+  },
+  {
+   "name": "gusset_nw",
+   "min": [
+    -0.0625,
+    0.035,
+    0.00155
+   ],
+   "max": [
+    -0.05075,
+    0.045,
+    0.02745
+   ]
+  },
+  {
+   "name": "gusset_se",
+   "min": [
+    0.05075,
+    -0.045,
+    0.00155
+   ],
+   "max": [
+    0.0625,
+    -0.035,
+    0.02745
+   ]
+  },
+  {
+   "name": "gusset_sw",
+   "min": [
+    -0.0625,
+    -0.045,
+    0.00155
+   ],
+   "max": [
+    -0.05075,
+    -0.035,
+    0.02745
+   ]
+  },
+  {
+   "name": "louver_py",
+   "min": [
+    -0.05075,
+    0.03446,
+    0.01575
+   ],
+   "max": [
+    0.05075,
+    0.035,
+    0.0285
+   ]
+  },
+  {
+   "name": "louver_ny",
+   "min": [
+    -0.05075,
+    -0.035,
+    0.01575
+   ],
+   "max": [
+    0.05075,
+    -0.03446,
+    0.0285
+   ]
+  },
+  {
+   "name": "plate_mid",
+   "min": [
+    -0.0625,
+    -0.03475,
+    0.02745
+   ],
+   "max": [
+    0.0625,
+    0.03475,
+    0.02855
+   ]
+  },
+  {
+   "name": "plate_ne",
+   "min": [
+    0.05075,
+    0.03475,
+    0.02745
+   ],
+   "max": [
+    0.0625,
+    0.04475,
+    0.02855
+   ]
+  },
+  {
+   "name": "plate_nw",
+   "min": [
+    -0.0625,
+    0.03475,
+    0.02745
+   ],
+   "max": [
+    -0.05075,
+    0.04475,
+    0.02855
+   ]
+  },
+  {
+   "name": "plate_se",
+   "min": [
+    0.05075,
+    -0.04475,
+    0.02745
+   ],
+   "max": [
+    0.0625,
+    -0.03475,
+    0.02855
+   ]
+  },
+  {
+   "name": "plate_sw",
+   "min": [
+    -0.0625,
+    -0.04475,
+    0.02745
+   ],
+   "max": [
+    -0.05075,
+    -0.03475,
+    0.02855
+   ]
+  }
+ ],
+ "circuit": [
+  {
+   "name": "box_00",
+   "min": [
+    -0.05045,
+    -0.04445,
+    0.001909
+   ],
+   "max": [
+    0.05045,
+    0.04295,
+    0.0035
+   ]
+  },
+  {
+   "name": "box_01",
+   "min": [
+    -0.0607,
+    -0.03545,
+    0.001909
+   ],
+   "max": [
+    -0.05045,
+    0.03395,
+    0.0035
+   ]
+  },
+  {
+   "name": "box_02",
+   "min": [
+    0.05045,
+    -0.03545,
+    0.001909
+   ],
+   "max": [
+    0.0607,
+    0.03395,
+    0.0035
+   ]
+  },
+  {
+   "name": "box_03",
+   "min": [
+    0.049554,
+    0.026675,
+    0.0022
+   ],
+   "max": [
+    0.059296,
+    0.030075,
+    0.014571
+   ]
+  },
+  {
+   "name": "box_04",
+   "min": [
+    0.03792,
+    0.026649,
+    0.0036
+   ],
+   "max": [
+    0.04808,
+    0.04175,
+    0.015515
+   ]
+  },
+  {
+   "name": "box_05",
+   "min": [
+    0.03697,
+    0.023275,
+    0.0
+   ],
+   "max": [
+    0.04913,
+    0.035277,
+    0.0121
+   ]
+  },
+  {
+   "name": "box_06",
+   "min": [
+    -0.01935,
+    -0.04325,
+    0.0
+   ],
+   "max": [
+    -0.00905,
+    -0.03425,
+    0.015515
+   ]
+  },
+  {
+   "name": "box_07",
+   "min": [
+    -0.02935,
+    -0.04325,
+    0.0
+   ],
+   "max": [
+    -0.01905,
+    -0.03425,
+    0.015515
+   ]
+  },
+  {
+   "name": "box_08",
+   "min": [
+    0.03315,
+    -0.04325,
+    0.0
+   ],
+   "max": [
+    0.04845,
+    -0.03425,
+    0.015515
+   ]
+  },
+  {
+   "name": "box_09",
+   "min": [
+    -0.00895,
+    0.03275,
+    0.0
+   ],
+   "max": [
+    0.00135,
+    0.04175,
+    0.015515
+   ]
+  },
+  {
+   "name": "box_10",
+   "min": [
+    -0.01895,
+    0.03275,
+    0.0
+   ],
+   "max": [
+    -0.00865,
+    0.04175,
+    0.015515
+   ]
+  },
+  {
+   "name": "box_11",
+   "min": [
+    0.005,
+    -0.035293,
+    0.0035
+   ],
+   "max": [
+    0.008,
+    -0.0335,
+    0.00426
+   ]
+  },
+  {
+   "name": "box_12",
+   "min": [
+    -0.058243,
+    -0.018147,
+    0.003457
+   ],
+   "max": [
+    -0.052757,
+    -0.015353,
+    0.0037
+   ]
+  },
+  {
+   "name": "box_13",
+   "min": [
+    0.050757,
+    0.020853,
+    0.003457
+   ],
+   "max": [
+    0.056243,
+    0.023647,
+    0.0037
+   ]
+  },
+  {
+   "name": "box_14",
+   "min": [
+    -0.05335,
+    0.0242,
+    0.00345
+   ],
+   "max": [
+    -0.04965,
+    0.0295,
+    0.005701
+   ]
+  },
+  {
+   "name": "box_15",
+   "min": [
+    -0.05835,
+    0.0242,
+    0.00345
+   ],
+   "max": [
+    -0.05465,
+    0.0295,
+    0.0037
+   ]
+  },
+  {
+   "name": "box_16",
+   "min": [
+    0.05125,
+    -0.022,
+    0.0035
+   ],
+   "max": [
+    0.05875,
+    -0.0175,
+    0.0037
+   ]
+  },
+  {
+   "name": "box_17",
+   "min": [
+    0.052,
+    0.0044,
+    0.0
+   ],
+   "max": [
+    0.058,
+    0.0121,
+    0.0037
+   ]
+  },
+  {
+   "name": "box_18",
+   "min": [
+    -0.058865,
+    -0.005375,
+    0.00355
+   ],
+   "max": [
+    -0.057135,
+    -0.002125,
+    0.0037
+   ]
+  },
+  {
+   "name": "box_19",
+   "min": [
+    -0.058999,
+    -0.027749,
+    0.0035
+   ],
+   "max": [
+    -0.050001,
+    -0.018751,
+    0.0155
+   ]
+  },
+  {
+   "name": "box_20",
+   "min": [
+    0.0447,
+    -0.03385,
+    0.0035
+   ],
+   "max": [
+    0.06,
+    -0.02325,
+    0.0153
+   ]
+  },
+  {
+   "name": "box_21",
+   "min": [
+    -0.0587,
+    0.01075,
+    0.0035
+   ],
+   "max": [
+    -0.0432,
+    0.02135,
+    0.0153
+   ]
+  },
+  {
+   "name": "box_22",
+   "min": [
+    0.0534,
+    -0.01505,
+    0.0035
+   ],
+   "max": [
+    0.0566,
+    -0.01345,
+    0.0037
+   ]
+  },
+  {
+   "name": "box_23",
+   "min": [
+    -0.05895,
+    -0.01275,
+    0.0035
+   ],
+   "max": [
+    -0.05405,
+    -0.00675,
+    0.0037
+   ]
+  },
+  {
+   "name": "box_24",
+   "min": [
+    -0.053043,
+    -0.017543,
+    0.001
+   ],
+   "max": [
+    -0.046457,
+    -0.010957,
+    0.016
+   ]
+  },
+  {
+   "name": "box_25",
+   "min": [
+    -0.056543,
+    -0.004043,
+    0.001
+   ],
+   "max": [
+    -0.049957,
+    0.002543,
+    0.016
+   ]
+  },
+  {
+   "name": "box_26",
+   "min": [
+    -0.056543,
+    0.002957,
+    0.001
+   ],
+   "max": [
+    -0.049957,
+    0.009543,
+    0.016
+   ]
+  },
+  {
+   "name": "box_27",
+   "min": [
+    -0.03935,
+    -0.04325,
+    0.0
+   ],
+   "max": [
+    -0.02905,
+    -0.03425,
+    0.015515
+   ]
+  },
+  {
+   "name": "box_28",
+   "min": [
+    -0.04935,
+    -0.04325,
+    0.0
+   ],
+   "max": [
+    -0.03905,
+    -0.03425,
+    0.015515
+   ]
+  },
+  {
+   "name": "box_29",
+   "min": [
+    0.01105,
+    0.03275,
+    0.0
+   ],
+   "max": [
+    0.02135,
+    0.04175,
+    0.015515
+   ]
+  },
+  {
+   "name": "box_30",
+   "min": [
+    0.00105,
+    0.03275,
+    0.0
+   ],
+   "max": [
+    0.01135,
+    0.04175,
+    0.015515
+   ]
+  },
+  {
+   "name": "box_31",
+   "min": [
+    0.02347,
+    0.023275,
+    0.0
+   ],
+   "max": [
+    0.03563,
+    0.035277,
+    0.0121
+   ]
+  },
+  {
+   "name": "box_32",
+   "min": [
+    0.02442,
+    0.026649,
+    0.0036
+   ],
+   "max": [
+    0.03458,
+    0.04175,
+    0.015515
+   ]
+  },
+  {
+   "name": "box_33",
+   "min": [
+    -0.04853,
+    0.023275,
+    0.0
+   ],
+   "max": [
+    -0.03637,
+    0.035277,
+    0.0121
+   ]
+  },
+  {
+   "name": "box_34",
+   "min": [
+    -0.04758,
+    0.026649,
+    0.0036
+   ],
+   "max": [
+    -0.03742,
+    0.04175,
+    0.015515
+   ]
+  },
+  {
+   "name": "box_35",
+   "min": [
+    -0.03408,
+    0.026649,
+    0.0036
+   ],
+   "max": [
+    -0.02392,
+    0.04175,
+    0.015515
+   ]
+  },
+  {
+   "name": "box_36",
+   "min": [
+    -0.03503,
+    0.023275,
+    0.0
+   ],
+   "max": [
+    -0.02287,
+    0.035277,
+    0.0121
+   ]
+  }
+ ]
+}
