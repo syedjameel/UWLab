@@ -35,6 +35,19 @@ parser.add_argument(
 parser.add_argument(
     "--num_reset_states", type=int, default=100, help="Number of reset states to record. Set to 0 for infinite."
 )
+parser.add_argument(
+    "--allow_overlap",
+    action="store_true",
+    help="Box-assembly pairs only: allow context objects to overlap/pile (hard scenario, spawn rule 1c). "
+    "Default off enforces no-contact spawning.",
+)
+parser.add_argument(
+    "--min_separation",
+    type=float,
+    default=0.05,
+    help="Box-assembly pairs only: min spawn separation when no-overlap (the parts are 3-15 cm; larger "
+    "values crowd the free context objects out of the work zone and they get ejected to the floor).",
+)
 
 AppLauncher.add_app_launcher_args(parser)
 args_cli, remaining_args = parser.parse_known_args()
@@ -77,6 +90,30 @@ def main(env_cfg, agent_cfg) -> None:
 
     # make sure environment is non-deterministic for diverse pose discovery
     env_cfg.seed = None
+
+    # Box-assembly pairs: spawn all 4 entities (box/object/cover/target) per scene, place the
+    # preceding-stage goals, and scatter the rest (no-contact unless --allow_overlap). The recorded
+    # scene state then carries ctx_object/ctx_target, which the CoverCloseRim training cfg restores
+    # via MultiResetManager. Non-box pairs (pcb/openbox etc.) are left untouched.
+    from uwlab_tasks.manager_based.manipulation.omnireset.mdp.box_assembly import semantic_of_usd
+
+    if (
+        semantic_of_usd(env_cfg.scene.insertive_object.spawn.usd_path) is not None
+        and semantic_of_usd(env_cfg.scene.receptive_object.spawn.usd_path) is not None
+    ):
+        from uwlab_tasks.manager_based.manipulation.omnireset.config.ur5e_robotiq_2f85.box_assembly_aug import (
+            augment_box_assembly,
+        )
+
+        # PartiallyAssembled places the insertive intentionally at the goal (touching the receptive),
+        # so it is exempt from the insertive no-contact gate.
+        augment_box_assembly(
+            env_cfg,
+            allow_overlap=args_cli.allow_overlap,
+            min_separation=args_cli.min_separation,
+            gate_insertive="PartiallyAssembled" not in args_cli.task,
+            reset_type=args_cli.task,
+        )
 
     # Derive pair directory and reset type for output path
     insertive_usd_path = env_cfg.scene.insertive_object.spawn.usd_path
