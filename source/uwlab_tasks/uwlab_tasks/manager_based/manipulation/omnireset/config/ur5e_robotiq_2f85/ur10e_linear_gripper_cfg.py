@@ -118,6 +118,20 @@ class Ur10eLinearGripperSysidEnvCfg(SysidEnvCfg):
 # ---------------------------------------------------------------------------------------
 # Reset states (full UR10e + linear gripper)
 # ---------------------------------------------------------------------------------------
+# Empty-jaw rejection for the *EEGrasped* reset types. The linear gripper's driver joint runs
+# 0 (open, 137 mm aperture) to 0.068 m (shut, 0 mm), and every grasp we sample on the RealBox parts
+# sits at <= 0.034 m (>= 70 mm aperture), so a settled joint past this value means the pads met each
+# other and the object was ejected. check_reset_state_success otherwise passes those states: it
+# checks stability, deviation and collision-freedom, none of which notice an empty gripper. Left
+# unset, 68% of the Bottom__CapRim grasped states held nothing at all.
+_LINEAR_GRIPPER_EMPTY_JAW_JOINT = 0.050
+
+
+def _require_held_object(cfg) -> None:
+    cfg.terminations.success.params["gripper_close_joint_name"] = "finger_joint"
+    cfg.terminations.success.params["gripper_close_joint_max"] = _LINEAR_GRIPPER_EMPTY_JAW_JOINT
+
+
 @configclass
 class Ur10eLinearGripperObjectAnywhereEEAnywhereResetStatesCfg(ObjectAnywhereEEAnywhereResetStatesCfg):
     def __post_init__(self):
@@ -134,6 +148,7 @@ class Ur10eLinearGripperObjectRestingEEGraspedResetStatesCfg(ObjectRestingEEGras
         _apply_linear_gripper(
             self, ur10e_linear_gripper.IMPLICIT_UR10E_LINEAR_GRIPPER, Ur10eLinearGripperRelativeOSCAction()
         )
+        _require_held_object(self)
 
 
 @configclass
@@ -143,6 +158,7 @@ class Ur10eLinearGripperObjectAnywhereEEGraspedResetStatesCfg(ObjectAnywhereEEGr
         _apply_linear_gripper(
             self, ur10e_linear_gripper.IMPLICIT_UR10E_LINEAR_GRIPPER, Ur10eLinearGripperRelativeOSCAction()
         )
+        _require_held_object(self)
 
 
 @configclass
@@ -165,6 +181,7 @@ class Ur10eLinearGripperObjectPartiallyAssembledEEGraspedResetStatesCfg(
         _apply_linear_gripper(
             self, ur10e_linear_gripper.IMPLICIT_UR10E_LINEAR_GRIPPER, Ur10eLinearGripperRelativeOSCAction()
         )
+        _require_held_object(self)
 
 
 # ---------------------------------------------------------------------------------------

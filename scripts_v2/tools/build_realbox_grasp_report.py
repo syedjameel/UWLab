@@ -61,8 +61,33 @@ def load_viewer_data(dataset_dir: str) -> dict:
     return out
 
 
-def reset_stats(ur10e_ds: str) -> list[dict]:
+# Pair directories are named from the two USD folders sorted alphabetically, so the name alone
+# does not say which side is the insertive (grasped) object. The three stages are fixed:
+PAIR_INSERTIVE = {"Bottom__TableCenterTarget": "Bottom", "Bottom__Mid": "Mid", "Bottom__CapRim": "CapRim"}
+FINGER_COLS = (6, 7)  # pan, lift, elbow, wrist1-3, finger, right_finger
+GRIP_SLACK = 0.006  # m of aperture either side of the recorded grasp range still counts as a hold
+
+
+def grasp_aperture_range(dataset_dir: str, obj: str) -> tuple[float, float]:
+    d = torch.load(os.path.join(dataset_dir, "Grasps", obj, "grasps.pt"), weights_only=False, map_location="cpu")
+    j = d.get("grasp_relative_pose", d)["gripper_joint_positions"]
+    q = [torch.stack([t.flatten().cpu() for t in v]).numpy().ravel() for v in j.values()]
+    ap = MAX_APERTURE - q[0] - q[1]
+    return float(ap.min()), float(ap.max())
+
+
+def reset_stats(ur10e_ds: str, dataset_dir: str) -> list[dict]:
+    """Per-dataset counts, spawn diversity, and — for the EEGrasped types — how many states
+    actually hold the object.
+
+    The jaw aperture recorded in a reset state must land near one of the apertures in that
+    object's grasp dataset. A state that settled fully closed clamped nothing (the object was
+    ejected); one that settled fully open was never commanded shut. Both record as successes,
+    because the reset-state success gate only checks object stability and collision-freedom, so
+    without this column a broken dataset is indistinguishable from a good one.
+    """
     rows = []
+    windows: dict[str, tuple[float, float]] = {}
     for f in sorted(glob.glob(os.path.join(ur10e_ds, "Resets", "*", "resets_*.pt"))):
         pair = os.path.basename(os.path.dirname(f))
         rtype = os.path.basename(f)[len("resets_"):-3]
@@ -70,10 +95,20 @@ def reset_stats(ur10e_ds: str) -> list[dict]:
             d = torch.load(f, weights_only=False, map_location="cpu")
             ins = d["initial_state"]["rigid_object"]["insertive_object"]["root_pose"]
             z = torch.stack([t.flatten().cpu() for t in ins])[:, 2]
-            rows.append({"pair": pair, "type": rtype, "n": len(ins),
+            grip = ""
+            obj = PAIR_INSERTIVE.get(pair)
+            if "EEGrasped" in rtype and obj:
+                if obj not in windows:
+                    windows[obj] = grasp_aperture_range(dataset_dir, obj)
+                lo, hi = windows[obj]
+                jp = torch.stack([t.flatten().cpu() for t in d["initial_state"]["articulation"]["robot"]["joint_position"]])
+                ap = (MAX_APERTURE - jp[:, FINGER_COLS[0]] - jp[:, FINGER_COLS[1]]).numpy()
+                held = ((ap >= lo - GRIP_SLACK) & (ap <= hi + GRIP_SLACK)).mean()
+                grip = f"{100 * held:.1f}%"
+            rows.append({"pair": pair, "type": rtype, "n": len(ins), "grip": grip,
                          "z_std": round(float(z.std()), 4), "size_mb": round(os.path.getsize(f) / 1e6, 1)})
         except Exception as e:  # noqa: BLE001
-            rows.append({"pair": pair, "type": rtype, "n": -1, "z_std": float("nan"), "size_mb": 0.0,
+            rows.append({"pair": pair, "type": rtype, "n": -1, "grip": "", "z_std": float("nan"), "size_mb": 0.0,
                          "err": str(e)[:60]})
     return rows
 
@@ -88,7 +123,7 @@ def main() -> None:
     args = ap.parse_args()
 
     data = load_viewer_data(args.dataset_dir)
-    resets = reset_stats(args.ur10e_ds)
+    resets = reset_stats(args.ur10e_ds, args.dataset_dir)
 
     montages = {}
     held = {}
@@ -109,6 +144,7 @@ def main() -> None:
     )
     reset_rows = "".join(
         f'<tr><td>{r["pair"]}</td><td>{r["type"]}</td><td class="num">{r["n"]}</td>'
+        f'<td class="num">{r["grip"] or "&mdash;"}</td>'
         f'<td class="num">{r["z_std"]}</td><td class="num">{r["size_mb"]}</td></tr>'
         for r in resets
     )
@@ -233,9 +269,14 @@ a{color:var(--accent)}
   <h2>Downstream datasets these grasps feed</h2>
   <p>Reset states recorded per stage pair into the UR10e dataset tree (4-entity scenes: box, object,
   cover, target). <span style="font-family:var(--mono)">z_std</span> is the insertive object's spawn
-  height spread — the diversity signal that made the original recipe trainable.</p>
+  height spread — the diversity signal that made the original recipe trainable.
+  <span style="font-family:var(--mono)">holding</span> is the share of an
+  <span style="font-family:var(--mono)">EEGrasped</span> dataset whose recorded jaw aperture matches
+  one this object was actually sampled at: the reset-state success gate checks only stability and
+  collision-freedom, so a state that settled fully closed (object ejected) or fully open (jaws never
+  commanded shut) is banked as a success and is invisible in the state count alone.</p>
   <table>
-    <thead><tr><th>pair</th><th>reset type</th><th class="num">states</th><th class="num">insertive z-std [m]</th><th class="num">MB</th></tr></thead>
+    <thead><tr><th>pair</th><th>reset type</th><th class="num">states</th><th class="num">holding</th><th class="num">insertive z-std [m]</th><th class="num">MB</th></tr></thead>
     <tbody><!--__RESET_ROWS__--></tbody>
   </table>
 </section>
