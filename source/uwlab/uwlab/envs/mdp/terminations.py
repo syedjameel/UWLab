@@ -33,5 +33,13 @@ def invalid_state(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg) -> torch.Te
 
 
 def abnormal_robot_state(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
+    # Restrict the |vel| > 2x limit check to ``asset_cfg.joint_ids`` (default slice(None) = all
+    # joints, so existing callers are unchanged). This lets a caller exclude joints whose velocity
+    # limit is deliberately clamped low (e.g. a real-jaw speed cap), where 2x the clamp is grazed
+    # by benign drive/noise overshoot and would fire a spurious termination -- the check is meant
+    # to catch runaway ARM dynamics, not a force-/speed-limited gripper.
     robot: Articulation = env.scene[asset_cfg.name]
-    return (robot.data.joint_vel.abs() > (robot.data.joint_vel_limits * 2)).any(dim=1)
+    joint_ids = asset_cfg.joint_ids
+    return (
+        robot.data.joint_vel[:, joint_ids].abs() > (robot.data.joint_vel_limits[:, joint_ids] * 2)
+    ).any(dim=1)

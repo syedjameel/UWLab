@@ -476,6 +476,16 @@ untested on hardware until deployment)**:
   through `real_env`. Real jaw travel measured **~1 s** — now MODELED in sim: the finetune/RGB
   envs cap the jaw `velocity_limit_sim` at 0.068 m/s (`REAL_GRIPPER_JAW_SPEED`, 2026-07-13), so
   the expert learns the real grasp-wait timing (§10 gaps closed).
+  - **Paired deviation (2026-07-26): the abnormal_robot check is restricted to the ARM joints in
+    the finetune train/eval envs** (`_exclude_gripper_from_abnormal`, ur10e_linear_gripper_cfg.py;
+    core `abnormal_robot_state` now honours `asset_cfg.joint_ids`, default all → no change for
+    other callers). Why forced: the 0.068 m/s cap lowers the finger `joint_vel_limit`, so the
+    authors' `|vel| > 2×limit` rule fires at 2×0.068 = 0.136 m/s — grazed by benign PPO-noise jaw
+    overshoot. On the jig this hit ~9% of episodes (worst on the long-horizon reach task),
+    freezing the ADR curriculum at `scale_progress=0` (mean success ~0.85 < the 0.95 gate).
+    Excluding the fingers keeps the arm-runaway safeguard and is a no-op for Stage-1 (uncapped
+    jaw) and for stable grips (cube/PCB fingers stayed < 0.136). Verified: under σ=3.96 training
+    noise, fingers still overshoot but abnormal terminations = 0.
 - D405 serials set in `eval_real_robot`/`demo_real_robot` + `camera_configs=None` (D405
   rejects the 415/435/455 advanced-mode presets; verified `None` flows through cleanly).
 - **90° rig-orientation fix (§10.2a, commit 0961090)**: `real_to_sim_joints` (`q1 − 90°`)

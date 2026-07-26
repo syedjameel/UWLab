@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import uwlab_assets.robots.ur10e_linear_gripper as ur10e_linear_gripper
 
+from isaaclab.managers import SceneEntityCfg
 from isaaclab.utils import configclass
 
 from .actions import (
@@ -169,6 +170,25 @@ def _apply_real_gripper_speed(cfg) -> None:
     )
 
 
+def _exclude_gripper_from_abnormal(cfg) -> None:
+    """Restrict the authors' abnormal_robot check (|joint_vel| > 2x limit) to the ARM joints.
+
+    Must be paired with _apply_real_gripper_speed: that cap lowers the finger joint velocity
+    limit to REAL_GRIPPER_JAW_SPEED (0.068 m/s), so 2x that (0.136) is grazed by benign,
+    noise-driven jaw overshoot during PPO exploration -- worst on large/awkward parts (measured:
+    jig fingers hit ~0.135 at training noise, ~9% of episodes terminated on the -100 abnormal
+    penalty, concentrated in the long-horizon reach task, which froze the ADR curriculum below
+    its 0.95 gate). The check exists to catch RUNAWAY ARM dynamics; the jaw is force- and
+    speed-limited and cannot run away, so excluding it removes the false positive without
+    weakening the real safeguard. No-op for uncapped-gripper envs (Stage-1) and for stable grips
+    (cube/PCB fingers stayed well under 0.136), so this changes nothing already validated."""
+    arm = SceneEntityCfg("robot", joint_names=["shoulder.*", "elbow.*", "wrist.*"])
+    if getattr(cfg, "rewards", None) is not None and getattr(cfg.rewards, "abnormal_robot", None) is not None:
+        cfg.rewards.abnormal_robot.params = {"asset_cfg": arm}
+    if getattr(cfg, "terminations", None) is not None and getattr(cfg.terminations, "abnormal_robot", None) is not None:
+        cfg.terminations.abnormal_robot.params = {"asset_cfg": arm}
+
+
 @configclass
 class Ur10eLinearGripperRelCartesianOSCFinetuneCfg(Ur5eRobotiq2f85RelCartesianOSCFinetuneCfg):
     """Stage 2 finetune: explicit actuator + curriculum (base sets EXPLICIT 2F-85; we override last).
@@ -184,6 +204,7 @@ class Ur10eLinearGripperRelCartesianOSCFinetuneCfg(Ur5eRobotiq2f85RelCartesianOS
             self, ur10e_linear_gripper.EXPLICIT_UR10E_LINEAR_GRIPPER, Ur10eLinearGripperRelativeOSCAction()
         )
         _apply_real_gripper_speed(self)
+        _exclude_gripper_from_abnormal(self)
         # Motor delay: the CMA-ES "identified delay=4" was never actually simulated (the
         # scripts reset AFTER applying it, re-randomizing the buffers; fixed 2026-07-06).
         # Re-measured by sweeping delay 0..8 over the frozen 24-param fit: RMSE rises
@@ -231,6 +252,7 @@ class Ur10eLinearGripperRelCartesianOSCFinetuneEvalCfg(Ur5eRobotiq2f85RelCartesi
             self, ur10e_linear_gripper.EXPLICIT_UR10E_LINEAR_GRIPPER, Ur10eLinearGripperRelativeOSCEvalAction()
         )
         _apply_real_gripper_speed(self)
+        _exclude_gripper_from_abnormal(self)
         # Eval at the MEASURED residual motor delay: the delay sweep over the frozen
         # sysid fit (2026-07-06) is monotonically best at 0 steps @ 500 Hz (< 2 ms), so
         # paired with the metadata sysid params the real arm is delay 0 at this env's
