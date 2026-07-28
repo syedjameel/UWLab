@@ -422,4 +422,49 @@ Compliant OSC with a **bounded task-space error clamp (0.05 m / 0.3 rad)** → a
 | RGB collect | `...-RelCartesianOSC-RGB-DataCollection-v0` |
 | RGB play / student eval | `...-RelCartesianOSC-RGB-Play-v0` |
 
+## Appendix J — Jig-onto-Enclosure task deltas (branch `omnireset/jig-enclosure`)
+
+Same pipeline as pcb/openbox, with these substitutions/additions. The jig is a HARDER task
+(large 164×129×24 mm frame, slow-jaw grasp-from-open, precise yaw-gated seat onto corner
+pillars), built with hand-verified **box colliders for BOTH parts** (SDF flings the arm;
+convex decomp floats the seat).
+
+**Shell vars (use in place of the pcb/openbox ones):**
+```bash
+OBJ="env.scene.insertive_object=jig env.scene.receptive_object=bottomenclosure"
+DD=./Datasets_jig/OmniReset
+# BIGBUF: box colliders scale PhysX's preallocated contact/pair/patch tables with env count.
+# Needed for reset recording (>=16384 envs) and the 4096-env finetune. NOT needed at 32 envs (RGB).
+BIGBUF="env.sim.physx.gpu_found_lost_pairs_capacity=8388608 \
+  env.sim.physx.gpu_max_rigid_contact_count=33554432 \
+  env.sim.physx.gpu_max_rigid_patch_count=8388608 \
+  env.sim.physx.gpu_collision_stack_size=2147483648"
+```
+
+- **J1. Reset recording (§5):** add `$BIGBUF` to each C1–C4 command; use `$DD`. After C1, run
+  the launch filter: `filter_reset_states.py --in-place --require-upright 20 --obj-x-min 0.34`.
+  Do NOT `--min-grip` C4 (open near-goal states are paper-intended here). Success is yaw-gated
+  via BottomEnclosure metadata (`success_thresholds.yaw`), a no-op for other objects.
+- **J2. Stage-2 finetune (§6b):** add `$BIGBUF` **and** `agent.algorithm.entropy_coef=0.001`.
+  WHY: at the default 0.006 the harder jig task triggers a gSDE entropy/exploration **runaway**
+  (noise_std → 12, `scale_progress` collapses to 0); 0.001 fixes it (validated: noise falls,
+  scale ramps smoothly, success ~0.96). If recovering a collapsed run, resume the pre-collapse
+  checkpoint (model_2000-class), not a fresh Stage-1. Fallback if it recurs: `--num_envs 2048`.
+  **[PENDING: bake `entropy_coef=0.001` into the finetune agent cfg once a run rides
+  `scale_progress`→1.0.]** The gripper is auto-excluded from the `abnormal_robot` check in the
+  finetune (commit 46d6e23, no command change): the 0.068 m/s jaw cap otherwise made the
+  2×-limit rule fire on benign jaw overshoot, terminating ~9% of episodes.
+- **J3. Play/eval + export (§6c/§8b):** add `$BIGBUF` + `env.events.reset_from_reset_states.params.dataset_dir=$DD`.
+  Trap A.4 (pillared-table obs dims for the critic) still applies to the export.
+- **J4. RGB collection (§8):** the RGB cfg hardcodes `Datasets_ur10e` — **override it**: add
+  `env.events.reset_from_reset_states.params.dataset_dir=$DD` to `collect_demos` and the export.
+  Output to `datasets/ur10e_jig/`. No BIGBUF (32 envs). Runs on the **RTX box only** (Trap A.1).
+- **J5. Data volume:** 80k is the pcb/openbox baseline (→ >90% real). The jig is harder AND only
+  successful demos are saved (expert task_0/grasp ~0.90 vs others ~0.98 → C1 slightly
+  under-represented). Record 80k → distill → eval the student in sim (§10); **top up via
+  `rgb1.zarr`** (datasets merge) if the student's grasp underperforms. Front-load hedge = 100–120k.
+- **J6. Assets/cameras:** jig + bottom_enclosure USDs are committed (box colliders; colours jig
+  goblin-green / enclosure black). Camera calibration is rig-specific → **skip §7** (already done
+  for the deployed 4090 rig) unless the rig changed.
+
 **Commit conventions:** no Claude co-author; push only to the forks (`syedjameel/UWLab`, `syedjameel/diffusion_policy`), never upstream.
