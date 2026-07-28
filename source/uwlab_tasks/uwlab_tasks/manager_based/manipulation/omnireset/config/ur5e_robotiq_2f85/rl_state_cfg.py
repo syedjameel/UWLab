@@ -620,7 +620,9 @@ class NoCurriculumsCfg:
     pass
 
 
-def make_insertive_object(usd_path: str):
+def make_insertive_object(usd_path: str, override_mass: bool = True):
+    """See the docstring in reset_states_cfg.make_insertive_object -- ``override_mass=False``
+    is required for assets carrying a MassAPI on a CHILD prim (jigv2's interior blocker)."""
     return RigidObjectCfg(
         prim_path="{ENV_REGEX_NS}/InsertiveObject",
         spawn=sim_utils.UsdFileCfg(
@@ -632,7 +634,7 @@ def make_insertive_object(usd_path: str):
                 disable_gravity=False,
                 kinematic_enabled=False,
             ),
-            mass_props=sim_utils.MassPropertiesCfg(mass=0.001),
+            mass_props=sim_utils.MassPropertiesCfg(mass=0.001) if override_mass else None,
         ),
         init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, 0.0), rot=(1.0, 0.0, 0.0, 0.0)),
     )
@@ -670,6 +672,12 @@ variants = {
         "pcb": make_insertive_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/Pcb/pcb.usd"),
         # Local dev asset (alignment jig, 164x129x24 mm frame; new jig-onto-enclosure task).
         "jig": make_insertive_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/Jig/jig.usd"),
+        # V2 jig: same geometry + a MASSLESS INTERIOR BLOCKER collider forbidding the one-sided
+        # rim pinch, so task_0 must learn the two-sided straddle. Sim-only training scaffold;
+        # pairs with the SAME bottomenclosure. override_mass=False -- see make_insertive_object.
+        "jigv2": make_insertive_object(
+            f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/JigV2/jig_v2.usd", override_mass=False
+        ),
         # Local dev asset (telescoping cover/lid). Switch to UWLAB_CLOUD_ASSETS_DIR when sharing.
         "cover": make_insertive_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/Cover/cover.usd"),
     },

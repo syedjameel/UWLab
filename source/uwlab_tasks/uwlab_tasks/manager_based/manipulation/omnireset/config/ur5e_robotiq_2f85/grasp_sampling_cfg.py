@@ -149,7 +149,9 @@ class GraspSamplingRewardsCfg:
     pass
 
 
-def make_object(usd_path: str):
+def make_object(usd_path: str, override_mass: bool = True):
+    """See the docstring in reset_states_cfg.make_insertive_object -- ``override_mass=False``
+    is required for assets carrying a MassAPI on a CHILD prim (jigv2's interior blocker)."""
     return RigidObjectCfg(
         prim_path="{ENV_REGEX_NS}/InsertiveObject",
         spawn=sim_utils.UsdFileCfg(
@@ -161,7 +163,7 @@ def make_object(usd_path: str):
                 disable_gravity=False,
                 kinematic_enabled=False,
             ),
-            mass_props=sim_utils.MassPropertiesCfg(mass=0.001),
+            mass_props=sim_utils.MassPropertiesCfg(mass=0.001) if override_mass else None,
         ),
         init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, 1.0), rot=(1.0, 0.0, 0.0, 0.0)),
     )
@@ -181,6 +183,10 @@ variants = {
         "pcb": make_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/Pcb/pcb.usd"),
         # Local dev asset (alignment jig, 164x129x24 mm frame; gripped across the 129 mm side).
         "jig": make_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/Jig/jig.usd"),
+        # V2 jig (interior blocker). The sampler reads the VISUAL mesh, which is identical to
+        # v1's, so candidates match v1; the blocker only affects the physics VALIDATION of each
+        # candidate. override_mass=False -- see make_object.
+        "jigv2": make_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/JigV2/jig_v2.usd", override_mass=False),
         # Local dev asset (telescoping cover/lid). Switch to UWLAB_CLOUD_ASSETS_DIR when sharing.
         "cover": make_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/Cover/cover.usd"),
     }

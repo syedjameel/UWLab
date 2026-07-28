@@ -503,7 +503,19 @@ class ResetStatesRewardsCfg:
     pass
 
 
-def make_insertive_object(usd_path: str):
+def make_insertive_object(usd_path: str, override_mass: bool = True):
+    """Build the insertive-object spawn cfg.
+
+    ``override_mass=False`` omits ``mass_props`` entirely. Needed by assets that author a
+    ``MassAPI`` on any CHILD prim (jigv2's massless interior blocker): ``modify_mass_properties``
+    is ``apply_nested``, so it walks every nested prim and writes ``mass=0.001`` onto each one
+    that carries the API -- and an explicit mass overrides the near-zero density, silently
+    adding 1 g per such prim (measured: jigv2 came out +2 g / +1.6% vs v1). For assets whose
+    root has no MassAPI -- every current one, including the jig -- ``mass_props`` never applied
+    anyway (it logs "Could not perform 'modify_mass_properties'"), so omitting it changes
+    nothing about their dynamics and keeps PhysX's auto-computed mass, which is what the
+    reference assets rely on (see omnireset_asset_utils.create_stage).
+    """
     return RigidObjectCfg(
         prim_path="{ENV_REGEX_NS}/InsertiveObject",
         spawn=sim_utils.UsdFileCfg(
@@ -515,7 +527,7 @@ def make_insertive_object(usd_path: str):
                 disable_gravity=False,
                 kinematic_enabled=False,
             ),
-            mass_props=sim_utils.MassPropertiesCfg(mass=0.001),
+            mass_props=sim_utils.MassPropertiesCfg(mass=0.001) if override_mass else None,
         ),
         init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, 0.0), rot=(1.0, 0.0, 0.0, 0.0)),
     )
@@ -553,6 +565,18 @@ variants = {
         "pcb": make_insertive_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/Pcb/pcb.usd"),
         # Local dev asset (alignment jig, 164x129x24 mm frame; new jig-onto-enclosure task).
         "jig": make_insertive_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/Jig/jig.usd"),
+        # V2 of the jig: identical visuals/geometry plus a MASSLESS INTERIOR BLOCKER collider
+        # that forbids the one-sided rim pinch task_0 learned in v1 (a jaw reaching into the
+        # open middle), forcing the two-sided straddle the grasp sampler already produces.
+        # Sim-only training scaffold -- the real jig's middle is open, and the straddle grips
+        # the outer walls only, so the motion transfers. Pairs with the SAME bottomenclosure.
+        # Built by: build_jig_enclosure_usds.py --v2-jig
+        # override_mass=False: the blocker prims carry a MassAPI (for their ~0 density) and
+        # would otherwise each be handed mass=0.001 by the nested spawn override. See
+        # make_insertive_object.
+        "jigv2": make_insertive_object(
+            f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/JigV2/jig_v2.usd", override_mass=False
+        ),
         # Local dev asset (telescoping cover/lid). Switch to UWLAB_CLOUD_ASSETS_DIR when sharing.
         "cover": make_insertive_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/Cover/cover.usd"),
     },

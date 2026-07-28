@@ -163,6 +163,67 @@ for sx in (+1, -1):  # end walls with two-stage pillar sockets at +-32 and post-
         _JIG_BOXES_MM.append((sx * 80.25, sy * 32.0, (24 + 10.5) / 2, 1.75, _POCKET, (24 - 10.5) / 2))
 
 
+# ---------------------------------------------------------------------------------------
+# V2 ONLY -- INTERIOR BLOCKER (training scaffold, not part of the real jig).
+#
+# Why: v1's task_0 (reach + grasp from scratch) learned a ONE-SIDED RIM PINCH -- one jaw
+# descends INTO the open middle of the frame and squeezes a single ~13 mm long wall against
+# the outer jaw. It succeeds (~0.91) but is less stable than the two-sided STRADDLE the grasp
+# sampler produces (~0.98), and because deployment always starts jig-on-mat/gripper-open (the
+# C1 scenario), task_0's grasp is the one that ships AND the one the RGB student imitates.
+# Filling the interior makes the one-sided pinch PHYSICALLY IMPOSSIBLE from iteration 1,
+# which is more reliable than reward-shaping (RL is already in the one-sided basin).
+#
+# Sim2real: the straddle grips the OUTER walls only, so the same motion works on the real
+# (open-middle) jig. This collider is a SIM TRAINING SCAFFOLD; its absence at deploy is fine.
+#
+# Geometry (measured from jig.stl by containment cross-sections, jig frame, origin at bbox
+# center, z -12..+12): the interior void is TIERED, matching the tiered walls --
+#   z -12..-2.5 (lower, 9.5 mm): x +-70.5, y +-50.5
+#   z -2.5..+12 (upper, 14.5 mm): x +-72.5, y +-52.5
+# The UPPER tier mirrors the void exactly: it is flush with the upper inner wall faces and
+# therefore caps the ENTIRE interior mouth -- anything descending from above is stopped by
+# it regardless of what sits below. The LOWER tier is deliberately INSET to x +-68 / y +-48
+# (it only has to plug the remaining volume, not block an approach) which buys seat
+# clearance cheaply; the 2.65/2.75 mm slot this opens against the lower inner walls is
+# unusable because the jaw pad is 28 mm thick along the closing axis (measured from
+# tip.stl + the URDF joint frames). Neither tier protrudes past the outer walls.
+#
+# Seat clearance (jig bottom sits 17.6 mm above the enclosure bottom when seated; measured
+# box-vs-box, 0 hard overlaps): the corner PILLARS (x +-76, top 22.55) clear the lower tier
+# by 4.4 mm in x; the POST TOWERS (x 69..73.5, y 51.5..56, top 21.6) clear it by 3.5 mm in
+# y; the long-wall RIDGES (y 48.5..50.5, top 13.6) fall outside the lower-tier footprint
+# entirely and 4.0 mm below its underside. The upper tier starts 5.5 mm above the tallest
+# enclosure feature. Verified with visualize_perfect_mate.py -- re-verify after any change.
+#
+# MASS: the blocker is 283% of the jig's existing collider volume, and the jig authors NO
+# MassAPI on its root (PhysX auto-computes mass from collider volume -- see
+# omnireset_asset_utils.create_stage). Left as-is it would ~4x the jig mass and silently
+# change every contact/dynamics result. Each blocker box therefore carries its OWN MassAPI
+# with a near-zero density so it contributes no mass or inertia. Density is 1e-9 and NOT 0
+# because UsdPhysics treats a density of 0 as "unauthored" (ignored -> falls back to the
+# default), which would reintroduce the full mass. MassAPI is applied to the CHILD collider
+# prims only, never the root, so the root stays MassAPI-free and the spawn config's
+# mass=0.001 keeps harmlessly failing to apply exactly as it does for v1.
+# Format matches _JIG_BOXES_MM: (cx, cy, cz, hx, hy, hz) in mm, z from the jig bottom.
+_JIG_INTERIOR_BOXES_MM = [
+    (0.0, 0.0, 9.5 / 2, 68.0, 48.0, 9.5 / 2),                    # lower tier z 0..9.5 (inset)
+    (0.0, 0.0, (24 + 9.5) / 2, 72.5, 52.5, (24 - 9.5) / 2),      # upper tier z 9.5..24 (flush)
+]
+_INTERIOR_DENSITY = 1e-9  # kg/m^3; non-zero so UsdPhysics honours it, small enough to vanish
+
+
+def _add_interior_blocker(stage, root_name, material_path, bottom_mm):
+    """Author the v2 interior blocker as massless colliders under ``collisions``."""
+    for i, (cx, cy, cz, hx, hy, hz) in enumerate(_JIG_INTERIOR_BOXES_MM):
+        mesh = add_box(stage, f"/{root_name}/collisions/interior_{i:02d}",
+                       center=(cx / 1000.0, cy / 1000.0, (cz - bottom_mm) / 1000.0),
+                       half_extents=(hx / 1000.0, hy / 1000.0, hz / 1000.0),
+                       collision=True, material_path=material_path)
+        mass_api = UsdPhysics.MassAPI.Apply(mesh.GetPrim())
+        mass_api.CreateDensityAttr(_INTERIOR_DENSITY)
+
+
 # HAND-BUILT enclosure collider. The exact-trimesh enclosure explodes the PhysX GPU
 # collision stack (35 jig boxes x 8878 triangles x thousands of in-contact envs: >2.3 GB
 # demand at 4096-env C4 resets -- above the int32 setting ceiling; training would drop
@@ -197,7 +258,7 @@ def _add_hand_box_collider(stage, root_name, material_path):
 
 
 def build(stl_path, usd_path, root_name, *, y_up=False, color, metadata_extra=None,
-          mate="bottom", approximation="convexDecomposition"):
+          mate="bottom", approximation="convexDecomposition", interior_blocker=False):
     mesh = trimesh.load(stl_path, force="mesh")
     mesh.apply_scale(0.001)  # mm -> m
     if y_up:  # rotate STL Y-up -> Z-up (+90 deg about X: y->z)
@@ -212,6 +273,8 @@ def build(stl_path, usd_path, root_name, *, y_up=False, color, metadata_extra=No
     add_trimesh(stage, f"/{root_name}/visuals/mesh", mesh, collision=False, color=color)
     if approximation == "handBoxes":
         _add_hand_box_collider(stage, root_name, mat)
+        if interior_blocker:
+            _add_interior_blocker(stage, root_name, mat, _BOX_TABLES[root_name][1])
     else:
         add_trimesh(stage, f"/{root_name}/collisions/mesh", mesh, collision=True, material_path=mat,
                     approximation=approximation)
@@ -231,6 +294,20 @@ def build(stl_path, usd_path, root_name, *, y_up=False, color, metadata_extra=No
     return mesh
 
 
+def _reveal_colliders(usd_paths):
+    """Debug: make every collision prim visible (red) so colliders can be eyeballed in the GUI."""
+    from pxr import UsdGeom as _UsdGeom
+    for usd in usd_paths:
+        stage = Usd.Stage.Open(usd)
+        for prim in stage.Traverse():
+            if "/collisions/" in str(prim.GetPath()) and prim.IsA(_UsdGeom.Mesh):
+                g = _UsdGeom.Mesh(prim)
+                g.CreateVisibilityAttr("inherited")
+                g.CreateDisplayColorAttr(Vt.Vec3fArray([Gf.Vec3f(0.9, 0.1, 0.1)]))
+        stage.GetRootLayer().Save()
+    print("  [show-colliders] collision prims made VISIBLE (red) -- debug build, do not commit")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Build jig + bottom-enclosure USDs from STLs.")
     parser.add_argument("--enclosure-seat-z", type=float, default=0.0063,
@@ -247,7 +324,23 @@ def main() -> None:
                         help="Debug build: make the collision prims VISIBLE (tinted red) so the "
                              "collider can be inspected in the GUI. Re-run WITHOUT this flag for "
                              "the final assets.")
+    parser.add_argument("--v2-jig", action="store_true",
+                        help="Build ONLY the v2 jig (JigV2/jig_v2.usd) -- same geometry as v1 plus "
+                             "the massless INTERIOR BLOCKER that forbids the one-sided rim pinch. "
+                             "Leaves Jig/jig.usd and the enclosure untouched (v1 keeps training / "
+                             "collecting against them); the v2 task pairs jigv2 with the SAME "
+                             "bottomenclosure. See _JIG_INTERIOR_BOXES_MM.")
     args = parser.parse_args()
+
+    if args.v2_jig:
+        build(
+            f"{_LOCAL}/Jig/jig.stl", f"{_LOCAL}/JigV2/jig_v2.usd", "Jig",
+            y_up=False, color=(0.10, 0.35, 0.13), mate="bottom",
+            approximation="handBoxes", interior_blocker=True,
+        )
+        if args.show_colliders:
+            _reveal_colliders([f"{_LOCAL}/JigV2/jig_v2.usd"])
+        return
 
     build(
         f"{_LOCAL}/Jig/jig.stl", f"{_LOCAL}/Jig/jig.usd", "Jig",
@@ -275,16 +368,7 @@ def main() -> None:
     print(f"  enclosure assembled_offset.z (seated mating point) = {meta['assembled_offset']['pos'][2]}")
 
     if args.show_colliders:
-        from pxr import UsdGeom as _UsdGeom
-        for usd in (f"{_LOCAL}/Jig/jig.usd", f"{_LOCAL}/BottomEnclosure/bottom_enclosure.usd"):
-            stage = Usd.Stage.Open(usd)
-            for prim in stage.Traverse():
-                if "/collisions/" in str(prim.GetPath()) and prim.IsA(_UsdGeom.Mesh):
-                    g = _UsdGeom.Mesh(prim)
-                    g.CreateVisibilityAttr("inherited")
-                    g.CreateDisplayColorAttr(Vt.Vec3fArray([Gf.Vec3f(0.9, 0.1, 0.1)]))
-            stage.GetRootLayer().Save()
-        print("  [show-colliders] collision prims made VISIBLE (red) -- debug build, do not commit")
+        _reveal_colliders([f"{_LOCAL}/Jig/jig.usd", f"{_LOCAL}/BottomEnclosure/bottom_enclosure.usd"])
 
 
 if __name__ == "__main__":
