@@ -197,9 +197,27 @@ z 9.5 the jig's own walls are solid all round) but costs, measured:
 * the only part that can foul the enclosure: overlaps the corner pillars at x offsets >=5 mm
   (upper tier alone: 0 overlaps at every offset tested, both axes).
 
-Verified: mass/inertia/COM **bitwise identical** to v1; mate **7/7**; and the v2 near-miss
-artefact is largely gone -- the out-of-capture `+12 mm x` config now settles at **17.8 mm**
-(v1 16.6, v2 23.2).
+Verified: mass/inertia/COM **bitwise identical** to v1; mate **7/7**.
+
+**Seating fidelity vs v1, measured properly** (`sweep_capture_basin.py`, offsets in the ENCLOSURE
+frame at yaw 0 -- unlike `visualize_perfect_mate`, whose single `+12 mm x` config applies the
+offset in the WORLD frame under a random-but-seeded enclosure yaw, so its number samples one
+arbitrary direction and is NOT a fidelity metric):
+
+| region | v2b - v1 settled height |
+|---|---|
+| within 8 mm radius (the capture basin) | **max 0.00 mm -- exact** |
+| on-axis ring 9-12 mm | 0.00-0.27 mm |
+| extreme diagonal corners (~15-17 mm) | up to 25.7 mm |
+| success map, whole +-12 mm grid | **identical** |
+
+So v2b reproduces v1 EXACTLY wherever seating can succeed. The only divergence is at extreme
+diagonal misalignment, where v1 lets the jig collapse ~25 mm into the shell and v2b holds it up.
+**This cannot be tuned away:** at those offsets the enclosure's pillars pass up into the jig's
+interior -- the very volume the blocker exists to occupy -- so any blocker that stops a jaw
+entering the middle also stops the shell entering it. Raising the blocker's floor above z 9.5
+would open the wall notch (|x|<28, z 9.5-24) to SIDEWAYS jaw entry and reintroduce the one-sided
+pinch. Inherent trade, confined to states 2x outside the capture basin that fail in both.
 
 ## Pre-grasp C1 seeds (`reset_end_effector_pregrasp_seeds`)
 The positive half of the trio, and the intended fix for the discovery failure. Re-places a
