@@ -187,6 +187,8 @@ variants = {
         # v1's, so candidates match v1; the blocker only affects the physics VALIDATION of each
         # candidate. override_mass=False -- see make_object.
         "jigv2": make_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/JigV2/jig_v2.usd", override_mass=False),
+        # V2b: lower tier dropped -- see reset_states_cfg.
+        "jigv2b": make_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/JigV2b/jig_v2b.usd", override_mass=False),
         # Local dev asset (telescoping cover/lid). Switch to UWLAB_CLOUD_ASSETS_DIR when sharing.
         "cover": make_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/Cover/cover.usd"),
     }

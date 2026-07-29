@@ -678,6 +678,12 @@ variants = {
         "jigv2": make_insertive_object(
             f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/JigV2/jig_v2.usd", override_mass=False
         ),
+        # V2b: interior blocker with the LOWER TIER DROPPED (same jaw blocking, no mat
+        # contact patch, no pillar fouling, ~1.5x throughput). Built by:
+        #   build_jig_enclosure_usds.py --v2b-jig
+        "jigv2b": make_insertive_object(
+            f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/JigV2b/jig_v2b.usd", override_mass=False
+        ),
         # Local dev asset (telescoping cover/lid). Switch to UWLAB_CLOUD_ASSETS_DIR when sharing.
         "cover": make_insertive_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/Cover/cover.usd"),
     },

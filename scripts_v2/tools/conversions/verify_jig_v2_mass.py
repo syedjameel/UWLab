@@ -48,7 +48,8 @@ from uwlab_tasks.manager_based.manipulation.omnireset.config.ur5e_robotiq_2f85.r
 
 # Pull the REAL variant configs, so this checks exactly what training spawns (including the
 # jigv2 override_mass=False that keeps the nested spawn override off the blocker prims).
-_CFGS = {tag: variants["scene.insertive_object"][name] for tag, name in (("v1", "jig"), ("v2", "jigv2"))}
+_PAIRS = tuple((t, n) for t, n in (("v1", "jig"), ("v2", os.environ.get("JIG_V2_VARIANT", "jigv2"))))
+_CFGS = {tag: variants["scene.insertive_object"][name] for tag, name in _PAIRS}
 _JIGS = {tag: cfg.spawn.usd_path for tag, cfg in _CFGS.items()}
 
 

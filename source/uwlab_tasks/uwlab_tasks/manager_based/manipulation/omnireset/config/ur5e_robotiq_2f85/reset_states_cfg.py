@@ -268,6 +268,38 @@ class ObjectAnywhereEEAnywhereEventCfg(ResetStatesBaseEventCfg):
         },
     )
 
+    # PRE-GRASP SEEDS (jig v2b). Runs AFTER reset_end_effector_pose and re-places a
+    # Bernoulli(seed_prob) MINORITY of envs at a recorded straddle pose with the jaws OPEN, so
+    # the policy only has to close them. seed_prob=0.0 here => exact no-op for every existing
+    # object/pipeline (and the grasp dataset is not even opened). Enable per-run, e.g.
+    #   env.events.reset_end_effector_pregrasp_seeds.params.seed_prob=0.25
+    # Record the RGB-collection / honest-metric C1 with seed_prob=0.0 -- seeded states do not
+    # reflect the EE-anywhere start distribution that deployment actually sees.
+    reset_end_effector_pregrasp_seeds = EventTerm(
+        func=task_mdp.reset_end_effector_pregrasp_seeds,
+        mode="reset",
+        params={
+            "seed_prob": 0.0,
+            "dataset_dir": f"{UWLAB_CLOUD_ASSETS_DIR}/Datasets/OmniReset",
+            "fixed_asset_cfg": SceneEntityCfg("insertive_object"),
+            "robot_ik_cfg": SceneEntityCfg(
+                "robot", joint_names=["shoulder.*", "elbow.*", "wrist.*"], body_names="robotiq_base_link"
+            ),
+            "gripper_cfg": SceneEntityCfg("robot", joint_names=["finger_joint", ".*right.*", ".*left.*"]),
+            # No pose jitter: the straddle has only ~3.9 mm of clearance per side on the jig, so
+            # jitter at the cm scale lands a jaw INSIDE the body (the same lesson as the C2/C3
+            # pose_range_b tightening). Variety comes from the grasp dataset itself.
+            "pose_range_b": {
+                "x": (0.0, 0.0),
+                "y": (0.0, 0.0),
+                "z": (0.0, 0.0),
+                "roll": (0.0, 0.0),
+                "pitch": (0.0, 0.0),
+                "yaw": (0.0, 0.0),
+            },
+        },
+    )
+
 
 @configclass
 class ObjectRestingEEGraspedEventCfg(ResetStatesBaseEventCfg):
@@ -576,6 +608,12 @@ variants = {
         # make_insertive_object.
         "jigv2": make_insertive_object(
             f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/JigV2/jig_v2.usd", override_mass=False
+        ),
+        # V2b: interior blocker with the LOWER TIER DROPPED (same jaw blocking, no mat
+        # contact patch, no pillar fouling, ~1.5x throughput). Built by:
+        #   build_jig_enclosure_usds.py --v2b-jig
+        "jigv2b": make_insertive_object(
+            f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/JigV2b/jig_v2b.usd", override_mass=False
         ),
         # Local dev asset (telescoping cover/lid). Switch to UWLAB_CLOUD_ASSETS_DIR when sharing.
         "cover": make_insertive_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/Cover/cover.usd"),

@@ -70,11 +70,16 @@ def _apply_linear_gripper(cfg, robot, action) -> None:
     """
     cfg.scene.robot = robot.replace(prim_path="{ENV_REGEX_NS}/Robot")
     cfg.actions = action
-    # EEGrasped reset variants set the gripper joints from the grasp dataset via this event;
-    # the EEAnywhere / RL variants have no such event (getattr -> None, skipped).
-    ev = getattr(cfg.events, "reset_end_effector_pose_from_grasp_dataset", None)
-    if ev is not None:
-        ev.params["gripper_cfg"] = SceneEntityCfg("robot", joint_names=_LINEAR_GRIPPER_JOINTS)
+    # EEGrasped reset variants set the gripper joints from the grasp dataset via this event.
+    # C1 (EEAnywhere) additionally carries reset_end_effector_pregrasp_seeds, which reuses the
+    # same grasp-dataset machinery. BOTH need the 2F-85 joint regex swapped: the 2F-85 pattern
+    # includes ".*left.*", which matches NOTHING on the linear gripper (its joints are
+    # finger_joint + right_finger_joint) and raises "Not all regular expressions are matched"
+    # at term-parse time. Terms absent from a given variant resolve to None and are skipped.
+    for _name in ("reset_end_effector_pose_from_grasp_dataset", "reset_end_effector_pregrasp_seeds"):
+        ev = getattr(cfg.events, _name, None)
+        if ev is not None:
+            ev.params["gripper_cfg"] = SceneEntityCfg("robot", joint_names=_LINEAR_GRIPPER_JOINTS)
     # The 2F-85 gripper-gain DR targets its single actuated joint ("finger_joint"); our
     # dual-drive gripper has TWO driven jaws, and joint names resolve by fullmatch, so
     # right_finger_joint was silently left at the nominal 1500/80 (only the left jaw

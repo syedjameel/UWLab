@@ -162,6 +162,61 @@ If near-miss fidelity turns out to matter, the fix to test is DROPPING the lower
 (the upper tier alone still blocks every approach from above); that needs re-verification of the
 mate + a check of what the upper tier then contacts.
 
+---
+
+# v2 STAGE-1 RESULT + v2b (2026-07-29)
+
+**v2 Stage-1 (`logs/.../2026-07-28_12-33-34`, 16384 envs, entropy_coef 0.006) did not work.**
+The full-scale v2 datasets were fine (C1 11214 filtered / C2 10091 / C3 13102 / C4 10392, 6764
+grasps -- C2 empty grips even improved 8.8% -> 1.2% vs v1).
+
+| | v1 Stage-1 | v2 Stage-1 |
+|---|---|---|
+| task_0 first non-zero | iter ~405 | iter ~1046 |
+| task_0 @1000-1099 | 0.735 | **0.003** |
+| task_0 growth off the same base | 5.6x /100 iters | ~1.7x /100 iters |
+| total_fps | 10807 | 6951 (1.56x slower) |
+
+**Diagnosis: grasp DISCOVERY is the only bottleneck.** Reaching is unaffected
+(`ee_asset_distance` reward identical to v1) and tasks 1-3 reach 0.92/0.94/0.86, so the straddle
+holds once achieved. Aligned by task_0 progress rather than iteration, v2's tasks 1-3 are AHEAD
+of v1's (v2 @task_0=0.003: 0.910/0.925/0.850; v1 @task_0=0.001: 0.621/0.699/0.670) -- they are
+gated by task_0 feeding ~99.5% failures into the shared network, not by any asset defect.
+The blocker removed the shortcut without offering a route to the replacement, which is exactly
+what the plan's §5 trio pairs it with. **Two hypotheses were tested and REFUTED:** a shrunken
+seating capture basin (`sweep_capture_basin.py` gives v1 and v2 the same map, and v1 trains to
+0.97 with it) and "tasks 1-3 plateaued below v1" (they were still climbing; v1 decelerated the
+same way -- task_1 took 161 iterations to go 0.92 -> 0.95).
+
+## v2b -- lower tier dropped (`--v2b-jig`, variant `jigv2b`)
+The lower tier contributes NOTHING to blocking (the upper tier caps the whole mouth; below
+z 9.5 the jig's own walls are solid all round) but costs, measured:
+* **fps 1.56x** -- its bottom face is coplanar with the jig underside, so a resting jig presents a
+  solid ~136x96 mm patch to the mat where v1 had a thin wall rim;
+* **`abnormal_robot` penalty 3.2x** (-0.0013 vs -0.0004);
+* the only part that can foul the enclosure: overlaps the corner pillars at x offsets >=5 mm
+  (upper tier alone: 0 overlaps at every offset tested, both axes).
+
+Verified: mass/inertia/COM **bitwise identical** to v1; mate **7/7**; and the v2 near-miss
+artefact is largely gone -- the out-of-capture `+12 mm x` config now settles at **17.8 mm**
+(v1 16.6, v2 23.2).
+
+## Pre-grasp C1 seeds (`reset_end_effector_pregrasp_seeds`)
+The positive half of the trio, and the intended fix for the discovery failure. Re-places a
+Bernoulli(`seed_prob`) MINORITY of C1 resets at a recorded straddle pose with the jaws OPEN, so
+the policy only has to close them. `seed_prob=0.0` (default) is an exact no-op and does not even
+open the grasp dataset, so every other object/pipeline is untouched. Seeded env ids are published
+on `env.pregrasp_seed_mask`.
+* Enable with `env.events.reset_end_effector_pregrasp_seeds.params.seed_prob=0.25`.
+* **Record the RGB-collection / honest-metric C1 with `seed_prob=0.0`** -- seeded states do not
+  reflect the EE-anywhere start distribution deployment sees, and they inflate task_0.
+* Verified on a 414-state smoke: jaws-shut fraction fell 50.2% -> **37.7%**, exactly the
+  predicted 0.5 x 0.75 = 37.5% for 25% seeding.
+* GOTCHA fixed: the 2F-85 gripper regex includes `.*left.*`, which matches NOTHING on the linear
+  gripper (`finger_joint` + `right_finger_joint`) and raises "Not all regular expressions are
+  matched" at term-parse time. `linear_gripper_cfg._apply_linear_gripper` now patches this term
+  alongside `reset_end_effector_pose_from_grasp_dataset`.
+
 ## Not yet done (next steps, unchanged from §6)
 Re-run grasp sampling -> C2-C4 + partial assemblies into `Datasets_jig_v2` -> pre-grasp C1 seeds
 (~25%, with a flag so RGB collection can exclude them) -> honest EE-anywhere metric ->

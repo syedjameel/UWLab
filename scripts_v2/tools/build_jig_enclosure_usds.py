@@ -206,16 +206,28 @@ for sx in (+1, -1):  # end walls with two-stage pillar sockets at +-32 and post-
 # prims only, never the root, so the root stays MassAPI-free and the spawn config's
 # mass=0.001 keeps harmlessly failing to apply exactly as it does for v1.
 # Format matches _JIG_BOXES_MM: (cx, cy, cz, hx, hy, hz) in mm, z from the jig bottom.
+#
+# v2b (--v2b-jig) DROPS THE LOWER TIER. Measured cost of keeping it, v2 vs v1 Stage-1:
+#   * total_fps 6951 vs 10807 (1.56x slower) -- its bottom face is COPLANAR with the jig's
+#     underside, so a resting jig presents a solid ~136x96 mm contact patch to the mat where
+#     v1 had only a thin wall rim;
+#   * Episode_Reward/abnormal_robot -0.0013 vs -0.0004 (3.2x more penalty);
+#   * it is the only part of the blocker that can foul the enclosure: at x offsets >=5 mm it
+#     overlaps the corner pillars, so the jig cannot descend (upper tier alone: 0 overlaps at
+#     every offset tested, both axes).
+# It contributes NOTHING to blocking -- the upper tier alone caps the whole interior mouth,
+# and below z 9.5 the jig's own walls are solid all round so no jaw can enter from the side.
 _JIG_INTERIOR_BOXES_MM = [
     (0.0, 0.0, 9.5 / 2, 68.0, 48.0, 9.5 / 2),                    # lower tier z 0..9.5 (inset)
     (0.0, 0.0, (24 + 9.5) / 2, 72.5, 52.5, (24 - 9.5) / 2),      # upper tier z 9.5..24 (flush)
 ]
+_JIG_INTERIOR_BOXES_V2B_MM = _JIG_INTERIOR_BOXES_MM[1:]          # upper tier only
 _INTERIOR_DENSITY = 1e-9  # kg/m^3; non-zero so UsdPhysics honours it, small enough to vanish
 
 
-def _add_interior_blocker(stage, root_name, material_path, bottom_mm):
-    """Author the v2 interior blocker as massless colliders under ``collisions``."""
-    for i, (cx, cy, cz, hx, hy, hz) in enumerate(_JIG_INTERIOR_BOXES_MM):
+def _add_interior_blocker(stage, root_name, material_path, bottom_mm, boxes=None):
+    """Author the interior blocker as massless colliders under ``collisions``."""
+    for i, (cx, cy, cz, hx, hy, hz) in enumerate(_JIG_INTERIOR_BOXES_MM if boxes is None else boxes):
         mesh = add_box(stage, f"/{root_name}/collisions/interior_{i:02d}",
                        center=(cx / 1000.0, cy / 1000.0, (cz - bottom_mm) / 1000.0),
                        half_extents=(hx / 1000.0, hy / 1000.0, hz / 1000.0),
@@ -274,7 +286,8 @@ def build(stl_path, usd_path, root_name, *, y_up=False, color, metadata_extra=No
     if approximation == "handBoxes":
         _add_hand_box_collider(stage, root_name, mat)
         if interior_blocker:
-            _add_interior_blocker(stage, root_name, mat, _BOX_TABLES[root_name][1])
+            _add_interior_blocker(stage, root_name, mat, _BOX_TABLES[root_name][1],
+                                  boxes=interior_blocker if isinstance(interior_blocker, list) else None)
     else:
         add_trimesh(stage, f"/{root_name}/collisions/mesh", mesh, collision=True, material_path=mat,
                     approximation=approximation)
@@ -324,6 +337,11 @@ def main() -> None:
                         help="Debug build: make the collision prims VISIBLE (tinted red) so the "
                              "collider can be inspected in the GUI. Re-run WITHOUT this flag for "
                              "the final assets.")
+    parser.add_argument("--v2b-jig", action="store_true",
+                        help="Build ONLY the v2b jig (JigV2b/jig_v2b.usd): the interior blocker "
+                             "with the LOWER TIER DROPPED. Same jaw blocking (the upper tier caps "
+                             "the whole mouth) but no mat contact patch, no pillar fouling and "
+                             "~1.5x the throughput. See _JIG_INTERIOR_BOXES_V2B_MM.")
     parser.add_argument("--v2-jig", action="store_true",
                         help="Build ONLY the v2 jig (JigV2/jig_v2.usd) -- same geometry as v1 plus "
                              "the massless INTERIOR BLOCKER that forbids the one-sided rim pinch. "
@@ -332,14 +350,16 @@ def main() -> None:
                              "bottomenclosure. See _JIG_INTERIOR_BOXES_MM.")
     args = parser.parse_args()
 
-    if args.v2_jig:
+    if args.v2_jig or args.v2b_jig:
+        out = f"{_LOCAL}/JigV2b/jig_v2b.usd" if args.v2b_jig else f"{_LOCAL}/JigV2/jig_v2.usd"
         build(
-            f"{_LOCAL}/Jig/jig.stl", f"{_LOCAL}/JigV2/jig_v2.usd", "Jig",
+            f"{_LOCAL}/Jig/jig.stl", out, "Jig",
             y_up=False, color=(0.10, 0.35, 0.13), mate="bottom",
-            approximation="handBoxes", interior_blocker=True,
+            approximation="handBoxes",
+            interior_blocker=_JIG_INTERIOR_BOXES_V2B_MM if args.v2b_jig else True,
         )
         if args.show_colliders:
-            _reveal_colliders([f"{_LOCAL}/JigV2/jig_v2.usd"])
+            _reveal_colliders([out])
         return
 
     build(

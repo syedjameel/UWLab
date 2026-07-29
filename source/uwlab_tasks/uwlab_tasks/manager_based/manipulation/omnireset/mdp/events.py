@@ -975,6 +975,84 @@ class reset_end_effector_from_grasp_dataset(ManagerTermBase):
         )
 
 
+class reset_end_effector_pregrasp_seeds(reset_end_effector_from_grasp_dataset):
+    """Re-place a MINORITY of C1 (ObjectAnywhereEEAnywhere) resets at a sampled PRE-GRASP pose:
+    the end effector already straddling the object at a recorded grasp pose, but with the jaws
+    OPEN, so the policy only has to close them.
+
+    Why (jig v2): the interior blocker makes the one-sided rim pinch physically impossible, which
+    leaves only the two-sided straddle -- and that has just ~3.9 mm of jaw clearance per side on
+    the 129 mm jig. Measured on the v2 Stage-1 run, random exploration essentially cannot find it:
+    task_0 was flat 0.0000 for 1000 iterations and then grew ~3x slower than v1 off the same base
+    (v1 reached 0.657 by iter 1000; v2 was at 0.005 by 1118). This term supplies the positive half
+    of the design -- the negative constraint (blocker) alone removes the shortcut without offering
+    a route to the replacement.
+
+    Applied AFTER the ordinary EE-anywhere reset, to a Bernoulli(``seed_prob``) subset of the
+    envs being reset; the rest keep the far-reach pose. Keep it a MINORITY (the plan's 20-30%)
+    or the policy gets lazy: it nails close-from-pose and under-learns the far reach that
+    deployment actually starts from.
+
+    ``seed_prob=0.0`` (the default) makes this an exact no-op AND skips loading the grasp
+    dataset, so adding the term to a shared config cannot break objects that have no grasps.pt.
+
+    The seeded env ids are published on ``env.pregrasp_seed_mask`` so the honest EE-anywhere
+    metric and the RGB collection can exclude them (seeded states inflate task_0).
+    """
+
+    def __init__(self, cfg: EventTermCfg, env: ManagerBasedEnv):
+        self.seed_prob = float(cfg.params.get("seed_prob", 0.0))
+        if self.seed_prob <= 0.0:
+            # No-op mode: do NOT touch the grasp dataset (it may not exist for this object).
+            ManagerTermBase.__init__(self, cfg, env)
+            self._enabled = False
+            return
+        super().__init__(cfg, env)
+        self._enabled = True
+        # Jaw position that counts as OPEN, from the gripper metadata (finger_open_joint_angle).
+        self.open_joint_angle = float(cfg.params.get("open_joint_angle", 0.0))
+
+    def __call__(
+        self,
+        env: ManagerBasedEnv,
+        env_ids: torch.Tensor,
+        dataset_dir: str,
+        fixed_asset_cfg: SceneEntityCfg,
+        robot_ik_cfg: SceneEntityCfg,
+        gripper_cfg: SceneEntityCfg,
+        pose_range_b: dict[str, tuple[float, float]] = dict(),
+        seed_prob: float = 0.0,
+        open_joint_angle: float = 0.0,
+    ) -> None:
+        if not getattr(self, "_enabled", False) or len(env_ids) == 0:
+            return
+        pick = torch.rand(len(env_ids), device=env.device) < self.seed_prob
+        seeded = env_ids[pick]
+        # Publish the mask every reset (all-False when nothing was seeded) so consumers never
+        # read a stale one from an earlier reset.
+        mask = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
+        if seeded.numel() == 0:
+            env.pregrasp_seed_mask = mask
+            return
+        mask[seeded] = True
+        env.pregrasp_seed_mask = mask
+
+        # Place the EE at a recorded grasp pose (this also writes the CLOSED jaw positions).
+        super().__call__(env, seeded, dataset_dir, fixed_asset_cfg, robot_ik_cfg, gripper_cfg, pose_range_b)
+
+        # ...then force the jaws back OPEN: the point is that closing is the remaining skill.
+        # With the jaws open the straddle clears the 129 mm jig (136.8 mm inner-face gap), so
+        # this pose is penetration-free -- the same poses C2/C3 recording accepts at 98.7-99.9%.
+        n_g = self.robot.num_joints if isinstance(self.gripper_joint_ids, slice) else len(self.gripper_joint_ids)
+        open_pos = torch.full((len(seeded), n_g), self.open_joint_angle, device=env.device)
+        self.robot.write_joint_state_to_sim(
+            position=open_pos,
+            velocity=torch.zeros_like(open_pos),
+            joint_ids=self.gripper_joint_ids,
+            env_ids=seeded,
+        )
+
+
 class reset_insertive_object_from_partial_assembly_dataset(ManagerTermBase):
     """EventTerm class for resetting the insertive object from a partial assembly dataset."""
 
