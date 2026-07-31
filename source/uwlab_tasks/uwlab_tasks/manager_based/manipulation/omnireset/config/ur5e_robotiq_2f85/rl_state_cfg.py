@@ -684,6 +684,13 @@ variants = {
         "jigv2b": make_insertive_object(
             f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/JigV2b/jig_v2b.usd", override_mass=False
         ),
+        # V2c: blocker SHAPED to the measured local wall height (8.5 mm in the notch,
+        # 23.5 mm elsewhere) and made near-frictionless, so it can block a jaw but never
+        # be held by one. v2/v2b both let the gripper pick the jig up BY THE BLOCKER --
+        # see scripts_v2/tools/conversions/test_blocker_exploit.py. Use this one.
+        "jigv2c": make_insertive_object(
+            f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/JigV2c/jig_v2c.usd", override_mass=False
+        ),
         # Local dev asset (telescoping cover/lid). Switch to UWLAB_CLOUD_ASSETS_DIR when sharing.
         "cover": make_insertive_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/Cover/cover.usd"),
     },

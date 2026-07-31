@@ -222,11 +222,85 @@ _JIG_INTERIOR_BOXES_MM = [
     (0.0, 0.0, (24 + 9.5) / 2, 72.5, 52.5, (24 - 9.5) / 2),      # upper tier z 9.5..24 (flush)
 ]
 _JIG_INTERIOR_BOXES_V2B_MM = _JIG_INTERIOR_BOXES_MM[1:]          # upper tier only
+
+# ---------------------------------------------------------------------------------------
+# v2c -- SHAPED blocker. v2/v2b were WRONG and this is why.
+#
+# The long walls are NOT uniformly 24 mm tall. Measured from jig.stl (wall-top vs x, probed
+# across the wall band):   |x| <= 28  ->  8.5 mm (the notch, bottom strip only)
+#                          |x| >= 32  -> 23.5 mm (full height)
+# A blocker authored as one full-height box therefore stands in OPEN AIR right across the
+# middle band, presenting two clean vertical faces 105 mm apart -- inside the 136.8 mm jaw
+# opening. Measured with test_blocker_exploit.py: the v2 jig is HELD at a jaw gap of 107.7 mm
+# at x=0 (that is the blocker's width, not the jig's 129 mm), while the v1 jig correctly falls
+# 1.5 m. That fake grasp is also EASIER than the true straddle (~15 mm clearance per side vs
+# 3.9 mm), so RL prefers it -- the v2 Stage-1 run learned it instead of the straddle.
+#
+# So the blocker must never exceed the LOCAL wall height:
+#   low  slab z 0..8.5 across the whole interior  (walls exist all round down here, so a jaw
+#        reaching in to pinch the bottom strip one-sided is blocked);
+#   high slabs z 8.5..23.5 ONLY for |x| >= 30      (where the long wall is full height);
+#   nothing above 8.5 in the notch band            (the real jig is empty there).
+# y/x extents are flush with the hand-built WALL boxes (inner faces 50.75 low / 52.5 high,
+# 70.65 / 72.5), so there is no slot to enter and no protrusion past the collider's material.
+#
+# The high slabs still expose two step faces at x = +-30. Those are made UNGRASPABLE by the
+# near-zero-friction material (see _add_interior_blocker): the jaws can still be BLOCKED by
+# the blocker, but cannot HOLD it, so any residual exposed face affords no grasp. Legitimate
+# straddles grip the outer walls at +-64.5 and never touch the blocker, so they are unaffected.
+_NOTCH_X = 30.0          # blocker stays below the notch wall-top inboard of this
+_WALL_TOP = 23.5         # measured full-wall height
+_NOTCH_TOP = 8.5         # measured notch (bottom-strip) height
+#
+# The LOW slab is INSET to x +-68 / y +-48 rather than run flush to the wall faces. Flush
+# (+-70.5 / +-50.75) leaves only 0.75 mm to the enclosure's post towers and starts FOULING them
+# at just 2 mm of lateral offset -- inside the ~8 mm capture basin, which would wreck seating
+# (measured box-vs-box; the inset restores ~3.5 mm and pushes first fouling past 6 mm). The
+# inset is free: below 8.5 mm the jig's own walls enclose the slab on every side, so insetting
+# opens a 2.7 mm SLOT rather than exposing material, and the jaw pad is 28 mm thick along the
+# closing axis so it cannot enter. (This is a different argument from the one that failed for
+# v2: there the problem was material standing in OPEN AIR, not a slot.)
+_JIG_INTERIOR_BOXES_V2C_MM = [
+    (0.0, 0.0, _NOTCH_TOP / 2, 68.0, 48.0, _NOTCH_TOP / 2),      # low slab, whole interior, inset
+]
+for _sx in (+1, -1):     # high slabs, only where the long wall is full height
+    _x0, _x1 = _sx * _NOTCH_X, _sx * 72.5
+    _JIG_INTERIOR_BOXES_V2C_MM.append(
+        ((_x0 + _x1) / 2, 0.0, (_WALL_TOP + _NOTCH_TOP) / 2,
+         abs(_x1 - _x0) / 2, 52.5, (_WALL_TOP - _NOTCH_TOP) / 2)
+    )
 _INTERIOR_DENSITY = 1e-9  # kg/m^3; non-zero so UsdPhysics honours it, small enough to vanish
 
 
-def _add_interior_blocker(stage, root_name, material_path, bottom_mm, boxes=None):
+def _add_slippery_material(stage, root_name):
+    """A near-frictionless PhysicsMaterial for the interior blocker.
+
+    The blocker exists to BLOCK a jaw, never to be held by one. Any face of it that a jaw can
+    reach is a grasp the real jig does not afford (v2 was picked up by its blocker at a jaw gap
+    of 107.7 mm -- see _JIG_INTERIOR_BOXES_V2C_MM). Shaping removes most such faces; this
+    removes the rest by making them impossible to grip: with no friction the jig simply squirts
+    out from between flat parallel jaws, while normal forces still stop a jaw entering.
+
+    ``frictionCombineMode = min`` is essential. PhysX's default is AVERAGE, which would combine
+    friction 0 with the jaw's ~1.0 into 0.5 -- still perfectly grippable. It is a PhysX
+    extension (UsdPhysics.MaterialAPI exposes only static/dynamic friction, restitution and
+    density), so it is authored raw, the same way the SDF attributes are above.
+    """
+    path = f"/{root_name}/BlockerMaterial"
+    mat = UsdShade.Material.Define(stage, path)
+    api = UsdPhysics.MaterialAPI.Apply(mat.GetPrim())
+    api.CreateStaticFrictionAttr(0.0)
+    api.CreateDynamicFrictionAttr(0.0)
+    mat.GetPrim().AddAppliedSchema("PhysxMaterialAPI")
+    mat.GetPrim().CreateAttribute("physxMaterial:frictionCombineMode",
+                                  Sdf.ValueTypeNames.Token).Set("min")
+    return path
+
+
+def _add_interior_blocker(stage, root_name, material_path, bottom_mm, boxes=None, slippery=False):
     """Author the interior blocker as massless colliders under ``collisions``."""
+    if slippery:
+        material_path = _add_slippery_material(stage, root_name)
     for i, (cx, cy, cz, hx, hy, hz) in enumerate(_JIG_INTERIOR_BOXES_MM if boxes is None else boxes):
         mesh = add_box(stage, f"/{root_name}/collisions/interior_{i:02d}",
                        center=(cx / 1000.0, cy / 1000.0, (cz - bottom_mm) / 1000.0),
@@ -270,7 +344,8 @@ def _add_hand_box_collider(stage, root_name, material_path):
 
 
 def build(stl_path, usd_path, root_name, *, y_up=False, color, metadata_extra=None,
-          mate="bottom", approximation="convexDecomposition", interior_blocker=False):
+          mate="bottom", approximation="convexDecomposition", interior_blocker=False,
+          slippery_blocker=False):
     mesh = trimesh.load(stl_path, force="mesh")
     mesh.apply_scale(0.001)  # mm -> m
     if y_up:  # rotate STL Y-up -> Z-up (+90 deg about X: y->z)
@@ -287,7 +362,8 @@ def build(stl_path, usd_path, root_name, *, y_up=False, color, metadata_extra=No
         _add_hand_box_collider(stage, root_name, mat)
         if interior_blocker:
             _add_interior_blocker(stage, root_name, mat, _BOX_TABLES[root_name][1],
-                                  boxes=interior_blocker if isinstance(interior_blocker, list) else None)
+                                  boxes=interior_blocker if isinstance(interior_blocker, list) else None,
+                                  slippery=slippery_blocker)
     else:
         add_trimesh(stage, f"/{root_name}/collisions/mesh", mesh, collision=True, material_path=mat,
                     approximation=approximation)
@@ -337,6 +413,12 @@ def main() -> None:
                         help="Debug build: make the collision prims VISIBLE (tinted red) so the "
                              "collider can be inspected in the GUI. Re-run WITHOUT this flag for "
                              "the final assets.")
+    parser.add_argument("--v2c-jig", action="store_true",
+                        help="Build ONLY the v2c jig (JigV2c/jig_v2c.usd): the SHAPED, "
+                             "near-frictionless blocker. Follows the measured local wall height "
+                             "(8.5 mm in the notch, 23.5 mm elsewhere) so it never stands in open "
+                             "air, and cannot be gripped. This is the one to use -- v2/v2b are "
+                             "both pickable BY THE BLOCKER (test_blocker_exploit.py).")
     parser.add_argument("--v2b-jig", action="store_true",
                         help="Build ONLY the v2b jig (JigV2b/jig_v2b.usd): the interior blocker "
                              "with the LOWER TIER DROPPED. Same jaw blocking (the upper tier caps "
@@ -350,13 +432,17 @@ def main() -> None:
                              "bottomenclosure. See _JIG_INTERIOR_BOXES_MM.")
     args = parser.parse_args()
 
-    if args.v2_jig or args.v2b_jig:
-        out = f"{_LOCAL}/JigV2b/jig_v2b.usd" if args.v2b_jig else f"{_LOCAL}/JigV2/jig_v2.usd"
+    if args.v2_jig or args.v2b_jig or args.v2c_jig:
+        out = (f"{_LOCAL}/JigV2c/jig_v2c.usd" if args.v2c_jig else
+               f"{_LOCAL}/JigV2b/jig_v2b.usd" if args.v2b_jig else
+               f"{_LOCAL}/JigV2/jig_v2.usd")
         build(
             f"{_LOCAL}/Jig/jig.stl", out, "Jig",
             y_up=False, color=(0.10, 0.35, 0.13), mate="bottom",
             approximation="handBoxes",
-            interior_blocker=_JIG_INTERIOR_BOXES_V2B_MM if args.v2b_jig else True,
+            interior_blocker=(_JIG_INTERIOR_BOXES_V2C_MM if args.v2c_jig else
+                              _JIG_INTERIOR_BOXES_V2B_MM if args.v2b_jig else True),
+            slippery_blocker=args.v2c_jig,
         )
         if args.show_colliders:
             _reveal_colliders([out])

@@ -189,6 +189,8 @@ variants = {
         "jigv2": make_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/JigV2/jig_v2.usd", override_mass=False),
         # V2b: lower tier dropped -- see reset_states_cfg.
         "jigv2b": make_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/JigV2b/jig_v2b.usd", override_mass=False),
+        # V2c: SHAPED + near-frictionless blocker. v2/v2b are pickable BY THE BLOCKER.
+        "jigv2c": make_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/JigV2c/jig_v2c.usd", override_mass=False),
         # Local dev asset (telescoping cover/lid). Switch to UWLAB_CLOUD_ASSETS_DIR when sharing.
         "cover": make_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/Cover/cover.usd"),
     }
