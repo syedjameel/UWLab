@@ -70,6 +70,27 @@ class RlStateSceneCfg(InteractiveSceneCfg):
         init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, 0.0), rot=(1.0, 0.0, 0.0, 0.0)),
     )
 
+    # 40 mm cube PEDESTAL (realpcb task only). The thin PCB is picked OFF this, never off the
+    # table: its side faces are 3 mm tall and the fingertips foul the table, which is why flat
+    # picks record ~0 grasps (REALPCB_THIN_SESSION_CONTEXT.md). Reuses an existing asset --
+    # Props/Custom/Pcb/pcb.usd IS a 40x40x40 mm cube, not a board. Kinematic so the gripper
+    # cannot shove it out from under the PCB.
+    #
+    # PARKED below the floor by default; ``reset_pedestal_under_object`` lifts it into place on
+    # reset. Tasks that do not use it simply never enable that event and pay one inert kinematic
+    # body. It contributes NO observation terms (those are named explicitly), so it cannot shift
+    # the critic's input width the way an extra collider on the insertive object does.
+    pedestal: RigidObjectCfg = RigidObjectCfg(
+        prim_path="{ENV_REGEX_NS}/Pedestal",
+        spawn=sim_utils.UsdFileCfg(
+            usd_path=f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/Pcb/pcb.usd",
+            scale=(1, 1, 1),
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
+            mass_props=sim_utils.MassPropertiesCfg(mass=0.5),
+        ),
+        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, -1.0), rot=(1.0, 0.0, 0.0, 0.0)),
+    )
+
     # Environment -- the REAL lab table (procedurally generated from measured dims; see
     # local/Props/Mounts/CustomLabTable/table_dims.yaml + make_custom_table_usd.py).
     # Asset frame == robot base frame (origin at the base flange, work surface at +0.004),
@@ -691,6 +712,11 @@ variants = {
         "jigv2c": make_insertive_object(
             f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/JigV2c/jig_v2c.usd", override_mass=False
         ),
+        # Real thin PCB (140x100x3 mm), picked off a 40 mm cube pedestal -- note the "pcb"
+        # variant above IS that 40 mm cube, not a board. Picking this flat off the table is not
+        # possible with this gripper (3 mm side faces, fingertips foul the table), hence the
+        # pedestal. Only the 100 mm axis is graspable: 140 mm exceeds the 136.76 mm jaw opening.
+        "realpcb": make_insertive_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/RealPcb/realpcb.usd"),
         # Local dev asset (telescoping cover/lid). Switch to UWLAB_CLOUD_ASSETS_DIR when sharing.
         "cover": make_insertive_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/Cover/cover.usd"),
     },
@@ -711,6 +737,14 @@ variants = {
         "bottomenclosure": make_receptive_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/BottomEnclosure/bottom_enclosure.usd"),
         # Local dev asset (box with seated PCB; lid task receptive, mating point at the top rim).
         "boxwithpcb": make_receptive_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/BoxWithPcb/box_with_pcb.usd"),
+        # Jig ALREADY SEATED on the bottom enclosure, as one kinematic body -- the realpcb task's
+        # goal fixture. Built by: build_jig_enclosure_usds.py --assembly. Its assembled_offset
+        # (-0.0072) puts the PCB's bottom 13.60 mm above the enclosure's bottom face, which is
+        # where test_pcb_seat.py measures it settling. Deliberately a SEPARATE asset so
+        # Jig/jig.usd and BottomEnclosure/bottom_enclosure.usd stay byte-identical for the jig task.
+        "jigenclosure": make_receptive_object(
+            f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/JigEnclosure/jig_enclosure.usd"
+        ),
     },
 }
 

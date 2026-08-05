@@ -29,6 +29,7 @@ export (the jig's registration lips may seat it a few mm lower). Refine with
 from __future__ import annotations
 
 import argparse
+import math
 import os
 
 import numpy as np
@@ -397,8 +398,176 @@ def _reveal_colliders(usd_paths):
     print("  [show-colliders] collision prims made VISIBLE (red) -- debug build, do not commit")
 
 
+# ---------------------------------------------------------------------------------------
+# COMBINED RECEPTIVE ASSET -- the jig already seated on the bottom enclosure, as ONE body.
+#
+# For the realpcb task the goal object is the ASSEMBLED fixture: the robot drops a
+# 140x100x3 mm PCB through the jig's window onto the enclosure below. Authored as a SEPARATE
+# asset so Jig/jig.usd and BottomEnclosure/bottom_enclosure.usd stay byte-identical -- the jig
+# task's reset datasets, checkpoints and in-flight finetune all depend on those two.
+#
+# Heights, in mm above the enclosure's BOTTOM face -- all measured, none assumed:
+#   jig bottom  17.60  = enclosure assembled_offset (6.3) + enclosure half-height (11.3)
+#   PCB bottom  13.60  = test_pcb_seat.py, 16/16 drops, spread 0.77 mm, tilt < 1 deg
+#
+# The STL's corner bosses would arrest the PCB at 20.05 mm, but the hand-built box colliders --
+# which are what PhysX actually integrates -- stop at x=72.4 and never reach the PCB's x=70.0
+# edge, so it passes them and rests on the long-wall ridges. 13.60 is therefore the SIMULATED
+# truth and the only number a success threshold may be built on. If the real PCB is found to
+# stop ~6.5 mm higher, add the boss geometry HERE (never to bottom_enclosure.usd).
+_ENC_HALF_H_MM = 11.3
+_JIG_HALF_H_MM = 12.0
+
+# SIMPLIFIED assembly collider, authored directly in ASSEMBLY-CENTRED mm (z -20.8 .. +20.8).
+#
+# The two source tables carry 46 + 13 = 59 boxes, i.e. 241k convex shapes at 4096 envs and 967k
+# at 16384 -- and essentially all of the jig's 46 exist so the JIG can seat on the ENCLOSURE
+# (pillar sockets at +-32, corner windows clearing the (+-71,+-54) posts, tiered wall
+# thicknesses). In this assembly the jig is ALREADY seated and the whole thing is kinematic, so
+# none of that geometry can ever be exercised. What the PCB task actually needs is: a window to
+# drop through, a surface to land on at the measured 13.60 mm seat, and an outer envelope the
+# robot cannot pass through. That is 9 boxes.
+#
+# The window is TWO-TIER, reproducing the real jig rather than inventing a chamfer: the part is
+# genuinely wider above (x +-72.5, y +-52.5) than below (x +-70.65, y +-50.75), which gives the
+# board a real ~2 mm/side lead-in. A single uniform narrow window would be HARDER than the
+# physical part. Tier boundary at assembly z = 6.8 (jig-local 10).
+#
+# Heights: enclosure bottom -20.8, PCB seat -7.2, jig bottom -3.2, jig top +20.8.
+_SEAT_Z = -7.2
+_JIG_BOT_Z = -3.2                  # jig bottom face, assembly frame
+_RAMP_LO_Z = _JIG_BOT_Z + 9.0      #   5.8 -- ramp starts (window still 142 x 102 below this)
+_RAMP_HI_Z = _JIG_BOT_Z + 23.5     #  20.3 -- ramp ends at the jig's top face
+_NOTCH_TOP_Z = _JIG_BOT_Z + 8.5    #   5.3 -- long walls END here for |x| <= 28 (open air above)
+
+# Window profile MEASURED off jig.stl (half-extents, mm):
+#   z_jig 0..9   ->  x 71.00, y 51.00                (straight)
+#   z_jig 23.5   ->  x 77.00, y 59.25                (continuous internal ramp, not a step)
+# The rim is a real lead-in funnel: 142x102 at the bottom opening to 154x118.5 at the top. An
+# earlier 2-tier approximation only reached 145x105 and made the entry MUCH tighter than the
+# physical part, which is what strangled the capture basin.
+_X_IN_LO, _X_IN_HI = 71.0, 77.0
+_Y_IN_LO, _Y_IN_HI = 51.0, 59.25
+_RAMP_T = 6.0                      # ramp slab half-thickness (extends outward past the shell)
+
+# Axis-aligned boxes: (cx, cy, cz, hx, hy, hz)
+_ASSEMBLY_BOXES_MM = [
+    # floor -- its TOP face IS the 13.60 mm seat; enclosure footprint (156.6 x 121.6)
+    (0.0, 0.0, (-20.8 + _SEAT_Z) / 2, 78.3, 60.8, (_SEAT_Z + 20.8) / 2),
+]
+for _s in (+1, -1):
+    # straight lower walls, seat -> ramp start (x) / notch top (y)
+    _ASSEMBLY_BOXES_MM.append((_s * (_X_IN_LO + 82.0) / 2, 0.0, (_SEAT_Z + _RAMP_LO_Z) / 2,
+                               (82.0 - _X_IN_LO) / 2, 64.5, (_RAMP_LO_Z - _SEAT_Z) / 2))
+    _ASSEMBLY_BOXES_MM.append((0.0, _s * (_Y_IN_LO + 64.5) / 2, (_SEAT_Z + _NOTCH_TOP_Z) / 2,
+                               _X_IN_LO, (64.5 - _Y_IN_LO) / 2, (_NOTCH_TOP_Z - _SEAT_Z) / 2))
+
+# Rotated ramp slabs: (cx, cy, cz, hx, hy, hz, rot_axis, degrees)
+_ASSEMBLY_RAMPS_MM = []
+_dz = _RAMP_HI_Z - _RAMP_LO_Z
+for _s in (+1, -1):
+    # end-wall ramps (x), full y span
+    _dx = _X_IN_HI - _X_IN_LO
+    _L = math.hypot(_dx, _dz)
+    _th = math.degrees(math.atan2(_dx, _dz))
+    _mx, _mz = (_X_IN_LO + _X_IN_HI) / 2, (_RAMP_LO_Z + _RAMP_HI_Z) / 2
+    _nx, _nz = math.cos(math.radians(_th)), -math.sin(math.radians(_th))
+    _ASSEMBLY_RAMPS_MM.append((_s * (_mx + _nx * _RAMP_T), 0.0, _mz + _nz * _RAMP_T,
+                               _RAMP_T, 64.5, _L / 2, "Y", _s * _th))
+    # side-wall ramps (y) -- ONLY outboard of the notch (|x| >= 30); the middle is open air
+    _dy = _Y_IN_HI - _Y_IN_LO
+    _L = math.hypot(_dy, _dz)
+    _th = math.degrees(math.atan2(_dy, _dz))
+    _my, _mz = (_Y_IN_LO + _Y_IN_HI) / 2, (_RAMP_LO_Z + _RAMP_HI_Z) / 2
+    _ny, _nz = math.cos(math.radians(_th)), -math.sin(math.radians(_th))
+    for _sx in (+1, -1):
+        _ASSEMBLY_RAMPS_MM.append((_sx * 56.0, _s * (_my + _ny * _RAMP_T), _mz + _nz * _RAMP_T,
+                                   26.0, _RAMP_T, _L / 2, "X", -_s * _th))
+
+
+def build_assembly(out_usd, *, jig_seat_mm=18.3, pcb_seat_mm=13.60, show_colliders=False,
+                   full_collider=False):
+    """Author JigEnclosure: jig seated on the enclosure, one rigid body, hand-box colliders."""
+    enc = trimesh.load(f"{_LOCAL}/BottomEnclosure/bottom_enclosure.stl", force="mesh")
+    enc.apply_scale(0.001)
+    enc.apply_transform(trimesh.transformations.rotation_matrix(np.pi / 2.0, [1, 0, 0]))
+    enc.apply_translation(-enc.bounds.mean(axis=0))
+
+    jig = trimesh.load(f"{_LOCAL}/Jig/jig.stl", force="mesh")
+    jig.apply_scale(0.001)
+    jig.apply_translation(-jig.bounds.mean(axis=0))
+    jig.apply_translation([0.0, 0.0, jig_seat_mm / 1000.0])
+
+    # re-centre the PAIR on its own bbox, matching every other asset's convention
+    lo = np.minimum(enc.bounds[0], jig.bounds[0])
+    hi = np.maximum(enc.bounds[1], jig.bounds[1])
+    shift = -(lo + hi) / 2.0
+    enc.apply_translation(shift)
+    jig.apply_translation(shift)
+    dz = float(shift[2])                       # metres, applied to the collider tables too
+    half_h = float(hi[2] - lo[2]) / 2.0         # assembly half-height (m)
+    enc_bottom = -half_h                        # enclosure bottom face in the new frame
+
+    if os.path.exists(out_usd):
+        os.remove(out_usd)
+    os.makedirs(os.path.dirname(out_usd), exist_ok=True)
+    stage, _, mat = create_stage(out_usd, root_name="JigEnclosure")
+    add_trimesh(stage, "/JigEnclosure/visuals/enclosure", enc, collision=False,
+                color=(0.02, 0.02, 0.022))     # real enclosure: black
+    add_trimesh(stage, "/JigEnclosure/visuals/jig", jig, collision=False,
+                color=(0.10, 0.35, 0.13))      # real jig: goblin green
+
+    if full_collider:
+        boxes = [((cx, cy, (cz - bm + extra) / 1.0 + dz * 1000.0), (hx, hy, hz))
+                 for (tbl, bm, extra) in ((_BOX_TABLES["BottomEnclosure"][0], _BOX_TABLES["BottomEnclosure"][1], 0.0),
+                                          (_BOX_TABLES["Jig"][0], _BOX_TABLES["Jig"][1], jig_seat_mm))
+                 for (cx, cy, cz, hx, hy, hz) in tbl]
+    else:
+        boxes = [((cx, cy, cz), (hx, hy, hz)) for (cx, cy, cz, hx, hy, hz) in _ASSEMBLY_BOXES_MM]
+    for i, ((cx, cy, cz), (hx, hy, hz)) in enumerate(boxes):
+        add_box(stage, f"/JigEnclosure/collisions/box_{i:02d}",
+                center=(cx / 1000.0, cy / 1000.0, cz / 1000.0),
+                half_extents=(hx / 1000.0, hy / 1000.0, hz / 1000.0),
+                collision=True, material_path=mat)
+    n_ramp = 0
+    if not full_collider:
+        # Rotated slabs for the rim's internal ramp. Authored at the ORIGIN then translated and
+        # rotated via xform ops, so the rotation is about the box centre rather than the prim
+        # origin. Each stays a single convex hull -- a true slope for the price of one box.
+        for i, (cx, cy, cz, hx, hy, hz, axis, deg) in enumerate(_ASSEMBLY_RAMPS_MM):
+            m = add_box(stage, f"/JigEnclosure/collisions/ramp_{i:02d}",
+                        center=(0.0, 0.0, 0.0),
+                        half_extents=(hx / 1000.0, hy / 1000.0, hz / 1000.0),
+                        collision=True, material_path=mat)
+            x = UsdGeom.Xformable(m.GetPrim())
+            x.AddTranslateOp().Set(Gf.Vec3d(cx / 1000.0, cy / 1000.0, cz / 1000.0))
+            (x.AddRotateXOp() if axis == "X" else x.AddRotateYOp()).Set(float(deg))
+            n_ramp += 1
+    stage.GetRootLayer().Save()
+
+    assembled_z = enc_bottom + pcb_seat_mm / 1000.0
+    write_metadata(out_usd, {
+        "assembled_offset": {"pos": [0.0, 0.0, round(assembled_z, 6)], "quat": [1.0, 0.0, 0.0, 0.0]},
+        "bottom_offset": {"pos": [0.0, 0.0, round(enc_bottom, 6)], "quat": [1.0, 0.0, 0.0, 0.0]},
+        # yaw_symmetry 2: the PCB and the fixture are both 2-fold symmetric (0/180 both valid)
+        "success_thresholds": {"position": 0.005, "orientation": 0.025, "yaw": 0.35, "yaw_symmetry": 2},
+    })
+    if show_colliders:
+        _reveal_colliders([out_usd])
+    print(f"  [assembly] {out_usd}")
+    print(f"    collider: {len(boxes) + n_ramp} boxes ({'FULL 59-box' if full_collider else f'simplified: {len(boxes)} axis-aligned + {n_ramp} ramps'})")
+    print(f"    height {2*half_h*1000:.2f} mm; enclosure bottom {enc_bottom*1000:.2f} mm; "
+          f"jig bottom {(jig_seat_mm - _JIG_HALF_H_MM)/1000.0*1000 + dz*1000:.2f} mm")
+    print(f"    assembled_offset z = {assembled_z*1000:.2f} mm  "
+          f"(PCB bottom seats {pcb_seat_mm:.2f} mm above the enclosure's bottom face)")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Build jig + bottom-enclosure USDs from STLs.")
+    parser.add_argument("--assembly", action="store_true",
+                        help="Build ONLY the combined JigEnclosure receptive asset (jig seated "
+                             "on the enclosure, one body) for the realpcb task. Leaves the "
+                             "standalone jig and enclosure assets untouched.")
     parser.add_argument("--enclosure-seat-z", type=float, default=0.0063,
                         help="Enclosure-frame z of the seated jig's BOTTOM-CENTER (the mating "
                              "point). Default 0.0063 is SIM-MEASURED with the final collision "
@@ -431,6 +600,11 @@ def main() -> None:
                              "collecting against them); the v2 task pairs jigv2 with the SAME "
                              "bottomenclosure. See _JIG_INTERIOR_BOXES_MM.")
     args = parser.parse_args()
+
+    if args.assembly:
+        build_assembly(f"{_LOCAL}/JigEnclosure/jig_enclosure.usd",
+                       show_colliders=args.show_colliders)
+        return
 
     if args.v2_jig or args.v2b_jig or args.v2c_jig:
         out = (f"{_LOCAL}/JigV2c/jig_v2c.usd" if args.v2c_jig else

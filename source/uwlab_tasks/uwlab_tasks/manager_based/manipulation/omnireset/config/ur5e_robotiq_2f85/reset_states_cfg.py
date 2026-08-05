@@ -73,6 +73,20 @@ class ResetStatesSceneCfg(InteractiveSceneCfg):
     # this block is duplicated there -- keep both in sync). Asset frame == robot base
     # frame; work surface at +0.004; reset_robot_pose jitters robot+support+table
     # TOGETHER (rigid assembly -- the base is bolted to this table).
+    # 40 mm cube PEDESTAL (realpcb task only) -- the thin board is picked OFF this, never off
+    # the table. Mirrors RlStateSceneCfg.pedestal so recorded reset states come from the SAME
+    # scene the policy trains in. Parked below the floor; reset_pedestal_under_object lifts it.
+    pedestal: RigidObjectCfg = RigidObjectCfg(
+        prim_path="{ENV_REGEX_NS}/Pedestal",
+        spawn=sim_utils.UsdFileCfg(
+            usd_path=f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/Pcb/pcb.usd",
+            scale=(1, 1, 1),
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
+            mass_props=sim_utils.MassPropertiesCfg(mass=0.5),
+        ),
+        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, -1.0), rot=(1.0, 0.0, 0.0, 0.0)),
+    )
+
     table = RigidObjectCfg(
         prim_path="{ENV_REGEX_NS}/Table",
         init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, 0.0), rot=(1.0, 0.0, 0.0, 0.0)),
@@ -301,6 +315,16 @@ class ObjectAnywhereEEAnywhereEventCfg(ResetStatesBaseEventCfg):
     )
 
 
+    # realpcb only: place the 40 mm pedestal LAST, once the board's pose is final. Declared at the
+    # END of the class because configclass field order IS execution order -- in the base class it
+    # ran BEFORE the board was placed, leaving the cube at the origin and the board falling flat
+    # onto the table (measured: 0/60 states on-pedestal). No-ops for other insertive assets.
+    reset_pedestal = EventTerm(
+        func=task_mdp.reset_pedestal_under_object,
+        mode="reset",
+        params={"park": False, "may_move_object": True},
+    )
+
 @configclass
 class ObjectRestingEEGraspedEventCfg(ResetStatesBaseEventCfg):
     reset_insertive_object_pose_from_reset_states = EventTerm(
@@ -338,6 +362,16 @@ class ObjectRestingEEGraspedEventCfg(ResetStatesBaseEventCfg):
         },
     )
 
+
+    # realpcb only: place the 40 mm pedestal LAST, once the board's pose is final. Declared at the
+    # END of the class because configclass field order IS execution order -- in the base class it
+    # ran BEFORE the board was placed, leaving the cube at the origin and the board falling flat
+    # onto the table (measured: 0/60 states on-pedestal). No-ops for other insertive assets.
+    reset_pedestal = EventTerm(
+        func=task_mdp.reset_pedestal_under_object,
+        mode="reset",
+        params={"park": False},
+    )
 
 @configclass
 class ObjectAnywhereEEGraspedEventCfg(ResetStatesBaseEventCfg):
@@ -388,6 +422,17 @@ class ObjectAnywhereEEGraspedEventCfg(ResetStatesBaseEventCfg):
     )
 
 
+    # realpcb only: place the 40 mm pedestal LAST, once the board's pose is final. Declared at the
+    # END of the class because configclass field order IS execution order -- in the base class it
+    # ran BEFORE the board was placed, leaving the cube at the origin and the board falling flat
+    # onto the table (measured: 0/60 states on-pedestal). No-ops for other insertive assets.
+    reset_pedestal = EventTerm(
+        func=task_mdp.reset_pedestal_under_object,
+        mode="reset",
+        # board is EE-grasped; the pedestal supports nothing
+        params={"park": True},
+    )
+
 @configclass
 class ObjectPartiallyAssembledEEAnywhereEventCfg(ResetStatesBaseEventCfg):
     reset_insertive_object_pose_from_partial_assembly_dataset = EventTerm(
@@ -428,6 +473,16 @@ class ObjectPartiallyAssembledEEAnywhereEventCfg(ResetStatesBaseEventCfg):
         },
     )
 
+
+    # realpcb only: place the 40 mm pedestal LAST, once the board's pose is final. Declared at the
+    # END of the class because configclass field order IS execution order -- in the base class it
+    # ran BEFORE the board was placed, leaving the cube at the origin and the board falling flat
+    # onto the table (measured: 0/60 states on-pedestal). No-ops for other insertive assets.
+    reset_pedestal = EventTerm(
+        func=task_mdp.reset_pedestal_under_object,
+        mode="reset",
+        params={"park": True},
+    )
 
 @configclass
 class ObjectPartiallyAssembledEEGraspedEventCfg(ResetStatesBaseEventCfg):
@@ -474,6 +529,16 @@ class ObjectPartiallyAssembledEEGraspedEventCfg(ResetStatesBaseEventCfg):
         },
     )
 
+
+    # realpcb only: place the 40 mm pedestal LAST, once the board's pose is final. Declared at the
+    # END of the class because configclass field order IS execution order -- in the base class it
+    # ran BEFORE the board was placed, leaving the cube at the origin and the board falling flat
+    # onto the table (measured: 0/60 states on-pedestal). No-ops for other insertive assets.
+    reset_pedestal = EventTerm(
+        func=task_mdp.reset_pedestal_under_object,
+        mode="reset",
+        params={"park": True},
+    )
 
 @configclass
 class ResetStatesTerminationCfg:
@@ -623,6 +688,10 @@ variants = {
             f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/JigV2c/jig_v2c.usd", override_mass=False
         ),
         # Local dev asset (telescoping cover/lid). Switch to UWLAB_CLOUD_ASSETS_DIR when sharing.
+        # Real thin PCB (140x100x3 mm), picked off a 40 mm cube pedestal -- the "pcb" variant
+        # above IS that 40 mm cube, not a board. Only the 100 mm axis is graspable (140 mm
+        # exceeds the 136.76 mm jaw opening).
+        "realpcb": make_insertive_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/RealPcb/realpcb.usd"),
         "cover": make_insertive_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/Cover/cover.usd"),
     },
     "scene.receptive_object": {
@@ -642,6 +711,12 @@ variants = {
         "bottomenclosure": make_receptive_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/BottomEnclosure/bottom_enclosure.usd"),
         # Local dev asset (box with seated PCB; lid task receptive, mating point at the top rim).
         "boxwithpcb": make_receptive_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/BoxWithPcb/box_with_pcb.usd"),
+        # Jig ALREADY SEATED on the bottom enclosure, one kinematic body -- the realpcb task's
+        # goal fixture. Built by: build_jig_enclosure_usds.py --assembly. assembled_offset
+        # -0.0072 puts the PCB's bottom at the measured 13.60 mm seat (test_pcb_seat.py).
+        "jigenclosure": make_receptive_object(
+            f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/JigEnclosure/jig_enclosure.usd"
+        ),
     },
 }
 

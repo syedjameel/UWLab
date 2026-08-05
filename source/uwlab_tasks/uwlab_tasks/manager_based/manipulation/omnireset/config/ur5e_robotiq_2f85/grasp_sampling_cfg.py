@@ -92,6 +92,17 @@ class GraspSamplingEventCfg:
             "num_standoff_samples": 32,
             "num_orientations": 16,
             "lateral_sigma": 0.0,
+            # Half-height of the fully-solid band the jaw contact patch must find (m).
+            # 0.0035 (a 7 mm patch) is the jig-era value from cf8f734 -- keep it for every
+            # existing object. Thin parts CANNOT satisfy it: the real PCB is 4.9 mm at the
+            # bare edge and its slab collider is 3 mm, so the sampler kept 0 of 960 centers.
+            # Override per object, e.g. for realpcb:
+            #   env.events.grasp_sampling.params.band_half_height=0.00125
+            "band_half_height": 0.0035,
+            # Jaw-tip clearance below the object's bottom plane (m). 0.001 = the previous
+            # hardcoded value; raise for pedestal-presented objects, e.g. for realpcb:
+            #   env.events.grasp_sampling.params.tip_clearance_below=0.030
+            "tip_clearance_below": 0.001,
             "visualize_grasps": False,
             "visualization_scale": 0.01,
         },
@@ -192,6 +203,10 @@ variants = {
         # V2c: SHAPED + near-frictionless blocker. v2/v2b are pickable BY THE BLOCKER.
         "jigv2c": make_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/JigV2c/jig_v2c.usd", override_mass=False),
         # Local dev asset (telescoping cover/lid). Switch to UWLAB_CLOUD_ASSETS_DIR when sharing.
+        # Real thin PCB (140x100x3 mm), picked off a 40 mm cube pedestal -- the "pcb" variant
+        # above IS that 40 mm cube, not a board. Only the 100 mm axis is graspable (140 mm
+        # exceeds the 136.76 mm jaw opening).
+        "realpcb": make_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/RealPcb/realpcb.usd"),
         "cover": make_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/Cover/cover.usd"),
     }
 }

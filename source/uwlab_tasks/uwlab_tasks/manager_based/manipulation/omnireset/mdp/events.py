@@ -50,6 +50,21 @@ class grasp_sampling_event(ManagerTermBase):
         self.num_standoff_samples = cfg.params.get("num_standoff_samples")
         self.num_orientations = cfg.params.get("num_orientations")
         self.lateral_sigma = cfg.params.get("lateral_sigma")
+        # Half-height of the fully-solid contact band the jaw patch must find (m). 0.0035 is
+        # the jig-era default (added cf8f734 so "careful middle grasps" clamp onto the jig's
+        # 9 mm bottom strip under the wall cutout) and is left UNCHANGED for every existing
+        # object. DEVIATION (approved): it is now settable, because it is arithmetically
+        # unsatisfiable for thin parts -- it demands a 7 mm patch, while the real PCB is 4.9 mm
+        # at the bare edge and its slab collider is 3 mm, so the sampler returned 0 candidates.
+        # The same board sampled at 98% on omnireset/realpcb-thin, which predates this check.
+        # How far the jaw TIP may sit below the object's bottom plane (m). 0.001 reproduces the
+        # hardcoded allowance exactly, so every existing object is unchanged. Raise it when the
+        # object is presented on a PEDESTAL: with 40 mm of air under the grip point the tip is
+        # free to descend, and the board then sits deeper in the jaw (full rubber contact)
+        # instead of balancing on the extreme fingertip, which is all a table-resting object
+        # allows. Deviation, approved for the realpcb pedestal task.
+        self.tip_clearance_below = cfg.params.get("tip_clearance_below", 0.001)
+        self.band_half_height = cfg.params.get("band_half_height", 0.0035)
         self.visualize_grasps = cfg.params.get("visualize_grasps", False)
         self.visualization_scale = cfg.params.get("visualization_scale", 0.03)
 
@@ -62,6 +77,12 @@ class grasp_sampling_event(ManagerTermBase):
         self.gripper_maximum_aperture = metadata.get("maximum_aperture")
         self.finger_offset = metadata.get("finger_offset")
         self.finger_clearance = metadata.get("finger_clearance")
+        # D1 (APPROVED; ported from omnireset/realpcb-thin, where it was implemented and
+        # ledgered). Defaults to finger_offset + finger_clearance, so any gripper lacking the
+        # metadata entry -- including the antipodal 2F-85 path -- is bit-for-bit unaffected.
+        self.finger_tip_offset = metadata.get(
+            "finger_tip_offset", (self.finger_offset or 0.0) + max(0.0, self.finger_clearance or 0.0)
+        )
         self.gripper_approach_direction = tuple(metadata.get("gripper_approach_direction"))
         self.grasp_align_axis = tuple(metadata.get("grasp_align_axis"))
         self.orientation_sample_axis = tuple(metadata.get("orientation_sample_axis"))
@@ -100,10 +121,16 @@ class grasp_sampling_event(ManagerTermBase):
         num_standoff_samples: int,
         num_orientations: int,
         lateral_sigma: float,
+        band_half_height: float = 0.0035,
+        tip_clearance_below: float = 0.001,
         visualize_grasps: bool = False,
         visualization_scale: float = 0.01,
     ) -> None:
-        """Execute grasp sampling event - sample from pre-computed candidates."""
+        """Execute grasp sampling event - sample from pre-computed candidates.
+
+        ``band_half_height`` is read in ``__init__``; it appears here only so the manager's
+        signature check accepts it as a term parameter.
+        """
         # Generate grasp candidates if not already done
         if self.grasp_candidates is None:
             candidates_list = self._generate_grasp_candidates()
@@ -174,9 +201,21 @@ class grasp_sampling_event(ManagerTermBase):
 
         num_orient = max(1, int(self.num_orientations))
         num_standoff = max(1, int(self.num_standoff_samples))
-        standoffs = np.linspace(
-            self.finger_offset, self.finger_offset + max(0.0, self.finger_clearance), num_standoff
-        )
+        # Object-aware standoff (thin-object fix D1, ported from omnireset/realpcb-thin).
+        # The jaw tip sits finger_tip_offset from the base along the (downward) approach, so the
+        # tip's depth below the grasp centre is (finger_tip_offset - standoff). The tip-depth
+        # filter below rejects any standoff whose tip drops past the object's bottom plane -- but
+        # with a fixed 0.13..0.14 sweep that depth is always >= 4 mm, while a 3 mm board allows at
+        # most 3.5 mm, so the filter was UNSATISFIABLE for thin parts (measured: 960 centres ->
+        # 30720 standoff rejections, min shortfall 1.50 mm, 0 kept). Sweeping up to
+        # finger_tip_offset lets the depth reach 0. Reduces exactly to the old sweep for thick
+        # objects (ideal <= finger_offset); D1 ledger verified cube 83.6% -> 83.2%, RNG-level.
+        clearance = max(0.0, self.finger_clearance)
+        ideal = self.finger_tip_offset - 0.5 * float(ext[2]) - self.tip_clearance_below
+        lo = max(self.finger_offset, ideal)
+        hi = min(self.finger_tip_offset, max(self.finger_offset + clearance, ideal + clearance))
+        hi = max(lo, hi)
+        standoffs = np.linspace(lo, hi, num_standoff)
         rp = np.radians(self.topdown_roll_pitch_deg)
 
         # Face-aligned closing directions: the object-FRAME horizontal axes X and Y (valid because
@@ -200,7 +239,7 @@ class grasp_sampling_event(ManagerTermBase):
         # cutout) QUALIFIES -> careful middle grasps clamp low onto the strip, while grasp
         # centers near wall tops/edges still clamp inward. (A 7 mm patch is ample for a
         # squeeze grip -- the 3 mm PCB edge grips at 69-98%.)
-        _BAND_HH = 0.0035
+        _BAND_HH = float(self.band_half_height)
         _SOLID_FRAC = 0.85     # min solid fraction of the patch on each face
         _INSET = 0.0015        # probe depth inside the outer face (m)
         zmin, zmax = mesh.bounds[0][2], mesh.bounds[1][2]
@@ -282,7 +321,7 @@ class grasp_sampling_event(ManagerTermBase):
                     tip_offset = self.finger_offset + max(0.0, self.finger_clearance) + 0.004  # =0.144, measured jaw tip
                     gc_above_bottom = float(gc[2] - zmin)
                     for standoff in standoffs:
-                        if (tip_offset - float(standoff)) > gc_above_bottom + 0.001:
+                        if (tip_offset - float(standoff)) > gc_above_bottom + self.tip_clearance_below:
                             continue  # tip would protrude below the object's bottom plane
                         base = gc - approach_world * float(standoff)
                         T = np.eye(4)
@@ -2773,3 +2812,100 @@ class implicit_to_explicit_swap(ManagerTermBase):
             return {"actuator_swapped": False, "scale_progress": self._sysid_term.scale_progress}
 
         return self._do_swap(env)
+
+
+def reset_pedestal_under_object(
+    env: ManagerBasedEnv,
+    env_ids: torch.Tensor,
+    object_cfg: SceneEntityCfg = SceneEntityCfg("insertive_object"),
+    pedestal_cfg: SceneEntityCfg = SceneEntityCfg("pedestal"),
+    receptive_cfg: SceneEntityCfg = SceneEntityCfg("receptive_object"),
+    table_top_z: float = 0.004,
+    pedestal_half_h: float = 0.020,
+    park: bool = False,
+    may_move_object: bool = False,
+    min_separation: float = 0.19,
+    park_offset_y: float = 0.30,
+    only_for: str | None = "RealPcb",
+):
+    """Lift the parked 40 mm cube onto the table directly beneath the insertive object.
+
+    The realpcb task picks a 140x100x3 mm board off this pedestal rather than off the table --
+    a flat pick is not achievable with this gripper (3 mm side faces, fingertips foul the table),
+    which is why flat grasp recording yields ~0 candidates. Raising the board 40 mm removes
+    exactly that failure mode.
+
+    The pedestal's pose is DERIVED from the object's rather than stored in the reset datasets,
+    so no reset-recording format change is needed: the board is always centred on the cube by
+    construction. Run this AFTER ``reset_from_reset_states``.
+
+    Set ``park=True`` for ObjectPartiallyAssembledEEGrasped, where the board is already at the
+    goal and a 40 mm cube underneath would materialise inside the fixture; it then sits at
+    ``idle_offset`` from the env origin, i.e. the source spot the board came from.
+
+    Do NOT gate this on distance-to-goal or on height -- both were tried and are wrong. The board
+    and the fixture share one small mat, so a distance gate fires on ordinary C1 states and parks
+    the cube ~570 mm away, leaving the board to fall flat onto the table (measured). Height cannot
+    separate the cases either: a board seated at the goal sits only ~15 mm up (the fixture's PCB
+    seat is 13.6 mm), which is LOWER than a board resting on the 40 mm pedestal.
+    """
+    obj = env.scene[object_cfg.name]
+    # Guard by ASSET, not by task id: this branch's scene carries the pedestal for every task,
+    # and lifting a 40 mm cube under a jig would silently corrupt that task. ``only_for`` matches
+    # the insertive object's USD parent directory -- the same key the dataset paths derive from.
+    if only_for is not None:
+        usd_path = obj.cfg.spawn.usd_path
+        if os.path.basename(os.path.dirname(usd_path)) != only_for:
+            return
+
+    ped = env.scene[pedestal_cfg.name]
+    rec = env.scene[receptive_cfg.name]
+
+    origins = env.scene.env_origins[env_ids]
+    obj_pos = obj.data.root_pos_w[env_ids]
+    rec_pos = rec.data.root_pos_w[env_ids]
+
+    if park:
+        # Derive the park spot from the fixture's ACTUAL pose. A constant offset cannot work:
+        # the fixture is itself randomised over x(0.45,0.70), y(+-0.24) -- the same region the
+        # board uses -- so any fixed spot collides with it for some draws.
+        rel_y = rec_pos[:, 1] - origins[:, 1]
+        sgn = torch.where(rel_y >= 0, -1.0, 1.0)
+        px = rec_pos[:, 0]
+        py = rec_pos[:, 1] + sgn * park_offset_y
+    else:
+        px = obj_pos[:, 0].clone()
+        py = obj_pos[:, 1].clone()
+        if may_move_object:
+            # The board and fixture spawn over the SAME xy range, so the board lands on the
+            # fixture often. Both are dynamic in the authors' tasks and physics separates them,
+            # but a KINEMATIC pedestal cannot be pushed -- it simply interpenetrates the jig.
+            # Push board and pedestal out together, keeping the sampled yaw and direction.
+            # min_separation 0.19 = board half-diagonal (86 mm) + fixture half-diagonal (104 mm),
+            # so it holds under ANY yaw of either part.
+            # Only C1 may do this: C2 places the EE from the grasp dataset BEFORE this term runs,
+            # so moving the board there would desynchronise the grasp. C2 is safe regardless --
+            # it draws board poses from the C1 dataset, which this has already cleared.
+            d = torch.stack([px - rec_pos[:, 0], py - rec_pos[:, 1]], dim=1)
+            dist = torch.linalg.norm(d, dim=1)
+            close = dist < min_separation
+            if bool(close.any()):
+                dirv = d / dist.clamp(min=1e-6).unsqueeze(1)
+                fallback = torch.zeros_like(dirv)
+                fallback[:, 1] = 1.0
+                dirv = torch.where((dist < 1e-6).unsqueeze(1), fallback, dirv)
+                px = torch.where(close, rec_pos[:, 0] + dirv[:, 0] * min_separation, px)
+                py = torch.where(close, rec_pos[:, 1] + dirv[:, 1] * min_separation, py)
+                ostate = obj.data.root_state_w[env_ids].clone()
+                ostate[:, 0] = px
+                ostate[:, 1] = py
+                obj.write_root_state_to_sim(ostate, env_ids=env_ids)
+
+    state = ped.data.default_root_state[env_ids].clone()
+    state[:, 0] = px
+    state[:, 1] = py
+    state[:, 2] = origins[:, 2] + table_top_z + pedestal_half_h
+    state[:, 3] = 1.0
+    state[:, 4:7] = 0.0
+    state[:, 7:] = 0.0
+    ped.write_root_state_to_sim(state, env_ids=env_ids)

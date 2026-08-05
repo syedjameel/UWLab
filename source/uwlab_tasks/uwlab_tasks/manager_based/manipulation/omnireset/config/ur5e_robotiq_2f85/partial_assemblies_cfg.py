@@ -260,6 +260,10 @@ variants = {
             f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/JigV2c/jig_v2c.usd", override_mass=False
         ),
         # Local dev asset (telescoping cover/lid). Switch to UWLAB_CLOUD_ASSETS_DIR when sharing.
+        # Real thin PCB (140x100x3 mm), picked off a 40 mm cube pedestal -- the "pcb" variant
+        # above IS that 40 mm cube, not a board. Only the 100 mm axis is graspable (140 mm
+        # exceeds the 136.76 mm jaw opening).
+        "realpcb": make_insertive_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/RealPcb/realpcb.usd"),
         "cover": make_insertive_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/Cover/cover.usd"),
     },
     "scene.receptive_object": {
@@ -279,6 +283,12 @@ variants = {
         "bottomenclosure": make_receptive_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/BottomEnclosure/bottom_enclosure.usd"),
         # Local dev asset (box with seated PCB; lid task receptive, mating point at the top rim).
         "boxwithpcb": make_receptive_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/BoxWithPcb/box_with_pcb.usd"),
+        # Jig ALREADY SEATED on the bottom enclosure, one kinematic body -- the realpcb task's
+        # goal fixture. Built by: build_jig_enclosure_usds.py --assembly. assembled_offset
+        # -0.0072 puts the PCB's bottom at the measured 13.60 mm seat (test_pcb_seat.py).
+        "jigenclosure": make_receptive_object(
+            f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/JigEnclosure/jig_enclosure.usd"
+        ),
     },
 }
 
