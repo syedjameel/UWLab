@@ -13,6 +13,14 @@ Salvages datasets without re-recording:
   * ``--min-grip Q``: drop states whose finger_joint < Q (e.g. 0.03) -- removes the
     open-jaw "Near Goal" hovers that check_reset_state_success accepts because it has
     no jaws-on-object condition.
+  * ``--min-object-z Z`` (m): for the *EEGrasped types, drop states whose insertive
+    object is lying on the table instead of being HELD. Same root cause as --min-grip:
+    check_reset_state_success validates STABILITY, and a dropped object lying still is
+    maximally stable, so a failed grasp is accepted. --min-grip cannot catch it on a thin
+    board (jaws closed on a 3 mm board vs closed on air differ by 3 mm of finger travel),
+    but height separates the cases with huge margin -- measured on realpcb C3: dropped
+    boards at z = 4.96 mm, held ones spanning 17-300 mm. 0.012 is a safe cut (a flat board
+    sits at ~5.5 mm; C2 boards held on the 40 mm pedestal sit at 45.5 mm and are kept).
 
 Writes ``<input>.filtered.pt`` next to the input (or ``--output``); prints the kept
 fraction. Run the QC afterwards to confirm.
@@ -56,6 +64,9 @@ def main():
         "away; the student would imitate that.",
     )
     ap.add_argument("--min-grip", type=float, default=None, help="Drop states with finger_joint below this (m).")
+    ap.add_argument("--min-object-z", type=float, default=None, metavar="Z",
+                    help="Drop *EEGrasped states whose object is below this height (m) -- i.e. "
+                         "lying on the table rather than held. 0.012 for realpcb.")
     ap.add_argument("--require-upright", type=float, default=None, metavar="MAXDEG",
                     help="Drop states whose insertive object is tilted more than this (deg roll/pitch). "
                          "E.g. 20 removes flipped/tipped parts (spawn-interpenetration launches).")
@@ -86,6 +97,14 @@ def main():
             f"[FILTER] wrist_3 outside [{args.wrist3_window[0]:.0f}, {args.wrist3_window[1]:.0f}] deg: "
             f"dropping {int(outside.sum())}/{n}"
         )
+    if args.min_object_z is not None:
+        rp_list = data["initial_state"]["rigid_object"]["insertive_object"]["root_pose"]
+        Pz = torch.stack([t.cpu() for t in rp_list]).numpy()[:, 2]
+        bad = Pz < args.min_object_z
+        keep &= ~bad
+        print(f"[FILTER] insertive object z < {args.min_object_z} (on the table, not held): "
+              f"dropping {int(bad.sum())}/{n}")
+
     if args.require_upright is not None or args.obj_x_min is not None:
         import math
         rp_list = data["initial_state"]["rigid_object"]["insertive_object"]["root_pose"]
