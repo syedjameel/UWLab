@@ -448,7 +448,13 @@ _NOTCH_TOP_Z = _JIG_BOT_Z + 8.5    #   5.3 -- long walls END here for |x| <= 28 
 # physical part, which is what strangled the capture basin.
 _X_IN_LO, _X_IN_HI = 71.0, 77.0
 _Y_IN_LO, _Y_IN_HI = 51.0, 59.25
-_RAMP_T = 6.0                      # ramp slab half-thickness (extends outward past the shell)
+# Ramp slab half-thickness. The slab is centred OUTBOARD of the ramp surface, so its far face
+# sits 2*t beyond it -- at 6.0 the collider overhung the real jig by 6.09 mm in x and 5.16 in y,
+# i.e. invisible collision geometry wrapping the whole fixture (caught by eye: the red debug
+# collider was nowhere to be seen because it enclosed the visual). The wedge between the ramp and
+# the outer wall is 5 mm thick at the top and 11 mm at the bottom, so 2*2.5 = 5 mm fits inside
+# everywhere: outer x = 77 + 1.848t = 81.62 <= 82, outer y = 59.25 + 1.738t = 63.60 <= 64.5.
+_RAMP_T = 2.5
 
 # Axis-aligned boxes: (cx, cy, cz, hx, hy, hz)
 _ASSEMBLY_BOXES_MM = [
