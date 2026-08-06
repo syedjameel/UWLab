@@ -384,18 +384,33 @@ def build(stl_path, usd_path, root_name, *, y_up=False, color, metadata_extra=No
     return mesh
 
 
-def _reveal_colliders(usd_paths):
-    """Debug: make every collision prim visible (red) so colliders can be eyeballed in the GUI."""
+def _reveal_colliders(usd_paths, ghost=True, hide_visuals=False):
+    """Debug: make every collision prim visible (red) so colliders can be eyeballed in the GUI.
+
+    A red collider INSIDE an opaque visual is invisible, which reads exactly like "no collider" --
+    that ambiguity hid a 6 mm collider overhang until it was measured. So also ghost the visual
+    meshes (displayOpacity) or drop them entirely, to see where the collider actually sits.
+    """
     from pxr import UsdGeom as _UsdGeom
     for usd in usd_paths:
         stage = Usd.Stage.Open(usd)
         for prim in stage.Traverse():
-            if "/collisions/" in str(prim.GetPath()) and prim.IsA(_UsdGeom.Mesh):
-                g = _UsdGeom.Mesh(prim)
+            if not prim.IsA(_UsdGeom.Mesh):
+                continue
+            path = str(prim.GetPath())
+            g = _UsdGeom.Mesh(prim)
+            if "/collisions/" in path:
                 g.CreateVisibilityAttr("inherited")
                 g.CreateDisplayColorAttr(Vt.Vec3fArray([Gf.Vec3f(0.9, 0.1, 0.1)]))
+            elif "/visuals/" in path:
+                if hide_visuals:
+                    g.CreateVisibilityAttr("invisible")
+                elif ghost:
+                    g.CreateDisplayOpacityAttr(Vt.FloatArray([0.15]))
+                    g.CreateDisplayColorAttr(Vt.Vec3fArray([Gf.Vec3f(0.55, 0.62, 0.68)]))
         stage.GetRootLayer().Save()
-    print("  [show-colliders] collision prims made VISIBLE (red) -- debug build, do not commit")
+    mode = "visuals HIDDEN" if hide_visuals else "visuals ghosted (opacity 0.15)"
+    print(f"  [show-colliders] collision prims VISIBLE (red), {mode} -- debug build, do not commit")
 
 
 # ---------------------------------------------------------------------------------------
@@ -492,7 +507,7 @@ for _s in (+1, -1):
 
 
 def build_assembly(out_usd, *, jig_seat_mm=18.3, pcb_seat_mm=13.60, show_colliders=False,
-                   full_collider=False):
+                   full_collider=False, hide_visuals=False):
     """Author JigEnclosure: jig seated on the enclosure, one rigid body, hand-box colliders."""
     enc = trimesh.load(f"{_LOCAL}/BottomEnclosure/bottom_enclosure.stl", force="mesh")
     enc.apply_scale(0.001)
@@ -559,7 +574,7 @@ def build_assembly(out_usd, *, jig_seat_mm=18.3, pcb_seat_mm=13.60, show_collide
         "success_thresholds": {"position": 0.005, "orientation": 0.025, "yaw": 0.35, "yaw_symmetry": 2},
     })
     if show_colliders:
-        _reveal_colliders([out_usd])
+        _reveal_colliders([out_usd], hide_visuals=hide_visuals)
     print(f"  [assembly] {out_usd}")
     print(f"    collider: {len(boxes) + n_ramp} boxes ({'FULL 59-box' if full_collider else f'simplified: {len(boxes)} axis-aligned + {n_ramp} ramps'})")
     print(f"    height {2*half_h*1000:.2f} mm; enclosure bottom {enc_bottom*1000:.2f} mm; "
@@ -584,6 +599,10 @@ def main() -> None:
                              "between them, both orientations within 1.5 mm. SDF was rejected: "
                              "its jaw contacts fling the torque-controlled arm. Re-measure with "
                              "visualize_perfect_mate after any collision-model change.")
+    parser.add_argument("--hide-visuals", action="store_true",
+                        help="With --show-colliders: drop the visual meshes entirely instead of "
+                             "ghosting them, so ONLY the red colliders remain. Use this if the "
+                             "renderer ignores displayOpacity and the visuals still look solid.")
     parser.add_argument("--show-colliders", action="store_true",
                         help="Debug build: make the collision prims VISIBLE (tinted red) so the "
                              "collider can be inspected in the GUI. Re-run WITHOUT this flag for "
@@ -609,7 +628,7 @@ def main() -> None:
 
     if args.assembly:
         build_assembly(f"{_LOCAL}/JigEnclosure/jig_enclosure.usd",
-                       show_colliders=args.show_colliders)
+                       show_colliders=args.show_colliders, hide_visuals=args.hide_visuals)
         return
 
     if args.v2_jig or args.v2b_jig or args.v2c_jig:
@@ -625,7 +644,7 @@ def main() -> None:
             slippery_blocker=args.v2c_jig,
         )
         if args.show_colliders:
-            _reveal_colliders([out])
+            _reveal_colliders([out], hide_visuals=args.hide_visuals)
         return
 
     build(
