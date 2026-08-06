@@ -64,6 +64,14 @@ def main():
         "away; the student would imitate that.",
     )
     ap.add_argument("--min-grip", type=float, default=None, help="Drop states with finger_joint below this (m).")
+    ap.add_argument("--max-pedestal-offset", type=float, default=None, metavar="D",
+                    help="Drop states where the insertive object is further than D metres (in xy) "
+                         "from the PEDESTAL, i.e. no longer sitting on it. This is the invariant "
+                         "the C1/C2 states are supposed to satisfy, and it catches what height "
+                         "and tilt cannot: a board that slid onto the jig's top face rests at "
+                         "4 + 41.6 + 1.5 = 47.1 mm, inside any sane z-band around the 45.5 mm "
+                         "pedestal height, yet its footprint intersects the goal fixture. "
+                         "0.02 = the 40 mm cube's half-width.")
     ap.add_argument("--max-object-z", type=float, default=None, metavar="Z",
                     help="Drop states whose object is ABOVE this height (m). With --min-object-z "
                          "this forms a band: for realpcb C1/C2 the board rests on the 40 mm cube "
@@ -104,6 +112,19 @@ def main():
             f"[FILTER] wrist_3 outside [{args.wrist3_window[0]:.0f}, {args.wrist3_window[1]:.0f}] deg: "
             f"dropping {int(outside.sum())}/{n}"
         )
+    if args.max_pedestal_offset is not None:
+        ro = data["initial_state"]["rigid_object"]
+        if "pedestal" not in ro:
+            print("[FILTER] --max-pedestal-offset: no pedestal in this dataset, skipping")
+        else:
+            O = torch.stack([t.cpu() for t in ro["insertive_object"]["root_pose"]]).numpy()
+            Pd = torch.stack([t.cpu() for t in ro["pedestal"]["root_pose"]]).numpy()
+            off = np.linalg.norm(O[:, :2] - Pd[:, :2], axis=1)
+            bad = off > args.max_pedestal_offset
+            keep &= ~bad
+            print(f"[FILTER] object further than {args.max_pedestal_offset} m from the pedestal "
+                  f"(slid off it): dropping {int(bad.sum())}/{n}")
+
     if args.min_object_z is not None or args.max_object_z is not None:
         rp_list = data["initial_state"]["rigid_object"]["insertive_object"]["root_pose"]
         Pz = torch.stack([t.cpu() for t in rp_list]).numpy()[:, 2]
