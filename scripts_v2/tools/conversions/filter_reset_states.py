@@ -64,6 +64,13 @@ def main():
         "away; the student would imitate that.",
     )
     ap.add_argument("--min-grip", type=float, default=None, help="Drop states with finger_joint below this (m).")
+    ap.add_argument("--max-object-z", type=float, default=None, metavar="Z",
+                    help="Drop states whose object is ABOVE this height (m). With --min-object-z "
+                         "this forms a band: for realpcb C1/C2 the board rests on the 40 mm cube "
+                         "at 0.0455, so 0.0425..0.0485 keeps only boards still ON the pedestal. "
+                         "Boards that tip off during settle land anywhere -- measured at 10k "
+                         "scale: z -1.19..186.23 mm, tilt up to 180 deg, pedestal separating by "
+                         "up to 650 mm, and 22 landing on the goal fixture.")
     ap.add_argument("--min-object-z", type=float, default=None, metavar="Z",
                     help="Drop *EEGrasped states whose object is below this height (m) -- i.e. "
                          "lying on the table rather than held. 0.012 for realpcb.")
@@ -97,13 +104,19 @@ def main():
             f"[FILTER] wrist_3 outside [{args.wrist3_window[0]:.0f}, {args.wrist3_window[1]:.0f}] deg: "
             f"dropping {int(outside.sum())}/{n}"
         )
-    if args.min_object_z is not None:
+    if args.min_object_z is not None or args.max_object_z is not None:
         rp_list = data["initial_state"]["rigid_object"]["insertive_object"]["root_pose"]
         Pz = torch.stack([t.cpu() for t in rp_list]).numpy()[:, 2]
-        bad = Pz < args.min_object_z
-        keep &= ~bad
-        print(f"[FILTER] insertive object z < {args.min_object_z} (on the table, not held): "
-              f"dropping {int(bad.sum())}/{n}")
+        if args.min_object_z is not None:
+            bad = Pz < args.min_object_z
+            keep &= ~bad
+            print(f"[FILTER] insertive object z < {args.min_object_z} (on the table, not held): "
+                  f"dropping {int(bad.sum())}/{n}")
+        if args.max_object_z is not None:
+            bad = Pz > args.max_object_z
+            keep &= ~bad
+            print(f"[FILTER] insertive object z > {args.max_object_z} (off the pedestal): "
+                  f"dropping {int(bad.sum())}/{n}")
 
     if args.require_upright is not None or args.obj_x_min is not None:
         import math
