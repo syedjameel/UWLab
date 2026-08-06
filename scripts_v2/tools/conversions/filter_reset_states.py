@@ -64,6 +64,14 @@ def main():
         "away; the student would imitate that.",
     )
     ap.add_argument("--min-grip", type=float, default=None, help="Drop states with finger_joint below this (m).")
+    ap.add_argument("--drop-fixture-overlap", action="store_true",
+                    help="Drop states whose insertive-object FOOTPRINT intersects the receptive "
+                         "object (separating-axis test on the real rectangles, honouring each "
+                         "state's yaw). Needed because centre distance is not a usable proxy and "
+                         "neither height nor pedestal-offset catches these: measured at 10k "
+                         "scale, C2 boards sit within 10 mm of their pedestal yet 13 overlap the "
+                         "fixture, because the PEDESTAL itself drifts to 173 mm from it during "
+                         "settle while a 140x100 board needs 190 mm (86 + 104 half-diagonals).")
     ap.add_argument("--max-pedestal-offset", type=float, default=None, metavar="D",
                     help="Drop states where the insertive object is further than D metres (in xy) "
                          "from the PEDESTAL, i.e. no longer sitting on it. This is the invariant "
@@ -112,6 +120,32 @@ def main():
             f"[FILTER] wrist_3 outside [{args.wrist3_window[0]:.0f}, {args.wrist3_window[1]:.0f}] deg: "
             f"dropping {int(outside.sum())}/{n}"
         )
+    if args.drop_fixture_overlap:
+        ro = data["initial_state"]["rigid_object"]
+        O = torch.stack([t.cpu() for t in ro["insertive_object"]["root_pose"]]).numpy()
+        R = torch.stack([t.cpu() for t in ro["receptive_object"]["root_pose"]]).numpy()
+
+        def _corners(P, hx, hy):
+            w, x, y, z = P[:, 3], P[:, 4], P[:, 5], P[:, 6]
+            a = np.arctan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z))
+            c, sn = np.cos(a), np.sin(a)
+            M = np.stack([np.stack([c, -sn], -1), np.stack([sn, c], -1)], -2)
+            loc = np.array([[hx, hy], [hx, -hy], [-hx, -hy], [-hx, hy]]) / 1000.0
+            return P[:, None, :2] + np.einsum("nij,kj->nki", M, loc)
+
+        A, B = _corners(O, 70.0, 50.0), _corners(R, 82.0, 64.5)
+        hit = np.ones(len(A), bool)
+        for P_, Q_ in ((A, B), (B, A)):
+            for i in range(4):
+                e = P_[:, (i + 1) % 4] - P_[:, i]
+                ax = np.stack([-e[:, 1], e[:, 0]], -1)
+                ax = ax / np.linalg.norm(ax, axis=1)[:, None]
+                pa = np.einsum("nki,ni->nk", P_, ax)
+                pb = np.einsum("nki,ni->nk", Q_, ax)
+                hit &= ~((pa.max(1) < pb.min(1)) | (pb.max(1) < pa.min(1)))
+        keep &= ~hit
+        print(f"[FILTER] object footprint intersects the fixture: dropping {int(hit.sum())}/{n}")
+
     if args.max_pedestal_offset is not None:
         ro = data["initial_state"]["rigid_object"]
         if "pedestal" not in ro:

@@ -136,9 +136,13 @@ def main() -> None:
             print(f"  P pedestal: under-board {d_op.min():6.1f}..{d_op.max():7.1f} mm | "
                   f"to-fixture min {d_pr.min():6.1f} mm")
             if t in RESTING_ON_PEDESTAL:
-                bad = d_op > 10.0
+                # CUBE_HALF, not an arbitrary 10 mm: the board is supported as long as its centre
+                # lies within the 40 mm cube's footprint. Gating tighter flags states that are
+                # physically fine (measured: 33 "failures" at 10.0-18.6 mm, all still on the cube).
+                bad = d_op > CUBE_HALF
                 if bad.any():
-                    msgs.append(f"FAIL P: {bad.sum()}/{n} pedestals not under the board (>10 mm)")
+                    msgs.append(f"FAIL P: {bad.sum()}/{n} boards off the cube footprint "
+                                f"(>{CUBE_HALF:.0f} mm from the pedestal)")
             if t in PARKED:
                 bad = overlaps(_corners(ped, ped[:, 3:7], CUBE_HALF, CUBE_HALF),
                                _corners(rec, rec[:, 3:7], 82.0, 64.5))
