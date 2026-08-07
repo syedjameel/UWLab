@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import isaaclab.sim as sim_utils
 from isaaclab.assets import RigidObjectCfg
+from isaaclab.managers import CurriculumTermCfg as CurrTerm
 from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.managers import RewardTermCfg as RewTerm
@@ -36,6 +37,14 @@ LEG_REST_ROOT_Z = 0.024344
 START_HEIGHT = LEG_REST_ROOT_Z - TABLE_ROOT_Z
 SUCCESS_HEIGHT = 0.075
 CONTACT_THRESHOLD = 0.05
+FULL_OBJECT_POSE_RANGE = {
+    "x": (-0.012, 0.012),
+    "y": (-0.012, 0.012),
+    "z": (0.0, 0.0),
+    "roll": (0.0, 0.0),
+    "pitch": (0.0, 0.0),
+    "yaw": (-0.15, 0.15),
+}
 PREGRASP_ARM_JOINT_POS = {
     "shoulder_pan_joint": -0.633149,
     "shoulder_lift_joint": -1.127246,
@@ -250,16 +259,24 @@ class TableLegEventCfg(UR10eDeltoEventCfg):
         func=mdp.reset_root_state_uniform,
         mode="reset",
         params={
-            "pose_range": {
-                "x": [-0.012, 0.012],
-                "y": [-0.012, 0.012],
-                "z": [0.0, 0.0],
-                "roll": [0.0, 0.0],
-                "pitch": [0.0, 0.0],
-                "yaw": [-0.15, 0.15],
-            },
+            "pose_range": FULL_OBJECT_POSE_RANGE,
             "velocity_range": {"x": [0.0, 0.0], "y": [0.0, 0.0], "z": [0.0, 0.0]},
             "asset_cfg": SceneEntityCfg("object"),
+        },
+    )
+
+
+@configclass
+class TableLegPoseCurriculumCfg:
+    """Training-only continuation from the centered grasp to full reset variation."""
+
+    object_pose_range = CurrTerm(
+        func=mdp.object_pose_reset_curriculum,
+        params={
+            "event_term_name": "reset_object",
+            "full_pose_range": FULL_OBJECT_POSE_RANGE,
+            "warmup_steps": 320,
+            "ramp_steps": 5120,
         },
     )
 
@@ -357,6 +374,13 @@ class TableLegGraspLiftEnvCfg(UR10eDeltoMixinCfg, dexsuite.DexsuiteLiftEnvCfg):
         self.episode_length_s = 8.0
         self.viewer.eye = (1.35, -0.8, 0.75)
         self.viewer.lookat = (WORKSPACE_X, WORKSPACE_Y, 0.12)
+
+
+@configclass
+class TableLegGraspLiftCurriculumEnvCfg(TableLegGraspLiftEnvCfg):
+    """Training variant; evaluation always uses the full-range base environment."""
+
+    curriculum: TableLegPoseCurriculumCfg = TableLegPoseCurriculumCfg()
 
 
 @configclass

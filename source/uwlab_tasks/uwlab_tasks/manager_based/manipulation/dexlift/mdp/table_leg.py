@@ -151,6 +151,28 @@ def object_dropped(
     return root_height_above_table(env) < minimum_height
 
 
+def object_pose_reset_curriculum(
+    env: ManagerBasedRLEnv,
+    env_ids: Sequence[int] | torch.Tensor,
+    event_term_name: str,
+    full_pose_range: dict[str, tuple[float, float]],
+    warmup_steps: int,
+    ramp_steps: int,
+) -> float:
+    """Smoothly widen object reset offsets from centered to the evaluation range."""
+    del env_ids
+    if ramp_steps <= 0:
+        raise ValueError("ramp_steps must be positive")
+    progress = min(max((int(env.common_step_counter) - warmup_steps) / ramp_steps, 0.0), 1.0)
+    term_cfg = env.event_manager.get_term_cfg(event_term_name)
+    term_cfg.params["pose_range"] = {
+        axis: [float(bounds[0]) * progress, float(bounds[1]) * progress]
+        for axis, bounds in full_pose_range.items()
+    }
+    env.event_manager.set_term_cfg(event_term_name, term_cfg)
+    return progress
+
+
 class SustainedLiftSuccess(ManagerTermBase):
     """True only after a multi-finger, contact-held lift persists for a fixed window."""
 

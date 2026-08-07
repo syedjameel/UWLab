@@ -68,6 +68,16 @@ gym.register(
 )
 
 gym.register(
+    id="DexLift-UR10eDelto-TableLeg-GraspLift-Curriculum-v0",
+    entry_point=f"{__name__}.table_leg_env:TableLegGraspLiftEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.table_leg_env_cfg:TableLegGraspLiftCurriculumEnvCfg",
+        "rsl_rl_cfg_entry_point": _TABLE_LEG_RSL_RL_CFG,
+    },
+)
+
+gym.register(
     id="DexLift-UR10eDelto-TableLeg-GraspLift-Play-v0",
     entry_point=f"{__name__}.table_leg_env:TableLegGraspLiftEnv",
     disable_env_checker=True,
