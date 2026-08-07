@@ -23,6 +23,7 @@ repos:
       - id: destroyed-symlinks
       - id: check-added-large-files
         args: ["--maxkb=2000"]  # restrict files more than 2 MB. Should use git-lfs instead.
+        exclude: ^source/uwlab_assets/uwlab_assets/local/Robots/(DeltoHand/delto_hand|Ur10eDelto/ur10e_delto)\.usd$
       - id: check-yaml
       - id: check-merge-conflict
       - id: check-case-conflict

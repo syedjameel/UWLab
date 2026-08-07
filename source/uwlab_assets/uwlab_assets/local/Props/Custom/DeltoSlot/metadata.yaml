@@ -1,0 +1,17 @@
+# Copyright (c) 2024-2026, The UW Lab Project Developers. (https://github.com/uw-lab/UWLab/blob/main/CONTRIBUTORS.md).
+# All Rights Reserved.
+#
+# SPDX-License-Identifier: BSD-3-Clause
+
+# DeltoSlot -- receptive fixture for DeltoBlock: 56 x 56 x 18 mm outer with a 36 x 36 mm
+# pocket 12 mm deep (1 mm clearance per side). Root at the outer bounding-box centre.
+# assembled_offset is the pocket floor centre, so "assembled" is the part bottomed out.
+# success_thresholds is REQUIRED on a receptive object: commands.TaskCommand reads
+# position/orientation with no default.
+assembled_offset:
+  pos: [0.0, 0.0, -0.003]
+  quat: [1.0, 0.0, 0.0, 0.0]
+bottom_offset:
+  pos: [0.0, 0.0, -0.009]
+  quat: [1.0, 0.0, 0.0, 0.0]
+success_thresholds: {position: 0.005, orientation: 0.025, yaw: 0.35, yaw_symmetry: 4}

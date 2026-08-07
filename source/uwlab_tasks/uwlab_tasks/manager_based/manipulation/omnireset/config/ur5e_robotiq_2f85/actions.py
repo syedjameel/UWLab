@@ -10,6 +10,7 @@ from isaaclab.utils import configclass
 from uwlab_assets import UWLAB_LOCAL_ASSETS_DIR
 from uwlab_assets.robots.ur5e_linear_gripper.actions import LINEAR_GRIPPER_BINARY_ACTIONS
 from uwlab_assets.robots.ur5e_robotiq_gripper.actions import ROBOTIQ_GRIPPER_BINARY_ACTIONS
+from uwlab_assets.robots.ur10e_delto.actions import DELTO_BINARY_ACTIONS
 
 from ...mdp.actions.actions_cfg import RelCartesianOSCActionCfg
 
@@ -224,3 +225,99 @@ class Ur10eLinearGripperSysidOSCAction:
 
     arm = UR10E_LINEAR_GRIPPER_RELATIVE_OSC_UNSCALED
     gripper = LINEAR_GRIPPER_BINARY_ACTIONS
+
+
+# ---------------------------------------------------------------------------------------
+# UR10e + Tesollo DELTO DG-5F hand
+# ---------------------------------------------------------------------------------------
+# SAME ARM, SAME EVERYTHING, except the rotational damping ratio. The arm is the identical
+# calibrated UR10e, the IK body is still ``wrist_3_link``, and ``calibration_dir`` still points at
+# ``Robots/UR10e`` -- the analytical kinematics/mass matrix are an ARM property and the end
+# effector does not enter them. Translational gains, scales and torque limits are the linear
+# gripper's verbatim.
+#
+# WHAT THE HAND COULD HAVE CHANGED: the rotational damping ratio. The OSC is a mass-less Cartesian
+# PD (``task_space_actions``: "No mass matrix") with ``kd = 2*sqrt(kp)*damping_ratio``, so kd is
+# EXPLICIT velocity feedback at the env rate and stability needs ``kd*dt/I < 2``, where I is the
+# wrist's reflected inertia -- an END-EFFECTOR property. That is why the linear gripper's own
+# number moved (UR5e, 1.1 kg -> 0.2; UR10e, 0.575 kg -> 0.1, halved when the gripper mass halved).
+#
+# IT DOES NOT CHANGE HERE. Named rather than inlined so that stays a deliberate statement rather
+# than an oversight. The DELTO's measured wrist_3 reflected inertia is
+# directly instead of scaling by mass: 2.66e-3 to 4.67e-3 kg*m^2 depending on posture, against the
+# 1.1 kg linear gripper's 3.97e-3. So kd*dt/I lands at 0.62-1.09 against the bound of 2 -- inside
+# the margin the shipped grippers run at, at the linear gripper's 0.1.
+#
+# The mass-scaled guess this line first carried (0.1 * 1.685/0.575 = 0.29) was wrong, and wrong in
+# the unsafe direction. Mass is a bad proxy for reflected inertia: the DELTO is 2.9x heavier than
+# the UR10e's jaw but its mass is spread over five fingers close to the flange rather than
+# concentrated in a jaw out at the end, so the inertia barely moves.
+#
+# NON-NEGOTIABLE if this is ever revised: validate IN CONTACT, with the hand closed on an object.
+# The UR10e linear gripper's rot Kp 3 -> 6 attempt passed every free-space jitter and authority
+# probe and then entered a high-frequency limit cycle the moment the jaws touched an object,
+# failing every EEGrasped reset. Free-space probes do not detect this class of instability.
+_UR10E_DELTO_ROT_DAMPING_RATIO = 0.1
+
+UR10E_DELTO_RELATIVE_OSC = RelCartesianOSCActionCfg(
+    asset_name="robot",
+    joint_names=["shoulder.*", "elbow.*", "wrist.*"],
+    body_name="wrist_3_link",
+    scale_xyz_axisangle=(0.02, 0.02, 0.02, 0.02, 0.02, 0.2),
+    motion_stiffness=(200.0, 200.0, 200.0, 3.0, 3.0, 3.0),
+    motion_damping_ratio=(3.0, 3.0, 3.0) + (_UR10E_DELTO_ROT_DAMPING_RATIO,) * 3,
+    torque_limit=_UR10E_TORQUE_LIMIT,
+    calibration_dir=_UR10E_CALIBRATION_DIR,
+)
+
+# Eval / sim2real gains. Mirrors UR10E_LINEAR_GRIPPER_RELATIVE_OSC_EVAL, INCLUDING its rotational
+# damping ratio of 1.0: the eval OSC's rotational Kp is 50, not 3, and the two gains were fitted as
+# a pair -- rescaling only the damping of a stiffer controller is not the same correction. The
+# linear gripper's own caveat therefore applies here too and is, if anything, larger on a heavier
+# hand: revisit the eval rotational gains before trusting eval/finetune numbers.
+UR10E_DELTO_RELATIVE_OSC_EVAL = RelCartesianOSCActionCfg(
+    asset_name="robot",
+    joint_names=["shoulder.*", "elbow.*", "wrist.*"],
+    body_name="wrist_3_link",
+    scale_xyz_axisangle=(0.01, 0.01, 0.002, 0.02, 0.02, 0.2),
+    motion_stiffness=(1000.0, 1000.0, 1000.0, 50.0, 50.0, 50.0),
+    motion_damping_ratio=(1.0, 1.0, 1.0, 1.0, 1.0, 1.0),
+    torque_limit=_UR10E_TORQUE_LIMIT,
+    calibration_dir=_UR10E_CALIBRATION_DIR,
+)
+
+# Unscaled (for sysid scripts / camera alignment) -- mirrors the linear gripper's.
+UR10E_DELTO_RELATIVE_OSC_UNSCALED = RelCartesianOSCActionCfg(
+    asset_name="robot",
+    joint_names=["shoulder.*", "elbow.*", "wrist.*"],
+    body_name="wrist_3_link",
+    scale_xyz_axisangle=(1.0, 1.0, 1.0, 1.0, 1.0, 1.0),
+    motion_stiffness=(1000.0, 1000.0, 1000.0, 50.0, 50.0, 50.0),
+    motion_damping_ratio=(1.0, 1.0, 1.0, 1.0, 1.0, 1.0),
+    torque_limit=_UR10E_TORQUE_LIMIT,
+    calibration_dir=_UR10E_CALIBRATION_DIR,
+)
+
+
+@configclass
+class Ur10eDeltoRelativeOSCAction:
+    """Pre-train / train gains: UR10e analytical OSC + DELTO binary hand action."""
+
+    arm = UR10E_DELTO_RELATIVE_OSC
+    gripper = DELTO_BINARY_ACTIONS
+
+
+@configclass
+class Ur10eDeltoRelativeOSCEvalAction:
+    """Eval / sim2real gains: high-Kp UR10e OSC + DELTO binary hand action."""
+
+    arm = UR10E_DELTO_RELATIVE_OSC_EVAL
+    gripper = DELTO_BINARY_ACTIONS
+
+
+@configclass
+class Ur10eDeltoSysidOSCAction:
+    """Unscaled arm action (Cartesian delta) + DELTO binary hand action."""
+
+    arm = UR10E_DELTO_RELATIVE_OSC_UNSCALED
+    gripper = DELTO_BINARY_ACTIONS

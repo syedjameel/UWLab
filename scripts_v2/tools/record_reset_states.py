@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import torch
 from tqdm import tqdm
 from typing import cast
@@ -64,6 +65,37 @@ torch.backends.cudnn.deterministic = False
 torch.backends.cudnn.benchmark = False
 
 
+RESET_TYPE_PATTERN = re.compile(r"-(Object[A-Za-z0-9]+)-v\d+$")
+
+
+def registered_reset_types() -> dict[str, str]:
+    """Return reset-state task ids and their output type, derived from Gym's live registry."""
+    reset_types: dict[str, str] = {}
+    for spec in gym.registry.values():
+        env_entry_point = (spec.kwargs or {}).get("env_cfg_entry_point")
+        match = RESET_TYPE_PATTERN.search(spec.id)
+        if isinstance(env_entry_point, str) and env_entry_point.endswith("ResetStatesCfg") and match:
+            reset_types[spec.id] = match.group(1)
+    return reset_types
+
+
+def infer_reset_type(task_name: str) -> str:
+    """Infer a reset type only when ``task_name`` is a registered reset-state task."""
+    try:
+        task_id = gym.spec(task_name).id
+    except gym.error.Error as exc:
+        raise ValueError(f"Cannot infer reset_type: task {task_name!r} is not registered.") from exc
+
+    reset_types = registered_reset_types()
+    if task_id not in reset_types:
+        registered = ", ".join(sorted(reset_types))
+        raise ValueError(
+            f"Cannot infer reset_type: task {task_name!r} is not a registered reset-state task. "
+            f"Registered reset-state tasks: {registered}"
+        )
+    return reset_types[task_id]
+
+
 @hydra_task_compose(args_cli.task, "env_cfg_entry_point", hydra_args=remaining_args)
 def main(env_cfg, agent_cfg) -> None:
     """Main function to record reset states."""
@@ -86,17 +118,7 @@ def main(env_cfg, agent_cfg) -> None:
     # Auto-infer reset_type from task name if not provided
     reset_type = args_cli.reset_type
     if reset_type is None:
-        for candidate in [
-            "ObjectAnywhereEEAnywhere",
-            "ObjectRestingEEGrasped",
-            "ObjectAnywhereEEGrasped",
-            "ObjectPartiallyAssembledEEGrasped",
-        ]:
-            if candidate in args_cli.task:
-                reset_type = candidate
-                break
-        if reset_type is None:
-            raise ValueError(f"Could not infer reset_type from task '{args_cli.task}'. Pass --reset_type explicitly.")
+        reset_type = infer_reset_type(args_cli.task)
 
     print(f"Recording reset states for: {pair} / {reset_type}")
     print(f"Insertive: {insertive_usd_path}")
@@ -121,7 +143,14 @@ def main(env_cfg, agent_cfg) -> None:
     num_reset_conditions_evaluated = 0
     current_successful_reset_conditions = 0
     actions = torch.zeros(env.action_space.shape, device=env.device, dtype=torch.float32)
-    if "ObjectAnywhereEEGrasped" in args_cli.task or "ObjectRestingEEGrasped" in args_cli.task:
+    # Every "*EEGrasped" reset type promises the end-effector is holding the object, so the gripper
+    # must be commanded shut for all of them. This used to test the two literal names
+    # "ObjectAnywhereEEGrasped"/"ObjectRestingEEGrasped", which silently excluded any other grasped
+    # type -- notably "ObjectPartiallyAssembledEEGrasped", which then fell through to the random
+    # open/close branch below. The collision-free success gate favours the open-jaw samples, so ~65%
+    # of that dataset was recorded with fully-open jaws and was not grasping anything. Matching on
+    # the "EEGrasped" substring covers present and future grasped variants.
+    if "EEGrasped" in args_cli.task:
         actions[:, -1] = -1.0
     else:
         actions[:, -1] = (
@@ -139,10 +168,9 @@ def main(env_cfg, agent_cfg) -> None:
         dones = terminated | truncated
         done_idx = torch.where(dones)[0]
 
-        # Reset actions for environments that are done
-        if done_idx.numel() > 0 and not (
-            "ObjectAnywhereEEGrasped" in args_cli.task or "ObjectRestingEEGrasped" in args_cli.task
-        ):
+        # Reset actions for environments that are done. Same substring test as above: a grasped
+        # reset type must keep the gripper closed on re-randomisation, never flip back to open.
+        if done_idx.numel() > 0 and "EEGrasped" not in args_cli.task:
             actions[done_idx, -1] = (
                 torch.randint(0, 2, (done_idx.numel(),), device=env.device, dtype=torch.float32) * 2 - 1
             )

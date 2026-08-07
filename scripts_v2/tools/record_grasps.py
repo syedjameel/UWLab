@@ -71,11 +71,30 @@ def main(env_cfg, agent_cfg) -> None:
     print(f"Object: {object_usd_path}")
     print(f"Output: {output_dir}/grasps.pt")
 
+    # The body the recorded grasp pose is expressed in. Taken from the task's own grasp-sampling
+    # term rather than hard-coded, so it is right for every gripper by construction: that term is
+    # what POSES the gripper, so recording against any other body would record a pose the sampler
+    # never produced.
+    #
+    # This is a no-op for the shipped grippers -- ``grasp_sampling_cfg`` binds
+    # ``robotiq_base_link``, and the linear gripper renames its links to that same contract, so
+    # both resolve to exactly the value that used to be written here. The DELTO does not: its palm
+    # is ``rl_dg_mount``, and ``DeltoGraspSamplingCfg`` repoints the term accordingly.
+    #
+    # Getting this wrong is not a clean failure. ``GraspRelativePoseRecorder`` matches the body by
+    # substring and leaves the index as ``None`` when nothing matches; ``body_state_w[ids, None, :3]``
+    # then INSERTS an axis instead of raising, and the run dies later inside
+    # ``subtract_frame_transforms`` with a tensor-size error that names no body at all.
+    gripper_body_name = env_cfg.events.grasp_sampling.params["gripper_cfg"].body_names
+    if isinstance(gripper_body_name, (list, tuple)):
+        gripper_body_name = gripper_body_name[0]
+    print(f"Gripper body: {gripper_body_name}")
+
     # Configure recorder
     env_cfg.recorders = task_mdp.GraspRelativePoseRecorderManagerCfg(
         robot_name="robot",
         object_name="object",
-        gripper_body_name="robotiq_base_link",
+        gripper_body_name=gripper_body_name,
     )
     env_cfg.recorders.dataset_export_dir_path = output_dir
     env_cfg.recorders.dataset_filename = "grasps.pt"

@@ -36,13 +36,13 @@ from __future__ import annotations
 
 import math
 
-import uwlab_assets.robots.ur5e_linear_gripper as ur5e_linear_gripper
-
-from isaaclab.managers import SceneEntityCfg
 from isaaclab.utils import configclass
+
+import uwlab_assets.robots.ur5e_linear_gripper as ur5e_linear_gripper
 
 from .actions import Ur5eLinearGripperRelativeOSCAction, Ur5eLinearGripperRelativeOSCEvalAction
 from .grasp_sampling_cfg import Robotiq2f85GraspSamplingCfg
+from .gripper_seam import override_gripper_joints
 from .reset_states_cfg import (
     ObjectAnywhereEEAnywhereResetStatesCfg,
     ObjectAnywhereEEGraspedResetStatesCfg,
@@ -70,22 +70,22 @@ def _apply_linear_gripper(cfg, robot, action) -> None:
     """
     cfg.scene.robot = robot.replace(prim_path="{ENV_REGEX_NS}/Robot")
     cfg.actions = action
-    # EEGrasped reset variants set the gripper joints from the grasp dataset via this event;
-    # the EEAnywhere / RL variants have no such event (getattr -> None, skipped).
-    ev = getattr(cfg.events, "reset_end_effector_pose_from_grasp_dataset", None)
-    if ev is not None:
-        ev.params["gripper_cfg"] = SceneEntityCfg("robot", joint_names=_LINEAR_GRIPPER_JOINTS)
-    # The 2F-85 gripper-gain DR targets its single actuated joint ("finger_joint"); our
-    # dual-drive gripper has TWO driven jaws, and joint names resolve by fullmatch, so
-    # right_finger_joint was silently left at the nominal 1500/80 (only the left jaw
-    # randomized -> permanently asymmetric jaws, and the both-jaws-soft/stiff regime --
-    # which is what a real single-motor gripper actually varies like -- never sampled).
-    # Point the event at both jaws. Draws are per-joint independent (isaaclab
-    # randomize_actuator_gains); the real linkage keeps the jaws matched, so this is a
-    # superset of reality, like the rest of the DR.
-    gg = getattr(cfg.events, "randomize_gripper_actuator_parameters", None)
-    if gg is not None:
-        gg.params["asset_cfg"] = SceneEntityCfg("robot", joint_names=_LINEAR_GRIPPER_JOINTS)
+    # This one call is the per-gripper seam (gripper_seam.override_gripper_joints). It points
+    # the reset and actuator-randomization events at OUR joints:
+    # * EEGrasped reset variants set the gripper joints from the grasp dataset via
+    #   reset_end_effector_pose_from_grasp_dataset. It needs the 2F-85 joint regex swapped:
+    #   the 2F-85 pattern includes ".*left.*", which matches
+    #   NOTHING on the linear gripper (its joints are finger_joint + right_finger_joint) and
+    #   raises at term-parse time.
+    # * The 2F-85 gripper-gain DR targets its single actuated joint ("finger_joint"); our
+    #   dual-drive gripper has TWO driven jaws, and joint names resolve by fullmatch, so
+    #   right_finger_joint was silently left at the nominal 1500/80 (only the left jaw
+    #   randomized -> permanently asymmetric jaws, and the both-jaws-soft/stiff regime --
+    #   which is what a real single-motor gripper actually varies like -- never sampled).
+    #   Draws are per-joint independent (isaaclab randomize_actuator_gains); the real linkage
+    #   keeps the jaws matched, so this is a superset of reality, like the rest of the DR.
+    # Terms absent from a given variant are skipped.
+    override_gripper_joints(cfg, _LINEAR_GRIPPER_JOINTS)
     # EEAnywhere reset variants sample robotiq_base_link orientation from pose_range_b. The 2F-85's
     # ranges point ITS approach axis (+X) down; OUR approach axis is +Z (fingers reach +Z), so the
     # SAME pitch (pi/4, 3pi/4) never points our gripper top-down (all 34-60 deg slanted, 0% down).
@@ -145,9 +145,7 @@ class LinearGripperObjectAnywhereEEGraspedResetStatesCfg(ObjectAnywhereEEGrasped
 
 
 @configclass
-class LinearGripperObjectPartiallyAssembledEEAnywhereResetStatesCfg(
-    ObjectPartiallyAssembledEEAnywhereResetStatesCfg
-):
+class LinearGripperObjectPartiallyAssembledEEAnywhereResetStatesCfg(ObjectPartiallyAssembledEEAnywhereResetStatesCfg):
     def __post_init__(self):
         super().__post_init__()
         _apply_linear_gripper(
@@ -156,9 +154,7 @@ class LinearGripperObjectPartiallyAssembledEEAnywhereResetStatesCfg(
 
 
 @configclass
-class LinearGripperObjectPartiallyAssembledEEGraspedResetStatesCfg(
-    ObjectPartiallyAssembledEEGraspedResetStatesCfg
-):
+class LinearGripperObjectPartiallyAssembledEEGraspedResetStatesCfg(ObjectPartiallyAssembledEEGraspedResetStatesCfg):
     def __post_init__(self):
         super().__post_init__()
         _apply_linear_gripper(

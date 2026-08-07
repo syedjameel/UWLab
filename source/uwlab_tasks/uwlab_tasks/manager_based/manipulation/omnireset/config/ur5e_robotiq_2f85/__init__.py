@@ -38,7 +38,9 @@ gym.register(
     id="OmniReset-UR5eLinearGripper-ObjectAnywhereEEAnywhere-v0",
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
     disable_env_checker=True,
-    kwargs={"env_cfg_entry_point": f"{__name__}.linear_gripper_cfg:LinearGripperObjectAnywhereEEAnywhereResetStatesCfg"},
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.linear_gripper_cfg:LinearGripperObjectAnywhereEEAnywhereResetStatesCfg"
+    },
 )
 
 gym.register(
@@ -252,6 +254,133 @@ gym.register(
     kwargs={
         "env_cfg_entry_point": f"{__name__}.ur10e_linear_gripper_rgb_cfg:Ur10eLinearGripperEvalRGBCfg",
         "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_cfg:UR10eLinearGripper_DAggerRunnerCfg",
+    },
+)
+
+# =======================================================================================
+# UR10e + Tesollo DELTO DG-5F hand. New ids only -- every id above keeps its entry point
+# and its cfg class. Same naming convention: OmniReset-{Robot}-{Task}-v0.
+# =======================================================================================
+
+# Grasp sampling is GRIPPER-ONLY and therefore arm-independent, so it is named after the hand
+# rather than the robot (matching OmniReset-LinearGripper-GraspSampling-v0). No rsl_rl entry
+# point: this is a scripted rollout driven by a constant close action, not an RL task.
+gym.register(
+    id="OmniReset-Delto-GraspSampling-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={"env_cfg_entry_point": f"{__name__}.delto_cfg:DeltoGraspSamplingCfg"},
+)
+
+# ---- UR10e + DELTO RESET STATES variants ----
+gym.register(
+    id="OmniReset-UR10eDelto-ObjectAnywhereEEAnywhere-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={"env_cfg_entry_point": f"{__name__}.ur10e_delto_cfg:Ur10eDeltoObjectAnywhereEEAnywhereResetStatesCfg"},
+)
+
+gym.register(
+    id="OmniReset-UR10eDelto-ObjectRestingEEGrasped-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={"env_cfg_entry_point": f"{__name__}.ur10e_delto_cfg:Ur10eDeltoObjectRestingEEGraspedResetStatesCfg"},
+)
+
+gym.register(
+    id="OmniReset-UR10eDelto-ObjectAnywhereEEGrasped-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={"env_cfg_entry_point": f"{__name__}.ur10e_delto_cfg:Ur10eDeltoObjectAnywhereEEGraspedResetStatesCfg"},
+)
+
+gym.register(
+    id="OmniReset-UR10eDelto-ObjectPartiallyAssembledEEAnywhere-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.ur10e_delto_cfg:Ur10eDeltoObjectPartiallyAssembledEEAnywhereResetStatesCfg"
+    },
+)
+
+gym.register(
+    id="OmniReset-UR10eDelto-ObjectPartiallyAssembledEEGrasped-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.ur10e_delto_cfg:Ur10eDeltoObjectPartiallyAssembledEEGraspedResetStatesCfg"
+    },
+)
+
+# ---- UR10e + DELTO RL STATE variants ----
+gym.register(
+    id="OmniReset-UR10eDelto-RelCartesianOSC-State-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.ur10e_delto_cfg:Ur10eDeltoRelCartesianOSCTrainCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_cfg:UR10eDelto_PPORunnerCfg",
+    },
+)
+
+gym.register(
+    id="OmniReset-UR10eDelto-RelCartesianOSC-State-Finetune-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.ur10e_delto_cfg:Ur10eDeltoRelCartesianOSCFinetuneCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_cfg:UR10eDelto_PPORunnerCfg",
+    },
+)
+
+gym.register(
+    id="OmniReset-UR10eDelto-RelCartesianOSC-State-Play-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.ur10e_delto_cfg:Ur10eDeltoRelCartesianOSCEvalCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_cfg:UR10eDelto_PPORunnerCfg",
+    },
+)
+
+gym.register(
+    id="OmniReset-UR10eDelto-RelCartesianOSC-State-Finetune-Play-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.ur10e_delto_cfg:Ur10eDeltoRelCartesianOSCFinetuneEvalCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_cfg:UR10eDelto_PPORunnerCfg",
+    },
+)
+
+# ---- UR10e + DELTO RGB pipeline (camera align + distillation data collection) ----
+# Front/side camera poses are the linear gripper's ArUco calibration verbatim and the wrist camera
+# is re-derived onto the DELTO palm, so a policy distilled here sees the same rig -- see
+# ur10e_delto_rgb_cfg.
+gym.register(
+    id="OmniReset-UR10eDelto-CameraAlign-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={"env_cfg_entry_point": f"{__name__}.ur10e_delto_rgb_cfg:Ur10eDeltoCameraAlignEnvCfg"},
+)
+
+gym.register(
+    id="OmniReset-UR10eDelto-RelCartesianOSC-RGB-DataCollection-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.ur10e_delto_rgb_cfg:Ur10eDeltoDataCollectionRGBCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_cfg:UR10eDelto_DAggerRunnerCfg",
+    },
+)
+
+gym.register(
+    id="OmniReset-UR10eDelto-RelCartesianOSC-RGB-Play-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.ur10e_delto_rgb_cfg:Ur10eDeltoEvalRGBCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_cfg:UR10eDelto_DAggerRunnerCfg",
     },
 )
 

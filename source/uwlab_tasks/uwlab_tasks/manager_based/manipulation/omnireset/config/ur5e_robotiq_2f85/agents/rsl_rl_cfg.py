@@ -13,6 +13,8 @@ from uwlab_rl.rsl_rl.rl_cfg import (
     RslRlFancyPpoAlgorithmCfg,
 )
 
+UR10E_DELTO_EXPERIMENT_NAME = "ur10e_delto_omnireset_agent"
+
 
 def my_experts_observation_func(env):
     obs = env.unwrapped.obs_buf["expert_obs"]
@@ -51,6 +53,13 @@ class Base_PPORunnerCfg(RslRlOnPolicyRunnerCfg):
         desired_kl=0.01,
         max_grad_norm=1.0,
     )
+
+
+@configclass
+class UR10eDelto_PPORunnerCfg(Base_PPORunnerCfg):
+    """PPO runner isolated from the linear-gripper checkpoint namespace."""
+
+    experiment_name = UR10E_DELTO_EXPERIMENT_NAME
 
 
 @configclass
@@ -98,4 +107,25 @@ class UR10eLinearGripper_DAggerRunnerCfg(Base_DAggerRunnerCfg):
         self.algorithm.offline_algorithm_cfg.behavior_cloning_cfg.experts_action_group_cfg = (
             "uwlab_tasks.manager_based.manipulation.omnireset.config.ur5e_robotiq_2f85.actions:"
             "Ur10eLinearGripperRelativeOSCAction"
+        )
+
+
+@configclass
+class UR10eDelto_DAggerRunnerCfg(Base_DAggerRunnerCfg):
+    """DAgger runner for the UR10e + DELTO hand RGB distillation.
+
+    Same shape as ``UR10eLinearGripper_DAggerRunnerCfg``: only the expert ACTION group changes.
+    It cannot be shared with the linear gripper's -- the action group defines the expert's action
+    LAYOUT, and the DELTO's binary sub-action drives 20 hand joints where the jaw drives 2, so
+    reusing the linear-gripper runner would load the expert against the wrong action spec.
+    ``experts_path`` is supplied at runtime via a Hydra override.
+    """
+
+    experiment_name = UR10E_DELTO_EXPERIMENT_NAME
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.algorithm.offline_algorithm_cfg.behavior_cloning_cfg.experts_action_group_cfg = (
+            "uwlab_tasks.manager_based.manipulation.omnireset.config.ur5e_robotiq_2f85.actions:"
+            "Ur10eDeltoRelativeOSCAction"
         )

@@ -26,6 +26,7 @@ from uwlab_tasks.manager_based.manipulation.omnireset.config.ur5e_robotiq_2f85.a
 )
 
 from ... import mdp as task_mdp
+from .gripper_seam import ROBOTIQ_2F85_GRIPPER_JOINTS, robotiq_2f85_gripper_joints
 
 
 @configclass
@@ -110,6 +111,15 @@ class ResetStatesSceneCfg(InteractiveSceneCfg):
 @configclass
 class ResetStatesBaseEventCfg:
     """Configuration for randomization."""
+
+    # startup: fail immediately if this task's gripper joint selection does not fit the robot it
+    # spawns (a variant that forgot its gripper seam). Draws no randomness; see
+    # gripper_seam.override_gripper_joints, which keeps this in step with the events below.
+    check_gripper_joints = EventTerm(
+        func=task_mdp.check_gripper_joint_selection,
+        mode="startup",
+        params={"joint_names": ROBOTIQ_2F85_GRIPPER_JOINTS, "asset_name": "robot"},
+    )
 
     # startup: low friction to avoid slip
     reset_robot_material = EventTerm(
@@ -283,7 +293,9 @@ class ObjectRestingEEGraspedEventCfg(ResetStatesBaseEventCfg):
             "robot_ik_cfg": SceneEntityCfg(
                 "robot", joint_names=["shoulder.*", "elbow.*", "wrist.*"], body_names="robotiq_base_link"
             ),
-            "gripper_cfg": SceneEntityCfg("robot", joint_names=["finger_joint", ".*right.*", ".*left.*"]),
+            # 2F-85 joints (driver + passive linkage). Another gripper MUST replace this via
+            # gripper_seam.override_gripper_joints -- see linear_gripper_cfg._apply_linear_gripper.
+            "gripper_cfg": robotiq_2f85_gripper_joints(),
             "pose_range_b": {
                 "x": (-0.02, 0.02),
                 "y": (-0.02, 0.02),
@@ -331,7 +343,9 @@ class ObjectAnywhereEEGraspedEventCfg(ResetStatesBaseEventCfg):
             "robot_ik_cfg": SceneEntityCfg(
                 "robot", joint_names=["shoulder.*", "elbow.*", "wrist.*"], body_names="robotiq_base_link"
             ),
-            "gripper_cfg": SceneEntityCfg("robot", joint_names=["finger_joint", ".*right.*", ".*left.*"]),
+            # 2F-85 joints (driver + passive linkage). Another gripper MUST replace this via
+            # gripper_seam.override_gripper_joints -- see linear_gripper_cfg._apply_linear_gripper.
+            "gripper_cfg": robotiq_2f85_gripper_joints(),
             "pose_range_b": {
                 "x": (0.0, 0.0),
                 "y": (0.0, 0.0),
@@ -414,7 +428,9 @@ class ObjectPartiallyAssembledEEGraspedEventCfg(ResetStatesBaseEventCfg):
             "robot_ik_cfg": SceneEntityCfg(
                 "robot", joint_names=["shoulder.*", "elbow.*", "wrist.*"], body_names="robotiq_base_link"
             ),
-            "gripper_cfg": SceneEntityCfg("robot", joint_names=["finger_joint", ".*right.*", ".*left.*"]),
+            # 2F-85 joints (driver + passive linkage). Another gripper MUST replace this via
+            # gripper_seam.override_gripper_joints -- see linear_gripper_cfg._apply_linear_gripper.
+            "gripper_cfg": robotiq_2f85_gripper_joints(),
             "pose_range_b": {
                 "x": (-0.01, 0.01),
                 "y": (-0.01, 0.01),
@@ -487,7 +503,8 @@ class ResetStatesRewardsCfg:
     pass
 
 
-def make_insertive_object(usd_path: str):
+def make_insertive_object(usd_path: str, override_mass: bool = True):
+    """Build an insertive-object config, optionally preserving its authored mass."""
     return RigidObjectCfg(
         prim_path="{ENV_REGEX_NS}/InsertiveObject",
         spawn=sim_utils.UsdFileCfg(
@@ -499,7 +516,7 @@ def make_insertive_object(usd_path: str):
                 disable_gravity=False,
                 kinematic_enabled=False,
             ),
-            mass_props=sim_utils.MassPropertiesCfg(mass=0.001),
+            mass_props=sim_utils.MassPropertiesCfg(mass=0.001) if override_mass else None,
         ),
         init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, 0.0), rot=(1.0, 0.0, 0.0, 0.0)),
     )
@@ -537,14 +554,21 @@ variants = {
         "pcb": make_insertive_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/Pcb/pcb.usd"),
         # Local dev asset (telescoping cover/lid). Switch to UWLAB_CLOUD_ASSETS_DIR when sharing.
         "cover": make_insertive_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/Cover/cover.usd"),
+        # DELTO-sized part: a 34 mm cube, 0.03 kg, inside the hand's validated grasp window.
+        # Pairs with the "deltoslot" fixture.
+        # override_mass=False, and here it MATTERS: unlike the reference props this asset carries
+        # a MassAPI on its ROOT prim, so the default override really does apply and would replace
+        # the deliberate 0.03 kg with 1 g -- the mass the hand's grip-force budget was sized
+        # against. See make_insertive_object.
+        "deltoblock": make_insertive_object(
+            f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/DeltoBlock/delto_block.usd", override_mass=False
+        ),
     },
     "scene.receptive_object": {
         "fbtabletop": make_receptive_object(
             f"{UWLAB_CLOUD_ASSETS_DIR}/Props/FurnitureBench/SquareTableTop/square_table_top.usd"
         ),
-        "fbdrawerbox": make_receptive_object(
-            f"{UWLAB_CLOUD_ASSETS_DIR}/Props/FurnitureBench/DrawerBox/drawer_box.usd"
-        ),
+        "fbdrawerbox": make_receptive_object(f"{UWLAB_CLOUD_ASSETS_DIR}/Props/FurnitureBench/DrawerBox/drawer_box.usd"),
         "peghole": make_receptive_object(f"{UWLAB_CLOUD_ASSETS_DIR}/Props/Custom/PegHole/peg_hole.usd"),
         "plate": make_receptive_object(f"{UWLAB_CLOUD_ASSETS_DIR}/Props/Custom/Plate/plate.usd"),
         "cube": make_receptive_object(f"{UWLAB_CLOUD_ASSETS_DIR}/Props/Custom/ReceptiveCube/receptive_cube.usd"),
@@ -553,6 +577,12 @@ variants = {
         "openbox": make_receptive_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/OpenBox/open_box.usd"),
         # Local dev asset (box with seated PCB; lid task receptive, mating point at the top rim).
         "boxwithpcb": make_receptive_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/BoxWithPcb/box_with_pcb.usd"),
+        # Receptive fixture for "deltoblock": 56 x 56 x 18 mm outer with a 36 x 36 mm pocket
+        # 12 mm deep (1 mm clearance per side), pocket authored as five convex pieces. Kinematic,
+        # so the mass override above is the usual no-op. Its metadata.yaml carries
+        # success_thresholds, which a receptive object REQUIRES -- commands.TaskCommand reads
+        # position/orientation from it with no default.
+        "deltoslot": make_receptive_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/DeltoSlot/delto_slot.usd"),
     },
 }
 

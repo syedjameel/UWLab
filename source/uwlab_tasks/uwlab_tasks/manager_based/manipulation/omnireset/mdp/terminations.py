@@ -5,9 +5,8 @@
 
 """MDP functions for manipulation tasks."""
 
-import os
-
 import numpy as np
+import os
 import torch
 
 import isaacsim.core.utils.bounds as bounds_utils
@@ -130,6 +129,9 @@ class check_grasp_success(ManagerTermBase):
         self.max_pos_deviation = cfg.params.get("max_pos_deviation")
         self.pos_z_threshold = cfg.params.get("pos_z_threshold")
         self.consecutive_stability_steps = cfg.params.get("consecutive_stability_steps", 5)
+        self.max_gripper_joint_velocity_sum = cfg.params.get("max_gripper_joint_velocity_sum", 5.0)
+        self.max_object_linear_velocity_sum = cfg.params.get("max_object_linear_velocity_sum", 0.05)
+        self.max_object_angular_velocity_sum = cfg.params.get("max_object_angular_velocity_sum", 1.0)
         self.stability_counter = torch.zeros(env.num_envs, device=env.device, dtype=torch.int32)
 
     def reset(self, env_ids: torch.Tensor | None = None) -> None:
@@ -157,6 +159,9 @@ class check_grasp_success(ManagerTermBase):
         max_pos_deviation: float = 0.05,
         pos_z_threshold: float = 0.05,
         consecutive_stability_steps: int = 5,
+        max_gripper_joint_velocity_sum: float = 5.0,
+        max_object_linear_velocity_sum: float = 0.05,
+        max_object_angular_velocity_sum: float = 1.0,
     ) -> torch.Tensor:
         # Get object and gripper from scene
         object_asset = env.scene[self.object_cfg.name]
@@ -173,14 +178,22 @@ class check_grasp_success(ManagerTermBase):
         # Check if asset velocities are small
         current_step_stable = torch.ones(env.num_envs, device=env.device, dtype=torch.bool)
         # Check gripper (articulation) velocities
-        current_step_stable &= gripper_asset.data.joint_vel.abs().sum(dim=1) < 5.0
+        current_step_stable &= gripper_asset.data.joint_vel.abs().sum(dim=1) < self.max_gripper_joint_velocity_sum
         # Check object (rigid object) velocities
         if isinstance(object_asset, RigidObject):
-            current_step_stable &= object_asset.data.body_lin_vel_w.abs().sum(dim=2).sum(dim=1) < 0.05
-            current_step_stable &= object_asset.data.body_ang_vel_w.abs().sum(dim=2).sum(dim=1) < 1.0
+            current_step_stable &= (
+                object_asset.data.body_lin_vel_w.abs().sum(dim=2).sum(dim=1) < self.max_object_linear_velocity_sum
+            )
+            current_step_stable &= (
+                object_asset.data.body_ang_vel_w.abs().sum(dim=2).sum(dim=1) < self.max_object_angular_velocity_sum
+            )
         elif isinstance(object_asset, RigidObjectCollection):
-            current_step_stable &= object_asset.data.object_lin_vel_w.abs().sum(dim=2).sum(dim=1) < 0.05
-            current_step_stable &= object_asset.data.object_ang_vel_w.abs().sum(dim=2).sum(dim=1) < 1.0
+            current_step_stable &= (
+                object_asset.data.object_lin_vel_w.abs().sum(dim=2).sum(dim=1) < self.max_object_linear_velocity_sum
+            )
+            current_step_stable &= (
+                object_asset.data.object_ang_vel_w.abs().sum(dim=2).sum(dim=1) < self.max_object_angular_velocity_sum
+            )
 
         self.stability_counter = torch.where(
             current_step_stable,
@@ -252,6 +265,9 @@ class check_reset_state_success(ManagerTermBase):
         self.max_object_pos_deviation = cfg.params.get("max_object_pos_deviation")
         self.pos_z_threshold = cfg.params.get("pos_z_threshold")
         self.consecutive_stability_steps = cfg.params.get("consecutive_stability_steps", 5)
+        self.max_articulation_velocity_sum = cfg.params.get("max_articulation_velocity_sum", 5.0)
+        self.max_rigid_linear_velocity_sum = cfg.params.get("max_rigid_linear_velocity_sum", 0.1)
+        self.max_rigid_angular_velocity_sum = cfg.params.get("max_rigid_angular_velocity_sum", 1.0)
 
         # Load gripper_approach_direction from metadata
         robot_asset = env.scene[self.robot_cfg.name]
@@ -343,6 +359,9 @@ class check_reset_state_success(ManagerTermBase):
         receptive_asset_cfg: SceneEntityCfg | None = None,
         assembly_success_prob: float | None = None,
         assembly_threshold_scale: float = 1.0,
+        max_articulation_velocity_sum: float = 5.0,
+        max_rigid_linear_velocity_sum: float = 0.1,
+        max_rigid_angular_velocity_sum: float = 1.0,
     ) -> torch.Tensor:
 
         # Check time out
@@ -367,13 +386,21 @@ class check_reset_state_success(ManagerTermBase):
         current_step_stable = torch.ones(env.num_envs, device=env.device, dtype=torch.bool)
         for asset in self.assets_to_check:
             if isinstance(asset, Articulation):
-                current_step_stable &= asset.data.joint_vel.abs().sum(dim=1) < 5.0
+                current_step_stable &= asset.data.joint_vel.abs().sum(dim=1) < self.max_articulation_velocity_sum
             elif isinstance(asset, RigidObject):
-                current_step_stable &= asset.data.body_lin_vel_w.abs().sum(dim=2).sum(dim=1) < 0.1
-                current_step_stable &= asset.data.body_ang_vel_w.abs().sum(dim=2).sum(dim=1) < 1.0
+                current_step_stable &= (
+                    asset.data.body_lin_vel_w.abs().sum(dim=2).sum(dim=1) < self.max_rigid_linear_velocity_sum
+                )
+                current_step_stable &= (
+                    asset.data.body_ang_vel_w.abs().sum(dim=2).sum(dim=1) < self.max_rigid_angular_velocity_sum
+                )
             elif isinstance(asset, RigidObjectCollection):
-                current_step_stable &= asset.data.object_lin_vel_w.abs().sum(dim=2).sum(dim=1) < 0.1
-                current_step_stable &= asset.data.object_ang_vel_w.abs().sum(dim=2).sum(dim=1) < 1.0
+                current_step_stable &= (
+                    asset.data.object_lin_vel_w.abs().sum(dim=2).sum(dim=1) < self.max_rigid_linear_velocity_sum
+                )
+                current_step_stable &= (
+                    asset.data.object_ang_vel_w.abs().sum(dim=2).sum(dim=1) < self.max_rigid_angular_velocity_sum
+                )
 
         self.stability_counter = torch.where(
             current_step_stable,

@@ -56,6 +56,16 @@ class GraspRelativePoseRecorder(RecorderTerm):
             if self.gripper_body_name in body_name:
                 gripper_body_idx = idx
                 break
+        if gripper_body_idx is None:
+            # Without this the ``None`` index does not raise -- ``body_state_w[ids, None, :3]``
+            # inserts an axis and slices the BODY dimension, so the run dies much later inside
+            # subtract_frame_transforms with a tensor-size error that never names the body. This
+            # can only fire where the configuration was already wrong (e.g. the 2F-85's
+            # ``robotiq_base_link`` against a gripper whose palm is named something else).
+            raise ValueError(
+                f"gripper_body_name {self.gripper_body_name!r} matches no body on articulation "
+                f"{self.robot_name!r}; available bodies: {list(robot.body_names)}"
+            )
 
         # Get specific body pose
         gripper_pos = robot.data.body_state_w[env_ids, gripper_body_idx, :3]

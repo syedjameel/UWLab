@@ -149,7 +149,8 @@ class GraspSamplingRewardsCfg:
     pass
 
 
-def make_object(usd_path: str):
+def make_object(usd_path: str, override_mass: bool = True):
+    """Build an object config, optionally preserving the mass authored in its USD."""
     return RigidObjectCfg(
         prim_path="{ENV_REGEX_NS}/InsertiveObject",
         spawn=sim_utils.UsdFileCfg(
@@ -161,7 +162,7 @@ def make_object(usd_path: str):
                 disable_gravity=False,
                 kinematic_enabled=False,
             ),
-            mass_props=sim_utils.MassPropertiesCfg(mass=0.001),
+            mass_props=sim_utils.MassPropertiesCfg(mass=0.001) if override_mass else None,
         ),
         init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, 1.0), rot=(1.0, 0.0, 0.0, 0.0)),
     )
@@ -170,9 +171,7 @@ def make_object(usd_path: str):
 variants = {
     "scene.object": {
         "fbleg": make_object(f"{UWLAB_CLOUD_ASSETS_DIR}/Props/FurnitureBench/SquareLeg/square_leg.usd"),
-        "fbdrawerbottom": make_object(
-            f"{UWLAB_CLOUD_ASSETS_DIR}/Props/FurnitureBench/DrawerBottom/drawer_bottom.usd"
-        ),
+        "fbdrawerbottom": make_object(f"{UWLAB_CLOUD_ASSETS_DIR}/Props/FurnitureBench/DrawerBottom/drawer_bottom.usd"),
         "peg": make_object(f"{UWLAB_CLOUD_ASSETS_DIR}/Props/Custom/Peg/peg.usd"),
         "cupcake": make_object(f"{UWLAB_CLOUD_ASSETS_DIR}/Props/Custom/CupCake/cupcake.usd"),
         "cube": make_object(f"{UWLAB_CLOUD_ASSETS_DIR}/Props/Custom/InsertiveCube/insertive_cube.usd"),
@@ -181,6 +180,15 @@ variants = {
         "pcb": make_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/Pcb/pcb.usd"),
         # Local dev asset (telescoping cover/lid). Switch to UWLAB_CLOUD_ASSETS_DIR when sharing.
         "cover": make_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/Cover/cover.usd"),
+        # DELTO-sized part (34 x 34 x 34 mm, 0.03 kg) -- see the deltoblock note in
+        # reset_states_cfg. This is the object OmniReset-Delto-GraspSampling-v0 samples against.
+        # override_mass=False matters MORE here than anywhere else: the sampler VALIDATES each
+        # candidate by shaking the held object, and at the 1 g the override would impose, a grasp
+        # that the real 0.03 kg part would drop still survives the shake. Sampling against the
+        # authored mass is what keeps the recorded grasps meaningful for the hand's force budget.
+        "deltoblock": make_object(
+            f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/DeltoBlock/delto_block.usd", override_mass=False
+        ),
     }
 }
 

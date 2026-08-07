@@ -1,0 +1,98 @@
+# Copyright (c) 2024-2026, The UW Lab Project Developers. (https://github.com/uw-lab/UWLab/blob/main/CONTRIBUTORS.md).
+# All Rights Reserved.
+#
+# SPDX-License-Identifier: BSD-3-Clause
+
+# UR10e + Tesollo DELTO DG-5F metadata (FULL ROBOT).
+#
+# FIELD SPLIT -- read this before adding anything here. read_metadata_from_usd_directory keys off
+# the USD's own directory, so a field lands in whichever file belongs to the asset that consumes
+# it. The GRASP-SAMPLING fields (maximum_aperture, grasp_align_axis, gripper_approach_direction,
+# finger_offset, finger_clearance, orientation_sample_axis, grasp_sample_mode,
+# grasp_topdown_roll_pitch_deg, finger_open_joint_angles) live in Robots/DeltoHand/metadata.yaml,
+# because the grasp env's scene.robot is the HAND-ONLY articulation and events.py:59 reads that
+# directory. This file carries gripper_offset -- which rl_state_cfg.py binds to a body of the FULL
+# robot -- plus the arm identification.
+#
+# 1. sysid / calibrated_joints / link_inertials are the ARM. COPIED VERBATIM from
+#    Ur10eLinearGripper/metadata.yaml and must stay byte-identical to it; there is no inheritance,
+#    so the same numbers are repeated in every robot directory mounting this arm. They are the
+#    CMA-ES closed-loop identification of 2026-07-05 (robot serial 20185000717, per-joint RMSE
+#    < 2 deg over an 8 s 0.1-3 Hz chirp, logs/sysid/20260705_120940) plus the UR10e URDF
+#    kinematics/inertials the analytical OSC in kinematics.py reads. Never re-derive here; re-copy.
+#    CAVEAT: that identification ran with the 0.575 kg linear gripper mounted. The DELTO hand is
+#    1.7735 kg, so the payload the sysid saw is not the payload this robot carries. Unavoidable for
+#    any new end effector; it is why DEX-A6 re-derived the OSC rotational damping ratio (answer:
+#    keep 0.1 -- I_wrist3 2.66e-3 to 4.67e-3 by posture against the 1.1 kg linear gripper's
+#    3.97e-3, so kd*dt/I stays 0.62-1.09 against a bound of 2).
+#
+# 2. HAND MASS is 1.7735 kg, the sum of the 28 explicit per-body masses in the supplied updated
+#    model. Each fingertip is explicitly 5 g; there is no PhysX mass fallback. This is 0.3735 kg
+#    over the 1.4 kg Tesollo DG-5F specification, so the authored mass remains a known model/spec
+#    discrepancy. Do not silently rescale it.
+
+# TCP: the grasp centre of the virtual two-jaw, in the rl_dg_mount frame. rl_state_cfg.py binds
+# this via SceneEntityCfg("robot", body_names=...) -- for this robot that body is rl_dg_mount, NOT
+# robotiq_base_link, and downstream env cfgs must be repointed accordingly.
+#
+# This is the thumb/finger-2 visible-tip pinch frame, not a centroid over all five fingers.
+# This full-robot copy must match DeltoHand/metadata.yaml. Freeze it with
+# the grasp datasets: observations, rewards and resets all consume this frame.
+# quat is (w, x, y, z), with +Z along approach and +X along the closing axis.
+gripper_offset:
+  pos: [0.07445, 0.05800, 0.14970]
+  quat: [0.357494, 0.033307, 0.278099, 0.890926]
+
+# DUPLICATED FROM Robots/DeltoHand/metadata.yaml. This is the one exception to the field split
+# described at the top of this file, and it is deliberate.
+#
+# mdp/terminations.py:257-260 (check_reset_state_success) reads gripper_approach_direction from the
+# ROBOT's USD directory -- env.scene[robot_cfg.name].cfg.spawn.usd_path -- not the hand's, with
+# metadata.get() and no default. Before this key existed here, tuple(None) raised a TypeError
+# inside TerminationManager._prepare_terms and EVERY UR10e+DELTO reset-state env id died at
+# construction, with any part. Ur10eLinearGripper/metadata.yaml carries the
+# same key at robot level for the same reason, which is why only the DELTO path was broken.
+#
+# It is duplicated rather than fixed at the read site because terminations.py is shared with the
+# 2F-85 and linear-gripper environments. Keep it identical to DeltoHand/metadata.yaml.
+#
+# Like everything else derived from the (OPEN, CLOSED) posture pair, this moves when the pair
+# moves. See the DeltoHand file for what it means and how it was derived.
+gripper_approach_direction: [0.2582, 0.4717, 0.8431]
+sysid:
+  armature: [11.3972, 21.5355, 4.2525, 0.0696, 0.4738, 0.4872]
+  static_friction: [21.0192, 28.947, 20.5681, 7.3944, 6.4478, 5.5238]
+  dynamic_ratio: [0.5613, 0.8085, 0.4785, 0.5401, 0.4613, 0.5985]
+  viscous_friction: [49.5976, 2.4875, 16.6588, 0.3555, 2.3002, 2.028]
+calibrated_joints:
+  xyz:
+  - [0.0, 0.0, 0.1807]
+  - [0.0, 0.0, 0.0]
+  - [-0.6127, 0.0, 0.0]
+  - [-0.57155, 0.0, 0.17415]
+  - [0.0, -0.11985, -2.458164590756244e-11]
+  - [0.0, 0.11655, -2.390480459346185e-11]
+  rpy:
+  - [0.0, 0.0, 0.0]
+  - [1.570796327, 0.0, 0.0]
+  - [0.0, 0.0, 0.0]
+  - [0.0, 0.0, 0.0]
+  - [1.570796327, 0.0, 0.0]
+  - [1.570796326589793, 3.141592653589793, 3.141592653589793]
+link_inertials:
+  masses: [7.778, 12.93, 3.87, 1.96, 1.96, 0.202]
+  coms:
+  - [0.0, 0.0, 0.0]
+  - [-0.306, 0.0, 0.175]
+  - [-0.285775, 0.0, 0.0393]
+  - [0.0, 0.0, 0.0]
+  - [0.0, 0.0, 0.0]
+  - [0.0, 0.0, -0.025]
+  inertias:
+  - [0.03147431257693659, 0.03147431257693659, 0.021875624999999996, 0.0, 0.0, 0.0]
+  - [0.42175380379841093, 0.42175380379841093, 0.03636562499999999, 0.0, 0.0, 0.0]
+  - [0.11079302548902206, 0.11079302548902206, 0.010884375, 0.0, 0.0, 0.0]
+  - [0.005108247956699999, 0.005108247956699999, 0.005512499999999999, 0.0, 0.0, 0.0]
+  - [0.005108247956699999, 0.005108247956699999, 0.005512499999999999, 0.0, 0.0, 0.0]
+  - [0.00014434577559500002, 0.00014434577559500002, 0.00020452500000000002, 0.0,
+    0.0, 0.0]

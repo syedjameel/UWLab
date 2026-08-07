@@ -1,0 +1,65 @@
+# Copyright (c) 2024-2026, The UW Lab Project Developers. (https://github.com/uw-lab/UWLab/blob/main/CONTRIBUTORS.md).
+# All Rights Reserved.
+#
+# SPDX-License-Identifier: BSD-3-Clause
+
+# Grasp-sampling metadata for the Tesollo DELTO DG-5F hand-only articulation.
+#
+# The binary virtual jaw uses finger 1 against finger 2. Its deployed close fractions, keyed by
+# joint suffix, are {1: .004, 2: .092, 3: 0, 4: .947}; opposition and spread do not move. The
+# updated model's fingertip visuals and convex colliders share the same local coordinates. No
+# detached contact proxies are used.
+#
+# The grasp centre [0.07445, 0.05800, 0.14970], approach direction and closing axis are the source for
+# sampling and replay. maximum_aperture is the conservative 59 mm open limit;
+# grasp_center_clearance gives the required +/-3 mm replay-placement validation.
+#
+# Direct PhysX replay on the 34 mm, 0.03 kg DeltoBlock produces bilateral visible-tip contact,
+# peaks at 1.648 N total normal force (below the 5 N crush bound), and holds under gravity. Grasp
+# and reset datasets must be regenerated after this geometry change.
+#
+finger_offset: 0.189
+finger_clearance: 0.022
+maximum_aperture: 0.059
+# Mount-frame vector to the deployed grasp centre. The generic scalar finger_offset cannot encode
+# this hand's lateral component; events.py uses this vector when present and keeps the scalar path
+# unchanged for parallel grippers.
+grasp_center_offset: [0.07445, 0.05800, 0.14970]
+# The measured stable package uses the exact centre. Generic top-down position/height/tilt and
+# standoff sweeps move this non-parallel hand off its narrow opposing-pad basin; keep them disabled
+# for DELTO while leaving the generic defaults unchanged for existing grippers.
+grasp_center_clearance: 0.006
+gripper_approach_direction: [0.2582, 0.4717, 0.8431]
+grasp_align_axis: [-0.7422, 0.6555, -0.1395]
+# Required even in topdown mode because events.py reads it unconditionally.
+orientation_sample_axis: [-0.7422, 0.6555, -0.1395]
+
+grasp_sample_mode: topdown
+grasp_topdown_roll_pitch_deg: 0.0
+grasp_topdown_position_fraction: 0.0
+grasp_topdown_height_fraction: 0.0
+
+# OPEN posture in radians, keyed by joint name. This mapping, DELTO_HAND_DEFAULT_JOINT_POS in
+# ur10e_delto.py, and DELTO_HAND_OPEN_JOINT_POS in actions.py must agree. Always map by name: this
+# YAML is finger-major while the articulation reports joints level-major.
+finger_open_joint_angles:
+  rj_dg_1_1: 0.181879
+  rj_dg_1_2: -0.373635
+  rj_dg_1_3: 0.303144
+  rj_dg_1_4: 0.159307
+  rj_dg_2_1: -0.058794
+  rj_dg_2_2: 0.9
+  rj_dg_2_3: 0.695646
+  rj_dg_2_4: 0.573853
+  rj_dg_3_1: -0.032855
+  rj_dg_3_2: 0.9
+  rj_dg_3_3: 0.695646
+  rj_dg_3_4: 0.573853
+  rj_dg_4_1: 0.174352
+  rj_dg_4_2: 0.9
+  rj_dg_4_3: 0.695646
+  rj_dg_4_4: 0.573853
+  rj_dg_5_1: 0.193785
+  rj_dg_5_2: 0.9
+  rj_dg_5_3: 0.695646
+  rj_dg_5_4: 0.573853

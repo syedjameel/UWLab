@@ -30,6 +30,7 @@ from uwlab_tasks.manager_based.manipulation.omnireset.config.ur5e_robotiq_2f85.a
 )
 
 from ... import mdp as task_mdp
+from .gripper_seam import ROBOTIQ_2F85_GRIPPER_JOINTS
 
 
 @configclass
@@ -119,6 +120,15 @@ class BaseEventCfg:
     between finetune (curriculum-ramped) and eval (fixed) stages.  See
     ``FinetuneEventCfg`` and ``FinetuneEvalEventCfg``.
     """
+
+    # startup: fail immediately if this task's gripper joint selection does not fit the robot it
+    # spawns (a variant that forgot its gripper seam). Draws no randomness; see
+    # gripper_seam.override_gripper_joints, which keeps this in step with the gripper-gain DR.
+    check_gripper_joints = EventTerm(
+        func=task_mdp.check_gripper_joint_selection,
+        mode="startup",
+        params={"joint_names": ROBOTIQ_2F85_GRIPPER_JOINTS, "asset_name": "robot"},
+    )
 
     # mode: startup (randomize dynamics)
     robot_material = EventTerm(
@@ -226,6 +236,8 @@ class BaseEventCfg:
         func=task_mdp.randomize_actuator_gains,
         mode="reset",
         params={
+            # 2F-85 driver joint. Another gripper replaces this through its seam --
+            # gripper_seam.override_gripper_joints, see linear_gripper_cfg._apply_linear_gripper.
             "asset_cfg": SceneEntityCfg("robot", joint_names=["finger_joint"]),
             "stiffness_distribution_params": (0.5, 2.0),
             "damping_distribution_params": (0.5, 2.0),
@@ -620,7 +632,8 @@ class NoCurriculumsCfg:
     pass
 
 
-def make_insertive_object(usd_path: str):
+def make_insertive_object(usd_path: str, override_mass: bool = True):
+    """Build an insertive-object config, optionally preserving its authored mass."""
     return RigidObjectCfg(
         prim_path="{ENV_REGEX_NS}/InsertiveObject",
         spawn=sim_utils.UsdFileCfg(
@@ -632,7 +645,7 @@ def make_insertive_object(usd_path: str):
                 disable_gravity=False,
                 kinematic_enabled=False,
             ),
-            mass_props=sim_utils.MassPropertiesCfg(mass=0.001),
+            mass_props=sim_utils.MassPropertiesCfg(mass=0.001) if override_mass else None,
         ),
         init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, 0.0), rot=(1.0, 0.0, 0.0, 0.0)),
     )
@@ -670,14 +683,19 @@ variants = {
         "pcb": make_insertive_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/Pcb/pcb.usd"),
         # Local dev asset (telescoping cover/lid). Switch to UWLAB_CLOUD_ASSETS_DIR when sharing.
         "cover": make_insertive_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/Cover/cover.usd"),
+        # DELTO-sized 34 mm, 0.03 kg cube, paired with the "deltoslot" fixture.
+        # override_mass=False, and here it MATTERS: unlike the reference props this asset carries
+        # a MassAPI on its ROOT prim, so the default override really does apply and would replace
+        # the deliberate 0.03 kg with 1 g. See make_insertive_object.
+        "deltoblock": make_insertive_object(
+            f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/DeltoBlock/delto_block.usd", override_mass=False
+        ),
     },
     "scene.receptive_object": {
         "fbtabletop": make_receptive_object(
             f"{UWLAB_CLOUD_ASSETS_DIR}/Props/FurnitureBench/SquareTableTop/square_table_top.usd"
         ),
-        "fbdrawerbox": make_receptive_object(
-            f"{UWLAB_CLOUD_ASSETS_DIR}/Props/FurnitureBench/DrawerBox/drawer_box.usd"
-        ),
+        "fbdrawerbox": make_receptive_object(f"{UWLAB_CLOUD_ASSETS_DIR}/Props/FurnitureBench/DrawerBox/drawer_box.usd"),
         "peghole": make_receptive_object(f"{UWLAB_CLOUD_ASSETS_DIR}/Props/Custom/PegHole/peg_hole.usd"),
         "plate": make_receptive_object(f"{UWLAB_CLOUD_ASSETS_DIR}/Props/Custom/Plate/plate.usd"),
         "cube": make_receptive_object(f"{UWLAB_CLOUD_ASSETS_DIR}/Props/Custom/ReceptiveCube/receptive_cube.usd"),
@@ -686,6 +704,12 @@ variants = {
         "openbox": make_receptive_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/OpenBox/open_box.usd"),
         # Local dev asset (box with seated PCB; lid task receptive, mating point at the top rim).
         "boxwithpcb": make_receptive_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/BoxWithPcb/box_with_pcb.usd"),
+        # Receptive fixture for "deltoblock": 56 x 56 x 18 mm outer with a 36 x 36 mm pocket
+        # 12 mm deep (1 mm clearance per side), pocket authored as five convex pieces. Kinematic,
+        # so the mass override above is the usual no-op. Its metadata.yaml carries
+        # success_thresholds, which a receptive object REQUIRES -- commands.TaskCommand reads
+        # position/orientation from it with no default.
+        "deltoslot": make_receptive_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/DeltoSlot/delto_slot.usd"),
     },
 }
 

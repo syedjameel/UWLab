@@ -14,12 +14,13 @@ import scipy.stats as stats
 import torch
 import trimesh
 import trimesh.transformations as tra
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 
 import carb
 import isaaclab.sim as sim_utils
 import isaaclab.utils.math as math_utils
 import omni.usd
+import warp as wp
 from isaaclab.assets import Articulation, RigidObject
 from isaaclab.controllers import DifferentialIKControllerCfg
 from isaaclab.envs import ManagerBasedEnv
@@ -27,18 +28,26 @@ from isaaclab.envs.mdp.actions.task_space_actions import DifferentialInverseKine
 from isaaclab.managers import EventTermCfg, ManagerTermBase, SceneEntityCfg
 from isaaclab.markers import VisualizationMarkers
 from isaaclab.markers.config import FRAME_MARKER_CFG
-from pxr import Gf, UsdGeom, UsdLux
+from pxr import Gf, Usd, UsdGeom, UsdLux
 
 from uwlab.envs.mdp.actions.actions_cfg import DifferentialInverseKinematicsActionCfg
 
 from uwlab_tasks.manager_based.manipulation.omnireset.mdp import utils
 
 from ..assembly_keypoints import Offset
+from .gripper_collider_points import collider_points, subsample
+from .gripper_metadata import read_gripper_open_posture
+from .rigid_object_hasher import RigidObjectHasher
 from .success_monitor_cfg import SuccessMonitorCfg
 
 
 class grasp_sampling_event(ManagerTermBase):
     """EventTerm class for grasp sampling and positioning gripper."""
+
+    _PLACEMENT_POINTS_PER_BODY = 26
+    _PLACEMENT_QUERY_CHUNK = 4096
+    _PLACEMENT_TOLERANCE = 0.0
+    _PLACEMENT_MAX_DISTANCE = 0.5
 
     def __init__(self, cfg: EventTermCfg, env: ManagerBasedEnv):
         super().__init__(cfg, env)
@@ -62,10 +71,22 @@ class grasp_sampling_event(ManagerTermBase):
         self.gripper_maximum_aperture = metadata.get("maximum_aperture")
         self.finger_offset = metadata.get("finger_offset")
         self.finger_clearance = metadata.get("finger_clearance")
+        # Optional mount-frame vector to the grasp centre. Parallel jaws keep the legacy scalar
+        # finger_offset along their approach axis. A non-parallel hand can have an essential
+        # lateral component that no scalar can represent (the DELTO is ~60 mm off if collapsed to
+        # one). This is deliberately opt-in so every existing gripper retains byte-for-byte pose
+        # generation.
+        grasp_center_offset = metadata.get("grasp_center_offset")
+        self.grasp_center_offset = None if grasp_center_offset is None else np.asarray(grasp_center_offset, dtype=float)
+        if self.grasp_center_offset is not None and self.grasp_center_offset.shape != (3,):
+            raise ValueError("grasp_center_offset must contain exactly three mount-frame components")
         self.gripper_approach_direction = tuple(metadata.get("gripper_approach_direction"))
         self.grasp_align_axis = tuple(metadata.get("grasp_align_axis"))
         self.orientation_sample_axis = tuple(metadata.get("orientation_sample_axis"))
-        self.gripper_joint_reset_config = {"finger_joint": metadata.get("finger_open_joint_angle")}
+        # OPEN posture, one entry per driver joint. A parallel jaw declares the legacy scalar
+        # finger_open_joint_angle (-> {"finger_joint": value}); a multi-finger hand declares the
+        # finger_open_joint_angles mapping. See mdp/gripper_metadata.py.
+        self.gripper_joint_reset_config = read_gripper_open_posture(metadata)
         # Grasp candidate generation mode. "antipodal" (default, 2F-85) samples mesh antipodal
         # pairs. "topdown" makes the gripper approach straight DOWN onto the (fixed) object and
         # sample full yaw + small roll/pitch tilt -- required for a gripper whose approach axis is
@@ -73,9 +94,17 @@ class grasp_sampling_event(ManagerTermBase):
         # only orient side-on. Roll/pitch tilt magnitude (deg) is grasp_topdown_roll_pitch_deg.
         self.grasp_sample_mode = metadata.get("grasp_sample_mode", "antipodal")
         self.topdown_roll_pitch_deg = float(metadata.get("grasp_topdown_roll_pitch_deg", 6.0))
+        self.topdown_position_fraction = float(metadata.get("grasp_topdown_position_fraction", 0.3))
+        self.topdown_height_fraction = float(metadata.get("grasp_topdown_height_fraction", 0.2))
+        self.grasp_center_clearance = float(metadata.get("grasp_center_clearance", self.finger_clearance))
 
         # Store environment reference for later use
         self._env = env
+
+        # Placement collision gate. Read every rigid body's authored collider vertices and the
+        # object's actual collider meshes now, while the timeline is available. Coverage failures
+        # deliberately raise: checking zero (or only some) bodies looks exactly like a safe no-op.
+        self._initialize_placement_collision_gate(env, gripper_asset, usd_path)
 
         # Grasp candidates will be generated lazily when first called
         self.grasp_candidates = None
@@ -104,24 +133,24 @@ class grasp_sampling_event(ManagerTermBase):
         visualization_scale: float = 0.01,
     ) -> None:
         """Execute grasp sampling event - sample from pre-computed candidates."""
+        # Get the gripper into the posture in which candidates will be placed before deriving the
+        # body-to-root transforms used by the one-time placement collision gate.
+        gripper_asset = env.scene[self.gripper_cfg.name]
+        self._ensure_stable_gripper_state(env, gripper_asset, env_ids)
+        self._open_gripper(env, gripper_asset, env_ids)
+
         # Generate grasp candidates if not already done
         if self.grasp_candidates is None:
             candidates_list = self._generate_grasp_candidates()
-            # Convert to tensor for efficient indexing
-            self.grasp_candidates = torch.stack(
+            candidates = torch.stack(
                 [torch.tensor(candidate, dtype=torch.float32, device=env.device) for candidate in candidates_list]
             )
+            self.grasp_candidates = self._filter_placement_collisions(candidates, gripper_asset, int(env_ids[0].item()))
 
             # Visualize grasp poses if requested
             if self.visualize_grasps:
                 self._visualize_grasp_poses(env, self.visualization_scale)
 
-        # Get gripper from scene
-        gripper_asset = env.scene[self.gripper_cfg.name]
-        # First: Check for and fix any abnormal states before positioning
-        self._ensure_stable_gripper_state(env, gripper_asset, env_ids)
-        # Second: Open gripper to prepare for grasping
-        self._open_gripper(env, gripper_asset, env_ids)
         # Randomly sample grasp candidates for the environments being reset
         num_envs_reset = len(env_ids)
         grasp_indices = torch.randint(0, len(self.grasp_candidates), (num_envs_reset,), device=env.device)
@@ -135,6 +164,175 @@ class grasp_sampling_event(ManagerTermBase):
             env.grasp_candidates = self.grasp_candidates
             env.current_grasp_idx = 0
             env.grasp_results = []
+
+    def _initialize_placement_collision_gate(self, env, gripper_asset, usd_path) -> None:
+        """Read full-body gripper points and object collider meshes for the placement gate."""
+        stage = Usd.Stage.Open(usd_path)
+        if stage is None:
+            raise RuntimeError(f"could not open gripper USD for placement collision gate: {usd_path}")
+
+        body_names = list(gripper_asset.body_names)
+        points_by_body = collider_points(stage, expect_bodies=len(body_names))
+        missing = sorted(set(body_names) - set(points_by_body))
+        extra = sorted(set(points_by_body) - set(body_names))
+        if missing or extra:
+            raise RuntimeError(
+                "gripper collider bodies do not match the articulation used by the sampler: "
+                f"missing={missing}, extra={extra}"
+            )
+        self._placement_body_points = {
+            body_name: torch.as_tensor(
+                subsample(points_by_body[body_name], self._PLACEMENT_POINTS_PER_BODY),
+                dtype=torch.float32,
+                device=env.device,
+            )
+            for body_name in body_names
+        }
+
+        object_asset = env.scene[self.object_cfg.name]
+        hasher = RigidObjectHasher(env.num_envs, object_asset.cfg.prim_path, device=env.device)
+        if hasher.num_root == 0:
+            raise RuntimeError(f"placement collision gate found no object colliders under {object_asset.cfg.prim_path}")
+        env_zero = hasher.collider_prim_env_ids == 0
+        if not env_zero.any():
+            raise RuntimeError("placement collision gate found no object colliders in environment 0")
+
+        # prim_to_warp_mesh assumes an already-triangulated index buffer. Some task colliders
+        # author quads (DeltoBlock is six quads), and passing those 24 indices straight to Warp
+        # creates eight unrelated triangles with wrong inside/outside signs. Go through the
+        # existing USD-to-trimesh triangulation explicitly before constructing each Warp mesh.
+        self._placement_warp_meshes = []
+        for prim, use in zip(hasher.collider_prims, env_zero, strict=True):
+            if not bool(use.item()):
+                continue
+            mesh = utils.prim_to_trimesh(prim)
+            self._placement_warp_meshes.append(
+                wp.Mesh(
+                    points=wp.array(np.asarray(mesh.vertices, dtype=np.float32), dtype=wp.vec3, device=env.device),
+                    indices=wp.array(
+                        np.asarray(mesh.faces, dtype=np.int32).reshape(-1),
+                        dtype=int,
+                        device=env.device,
+                    ),
+                )
+            )
+
+        self._placement_mesh_handles = torch.tensor(
+            [mesh.id for mesh in self._placement_warp_meshes], dtype=torch.int64, device=env.device
+        )
+        self._placement_collider_transforms = hasher.collider_prim_relative_transforms[env_zero].to(
+            device=env.device, dtype=torch.float32
+        )
+        if len(self._placement_mesh_handles) != len(self._placement_collider_transforms):
+            raise RuntimeError(
+                "placement collision gate object handle/transform count mismatch: "
+                f"{len(self._placement_mesh_handles)} != {len(self._placement_collider_transforms)}"
+            )
+        self.placement_collision_stats = None
+
+    def _query_object_signed_distance(self, points: torch.Tensor) -> torch.Tensor:
+        """Return object-collider signed distances for object-local points (negative is inside)."""
+        num_candidates, num_points = points.shape[:2]
+        num_prims = len(self._placement_mesh_handles)
+        handles = self._placement_mesh_handles.view(1, num_prims).expand(num_candidates, -1).contiguous()
+        transforms = (
+            self._placement_collider_transforms.view(1, num_prims, 10).expand(num_candidates, -1, -1).contiguous()
+        )
+        counts = torch.full((num_candidates,), num_prims, dtype=torch.int32, device=self._env.device)
+        signed_distance_warp = wp.zeros(num_candidates * num_points, dtype=float, device=self._env.device)
+        wp.launch(
+            utils.get_signed_distance,
+            dim=num_candidates * num_points,
+            inputs=[
+                wp.from_torch(points.reshape(-1, 3).contiguous(), dtype=wp.vec3),
+                wp.from_torch(handles.reshape(-1), dtype=wp.uint64),
+                wp.from_torch(counts, dtype=wp.int32),
+                wp.from_torch(transforms[:, :, :3].reshape(-1, 3).contiguous(), dtype=wp.vec3),
+                wp.from_torch(transforms[:, :, 3:7].reshape(-1, 4).contiguous(), dtype=wp.quat),
+                wp.from_torch(transforms[:, :, 7:10].reshape(-1, 3).contiguous(), dtype=wp.vec3),
+                self._PLACEMENT_MAX_DISTANCE,
+                True,
+                num_candidates,
+                num_points,
+                num_prims,
+            ],
+            outputs=[signed_distance_warp],
+            device=self._env.device,
+        )
+        return wp.to_torch(signed_distance_warp).view(num_candidates, num_points)
+
+    def _filter_placement_collisions(
+        self, candidates: torch.Tensor, gripper_asset, reference_env_id: int
+    ) -> torch.Tensor:
+        """Reject candidates whose open gripper intersects the object at placement time."""
+        body_names = list(gripper_asset.body_names)
+        root_position = gripper_asset.data.root_link_pos_w[reference_env_id]
+        root_quaternion = gripper_asset.data.root_link_quat_w[reference_env_id]
+        inverse_root_quaternion = math_utils.quat_inv(root_quaternion)
+        body_positions = gripper_asset.data.body_link_pos_w[reference_env_id]
+        body_quaternions = gripper_asset.data.body_link_quat_w[reference_env_id]
+
+        surviving = torch.ones(len(candidates), dtype=torch.bool, device=self._env.device)
+        first_rejections: dict[str, int] = {}
+        body_intersections: dict[str, int] = {}
+        deepest_distance = float("inf")
+
+        for body_index, body_name in enumerate(body_names):
+            points_body = self._placement_body_points[body_name]
+            relative_position = math_utils.quat_apply_inverse(
+                root_quaternion, body_positions[body_index] - root_position
+            )
+            relative_quaternion = math_utils.quat_mul(inverse_root_quaternion, body_quaternions[body_index])
+            points_root = (
+                math_utils.quat_apply(relative_quaternion.unsqueeze(0).expand(len(points_body), -1), points_body)
+                + relative_position
+            )
+
+            body_hits = torch.zeros(len(candidates), dtype=torch.bool, device=self._env.device)
+            for start in range(0, len(candidates), self._PLACEMENT_QUERY_CHUNK):
+                stop = min(start + self._PLACEMENT_QUERY_CHUNK, len(candidates))
+                candidate_chunk = candidates[start:stop]
+                points_object = (
+                    torch.einsum("nij,pj->npi", candidate_chunk[:, :3, :3], points_root)
+                    + candidate_chunk[:, None, :3, 3]
+                )
+                signed_distances = self._query_object_signed_distance(points_object)
+                minimum_distance = signed_distances.amin(dim=1)
+                body_hits[start:stop] = minimum_distance < self._PLACEMENT_TOLERANCE
+                deepest_distance = min(deepest_distance, float(minimum_distance.amin().item()))
+
+            first_hit = surviving & body_hits
+            first_rejections[body_name] = int(first_hit.sum().item())
+            body_intersections[body_name] = int(body_hits.sum().item())
+            surviving &= ~body_hits
+
+        rejected = int((~surviving).sum().item())
+        kept = int(surviving.sum().item())
+        if kept == 0:
+            raise RuntimeError(f"placement collision gate rejected all {len(candidates)} grasp candidates")
+
+        self.placement_collision_stats = {
+            "total": len(candidates),
+            "rejected": rejected,
+            "surviving": kept,
+            "tolerance": self._PLACEMENT_TOLERANCE,
+            "deepest_distance": deepest_distance,
+            "first_rejections": first_rejections,
+            "body_intersections": body_intersections,
+            "points_per_body": {body_name: len(self._placement_body_points[body_name]) for body_name in body_names},
+        }
+        print(
+            f"[grasp sampler] placement collision gate rejected {rejected}/{len(candidates)} "
+            f"({100.0 * rejected / len(candidates):.1f}%); kept {kept}; tolerance "
+            f"{self._PLACEMENT_TOLERANCE:.4f} m; deepest {deepest_distance * 1000.0:.2f} mm"
+        )
+        for body_name in body_names:
+            print(
+                f"[grasp sampler] placement body {body_name}: first_rejections="
+                f"{first_rejections[body_name]}, all_intersections={body_intersections[body_name]}, "
+                f"points={len(self._placement_body_points[body_name])}"
+            )
+        return candidates[surviving]
 
     def _generate_grasp_candidates(self):
         """Generate grasp candidates (antipodal mesh sampling, or top-down for the linear gripper)."""
@@ -174,9 +372,24 @@ class grasp_sampling_event(ManagerTermBase):
 
         num_orient = max(1, int(self.num_orientations))
         num_standoff = max(1, int(self.num_standoff_samples))
-        standoffs = np.linspace(
-            self.finger_offset, self.finger_offset + max(0.0, self.finger_clearance), num_standoff
-        )
+        if self.grasp_center_offset is None:
+            standoffs = np.linspace(
+                self.finger_offset,
+                self.finger_offset + max(0.0, self.finger_clearance),
+                num_standoff,
+            )
+            center_offsets = None
+        else:
+            # Sweep symmetrically around the measured 3-D centre. The former scalar sweep was
+            # one-sided because its endpoint represented jaw-tip clearance; the explicit vector
+            # is already the mid-closure centre and must not acquire that bias.
+            clearance_offsets = np.linspace(
+                -max(0.0, self.grasp_center_clearance) / 2.0,
+                max(0.0, self.grasp_center_clearance) / 2.0,
+                num_standoff,
+            )
+            center_offsets = [self.grasp_center_offset + approach * value for value in clearance_offsets]
+            standoffs = [float(offset @ approach) for offset in center_offsets]
         rp = np.radians(self.topdown_roll_pitch_deg)
 
         # Face-aligned closing directions: the object-FRAME horizontal axes X and Y (valid because
@@ -205,10 +418,15 @@ class grasp_sampling_event(ManagerTermBase):
                     # Grasp center: centered across the gripped faces (close_idx), jittered along the
                     # face (perp) and slightly in height, so grips vary but stay flush and centered.
                     gc = centroid.copy()
-                    gc[perp_idx] += np.random.uniform(-0.3, 0.3) * perp_ext
-                    gc[2] += np.random.uniform(-0.2, 0.2) * ext[2]
-                    for standoff in standoffs:
-                        base = gc - approach_world * float(standoff)
+                    gc[perp_idx] += (
+                        np.random.uniform(-self.topdown_position_fraction, self.topdown_position_fraction) * perp_ext
+                    )
+                    gc[2] += np.random.uniform(-self.topdown_height_fraction, self.topdown_height_fraction) * ext[2]
+                    for standoff_index, standoff in enumerate(standoffs):
+                        if center_offsets is None:
+                            base = gc - approach_world * float(standoff)
+                        else:
+                            base = gc - R[:3, :3] @ center_offsets[standoff_index]
                         T = np.eye(4)
                         T[:3, :3] = R[:3, :3]
                         T[:3, 3] = base
@@ -497,11 +715,24 @@ class grasp_sampling_event(ManagerTermBase):
         current_joint_pos = gripper_asset.data.joint_pos[env_ids].clone()
 
         # Find joint indices using configurable joint names and positions
+        joint_names = list(gripper_asset.joint_names)
         joint_configs = []
+        missing = []
         for joint_name, target_position in self.gripper_joint_reset_config.items():
-            if joint_name in gripper_asset.joint_names:
-                joint_idx = list(gripper_asset.joint_names).index(joint_name)
-                joint_configs.append((joint_idx, target_position))
+            if joint_name in joint_names:
+                joint_configs.append((joint_names.index(joint_name), target_position))
+            else:
+                missing.append(joint_name)
+
+        # An unmatched name used to be skipped in silence, which leaves that joint wherever it
+        # happened to be -- for a multi-driver hand, that means sampling grasps with the hand
+        # never opened. The open posture names joints that must exist, so refuse to continue.
+        if missing:
+            raise ValueError(
+                f"Gripper open posture names joint(s) {missing} that do not exist on articulation"
+                f" '{self.gripper_cfg.name}'. Its joints are {joint_names}. Fix the open posture in"
+                " the gripper's metadata.yaml (finger_open_joint_angle[s])."
+            )
 
         if joint_configs:
             # Set joints to their configured target positions
@@ -619,9 +850,7 @@ class global_physics_control_event(ManagerTermBase):
                 )
 
 
-def _wrap_joints_into_limits(
-    robot: Articulation, joint_ids: list[int] | slice, env_ids: torch.Tensor
-) -> None:
+def _wrap_joints_into_limits(robot: Articulation, joint_ids: list[int] | slice, env_ids: torch.Tensor) -> None:
     """Wrap out-of-limit revolute joint positions by +-2*pi where the wrapped angle is in range.
 
     The differential IK used by the EE reset events is joint-limit-unaware: its integrate-and-
@@ -683,6 +912,8 @@ class reset_end_effector_round_fixed_asset(ManagerTermBase):
         fixed_asset_offset: Offset,
         pose_range_b: dict[str, tuple[float, float]],
         robot_ik_cfg: SceneEntityCfg,
+        ik_iterations: int = 10,
+        ik_step_size: float = 0.25,
     ) -> None:
         if fixed_asset_offset is None:
             fixed_tip_pos_w, fixed_tip_quat_w = (
@@ -702,10 +933,14 @@ class reset_end_effector_round_fixed_asset(ManagerTermBase):
         )
         self.solver.process_actions(torch.cat([pos_b, quat_b], dim=1))
 
-        # Error Rate 75% ^ 10 = 0.05 (final error)
-        for i in range(10):
+        # Defaults preserve the shipped reset distribution: 0.75^10 ~= 5.6% residual.
+        # Grippers whose approach axis demands a larger rotation can opt into tighter
+        # convergence without silently changing every existing task's reset distribution.
+        for _ in range(ik_iterations):
             self.solver.apply_actions()
-            delta_joint_pos = 0.25 * (self.robot.data.joint_pos_target[env_ids] - self.robot.data.joint_pos[env_ids])
+            delta_joint_pos = ik_step_size * (
+                self.robot.data.joint_pos_target[env_ids] - self.robot.data.joint_pos[env_ids]
+            )
             self.robot.write_joint_state_to_sim(
                 position=(delta_joint_pos + self.robot.data.joint_pos[env_ids])[:, self.joint_ids],
                 velocity=torch.zeros((len(env_ids), self.n_joints), device=env.device),
@@ -717,16 +952,89 @@ class reset_end_effector_round_fixed_asset(ManagerTermBase):
         _wrap_joints_into_limits(self.robot, self.joint_ids, env_ids)
 
 
+def check_gripper_joint_selection(
+    env: ManagerBasedEnv, env_ids: torch.Tensor | None, joint_names: Sequence[str], asset_name: str = "robot"
+) -> None:
+    """Startup check: the task's gripper joint selection must resolve on the spawned robot.
+
+    Every gripper-joint-selecting event in this package (the grasp-dataset resets, the
+    gripper-gain randomization) carries a ``SceneEntityCfg`` whose joint patterns are written for
+    one specific gripper. When a new robot variant forgets to override them, those patterns are
+    resolved inside a timeline PLAY callback, and the resulting exception is printed by the
+    callback dispatcher and then SWALLOWED: the env keeps building, the affected event term is
+    never initialized, and the run dies much later with an unrelated error.
+
+    This term runs on ``startup``, which the env applies directly (not through a callback), so it
+    is the first place a wrong gripper joint selection can fail the process outright.
+    """
+    asset: Articulation = env.scene[asset_name]
+    try:
+        asset.find_joints(list(joint_names))
+    except ValueError as exc:
+        raise ValueError(
+            f"Gripper joint selection {list(joint_names)} does not resolve on '{asset_name}', whose"
+            f" joints are {list(asset.joint_names)}. Every gripper needs its own selection: declare"
+            " it after super().__post_init__() with"
+            " gripper_seam.override_gripper_joints(cfg, [...]) -- see"
+            f" linear_gripper_cfg._apply_linear_gripper.\nUnderlying error: {exc}"
+        ) from exc
+
+
+def _joint_id_list(articulation: Articulation, joint_ids: list[int] | slice) -> list[int]:
+    """Normalize a ``SceneEntityCfg.joint_ids`` (list or slice) to a list of joint indices."""
+    if isinstance(joint_ids, slice):
+        return list(range(articulation.num_joints))[joint_ids]
+    return list(joint_ids)
+
+
+def _open_posture_vector(
+    open_joint_angle: float | Mapping[str, float], joint_names: Sequence[str], device
+) -> torch.Tensor:
+    """Build the OPEN joint-position vector for ``joint_names``, in that order.
+
+    ``open_joint_angle`` is either one number, meaning every gripper joint opens to the same
+    value (the parallel-jaw case), or a joint name -> value mapping, which a gripper with more
+    than one driver needs because its open configuration is a posture, not a number. The mapping
+    must cover exactly the resolved gripper joints -- a name that is missing or unknown is an
+    authoring mistake that would otherwise leave joints silently at the wrong value.
+    """
+    if isinstance(open_joint_angle, Mapping):
+        missing = [name for name in joint_names if name not in open_joint_angle]
+        unknown = [name for name in open_joint_angle if name not in joint_names]
+        if missing or unknown:
+            raise ValueError(
+                "'open_joint_angle' mapping does not match the resolved gripper joints"
+                f" {list(joint_names)}: missing {missing}, unknown {unknown}."
+            )
+        values = [float(open_joint_angle[name]) for name in joint_names]
+    else:
+        values = [float(open_joint_angle)] * len(joint_names)
+    return torch.tensor(values, dtype=torch.float32, device=device)
+
+
 class reset_end_effector_from_grasp_dataset(ManagerTermBase):
-    """Reset end effector pose using saved grasp dataset from grasp sampling."""
+    """Reset end effector pose using saved grasp dataset from grasp sampling.
+
+    ``gripper_cfg`` (the gripper joints whose recorded positions are replayed) is REQUIRED and
+    gripper-specific: there is no default that is right for more than one gripper. Each robot
+    variant sets it in its own ``_apply_<gripper>`` seam -- see
+    ``config/ur5e_robotiq_2f85/gripper_seam.py::override_gripper_joints``, used by
+    ``linear_gripper_cfg.py::_apply_linear_gripper``.
+    """
 
     def __init__(self, cfg: EventTermCfg, env: ManagerBasedEnv):
         self.dataset_dir: str = cfg.params.get("dataset_dir")
         self.fixed_asset_cfg: SceneEntityCfg = cfg.params.get("fixed_asset_cfg")  # type: ignore
         robot_ik_cfg: SceneEntityCfg = cfg.params.get("robot_ik_cfg", SceneEntityCfg("robot"))
-        gripper_cfg: SceneEntityCfg = cfg.params.get(
-            "gripper_cfg", SceneEntityCfg("robot", joint_names=["finger_joint"])
-        )
+        gripper_cfg: SceneEntityCfg | None = cfg.params.get("gripper_cfg")
+        if gripper_cfg is None:
+            # Used to default to the 2F-85 driver joint, which silently replayed a single jaw's
+            # position on any other gripper.
+            raise ValueError(
+                f"'{type(self).__name__}' requires an explicit 'gripper_cfg' naming the gripper"
+                " joints to replay, e.g. SceneEntityCfg('robot', joint_names=[...]). Set it in the"
+                " robot variant's gripper seam (see gripper_seam.override_gripper_joints)."
+            )
         # Set up robot and IK solver for arm joints
         self.fixed_asset: Articulation | RigidObject = env.scene[self.fixed_asset_cfg.name]
         self.robot: Articulation = env.scene[robot_ik_cfg.name]
@@ -753,6 +1061,12 @@ class reset_end_effector_from_grasp_dataset(ManagerTermBase):
         ]  # Should be same as robot but different joint selection
         self.gripper_joint_ids: list[int] | slice = gripper_cfg.joint_ids
         self.gripper_joint_names: list[str] = gripper_cfg.joint_names if gripper_cfg.joint_names else []
+        # ``gripper_joint_names`` are the PATTERNS as written in the config (SceneEntityCfg keeps
+        # them un-expanded); these are the actual articulation joints they resolved to, in the
+        # order the gripper joint tensors are written in.
+        self.resolved_gripper_joint_names: list[str] = [
+            self.robot.joint_names[i] for i in _joint_id_list(self.robot, self.gripper_joint_ids)
+        ]
 
         # Compute grasp dataset path from object name
         self.grasp_dataset_path = self._compute_grasp_dataset_path()
@@ -799,15 +1113,31 @@ class reset_end_effector_from_grasp_dataset(ManagerTermBase):
         ).to(env.device, dtype=torch.float32)
 
         # Get gripper joint mapping
-        if isinstance(self.gripper_joint_ids, slice):
-            gripper_joint_list = list(range(self.robot.num_joints))[self.gripper_joint_ids]
-        else:
-            gripper_joint_list = self.gripper_joint_ids
+        gripper_joint_list = _joint_id_list(self.robot, self.gripper_joint_ids)
 
         num_gripper_joints = len(gripper_joint_list)
         self.gripper_joint_positions = torch.zeros(
             (num_grasps, num_gripper_joints), device=env.device, dtype=torch.float32
         )
+
+        # A joint the dataset does not carry falls back to 0.0, which for a gripper means "wide
+        # open" -- a grasped reset that quietly holds nothing. Tolerable for a stray joint, but if
+        # the dataset names NONE of this gripper's joints it was recorded with a different gripper
+        # and every replayed grasp would be empty, so refuse it.
+        recorded = set(gripper_joint_positions_dict)
+        selected = [self.robot.joint_names[i] for i in gripper_joint_list]
+        missing = [name for name in selected if name not in recorded]
+        if missing and len(missing) == len(selected):
+            raise ValueError(
+                f"Grasp dataset '{self.grasp_dataset_path}' records joint positions for {sorted(recorded)},"
+                f" none of which are this gripper's joints {selected}. It was recorded with a different"
+                " gripper; record grasps for this one (scripts_v2/tools/record_grasps.py)."
+            )
+        if missing:
+            print(
+                f"[WARNING] Grasp dataset '{self.grasp_dataset_path}' has no positions for gripper joint(s)"
+                f" {missing}; they will be replayed at 0.0."
+            )
 
         # Build joint matrix ordered by robot joint indices per provided gripper_joint_ids
         for gripper_idx, robot_joint_idx in enumerate(gripper_joint_list):
@@ -1610,9 +1940,7 @@ def sample_link_camera_offset_jitter(
     entry = stash[camera_name]
     for env_idx in env_ids.tolist():
         dp = [random.uniform(*position_deltas[k]) for k in ("x", "y", "z")]
-        entry["pos"][env_idx] = torch.tensor(base_position, dtype=torch.float64) + torch.tensor(
-            dp, dtype=torch.float64
-        )
+        entry["pos"][env_idx] = torch.tensor(base_position, dtype=torch.float64) + torch.tensor(dp, dtype=torch.float64)
         # delta rotation pre-multiplied onto the base, matching randomize_tiled_cameras
         base_quat = Gf.Quatd(base_rotation[0], Gf.Vec3d(*base_rotation[1:]))
         delta_rot = (
@@ -1621,9 +1949,7 @@ def sample_link_camera_offset_jitter(
             * Gf.Rotation(Gf.Vec3d(1, 0, 0), random.uniform(*euler_deltas["roll"]))
         )
         q = (delta_rot * Gf.Rotation(base_quat)).GetQuat()
-        entry["quat"][env_idx] = torch.tensor(
-            [q.GetReal(), *q.GetImaginary()], dtype=torch.float64
-        )
+        entry["quat"][env_idx] = torch.tensor([q.GetReal(), *q.GetImaginary()], dtype=torch.float64)
 
 
 def track_link_mounted_camera(

@@ -14,6 +14,12 @@
 **/*.usdc
 **/*.usdz
 
+# Runtime assets for the Tesollo DELTO environments are committed directly.
+!source/uwlab_assets/uwlab_assets/local/Robots/DeltoHand/delto_hand.usd
+!source/uwlab_assets/uwlab_assets/local/Robots/Ur10eDelto/ur10e_delto.usd
+!source/uwlab_assets/uwlab_assets/local/Props/Custom/DeltoBlock/delto_block.usd
+!source/uwlab_assets/uwlab_assets/local/Props/Custom/DeltoSlot/delto_slot.usd
+
 # Python
 .DS_Store
 **/*.egg-info/

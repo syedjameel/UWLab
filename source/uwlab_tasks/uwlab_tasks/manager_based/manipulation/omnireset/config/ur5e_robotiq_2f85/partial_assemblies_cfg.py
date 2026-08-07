@@ -189,7 +189,8 @@ class PartialAssembliesActionsCfg:
     pass
 
 
-def make_insertive_object(usd_path: str):
+def make_insertive_object(usd_path: str, override_mass: bool = True):
+    """Build an insertive-object config, optionally preserving its authored mass."""
     return RigidObjectCfg(
         prim_path="{ENV_REGEX_NS}/InsertiveObject",
         spawn=sim_utils.UsdFileCfg(
@@ -201,7 +202,7 @@ def make_insertive_object(usd_path: str):
                 disable_gravity=True,
                 kinematic_enabled=False,
             ),
-            mass_props=sim_utils.MassPropertiesCfg(mass=0.001),
+            mass_props=sim_utils.MassPropertiesCfg(mass=0.001) if override_mass else None,
         ),
         init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, OBJECT_SPAWN_HEIGHT * 2), rot=(1.0, 0.0, 0.0, 0.0)),
     )
@@ -239,14 +240,20 @@ variants = {
         "pcb": make_insertive_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/Pcb/pcb.usd"),
         # Local dev asset (telescoping cover/lid). Switch to UWLAB_CLOUD_ASSETS_DIR when sharing.
         "cover": make_insertive_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/Cover/cover.usd"),
+        # DELTO-sized part (34 x 34 x 34 mm, 0.03 kg) -- see the deltoblock note in
+        # reset_states_cfg. Registered here too so the partial-assembly dataset the
+        # ObjectPartiallyAssembled* reset tasks replay can be generated for this pair.
+        # override_mass=False: this asset authors a MassAPI on its ROOT, so the override is
+        # live and would overwrite the deliberate 0.03 kg with 1 g.
+        "deltoblock": make_insertive_object(
+            f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/DeltoBlock/delto_block.usd", override_mass=False
+        ),
     },
     "scene.receptive_object": {
         "fbtabletop": make_receptive_object(
             f"{UWLAB_CLOUD_ASSETS_DIR}/Props/FurnitureBench/SquareTableTop/square_table_top.usd"
         ),
-        "fbdrawerbox": make_receptive_object(
-            f"{UWLAB_CLOUD_ASSETS_DIR}/Props/FurnitureBench/DrawerBox/drawer_box.usd"
-        ),
+        "fbdrawerbox": make_receptive_object(f"{UWLAB_CLOUD_ASSETS_DIR}/Props/FurnitureBench/DrawerBox/drawer_box.usd"),
         "peghole": make_receptive_object(f"{UWLAB_CLOUD_ASSETS_DIR}/Props/Custom/PegHole/peg_hole.usd"),
         "plate": make_receptive_object(f"{UWLAB_CLOUD_ASSETS_DIR}/Props/Custom/Plate/plate.usd"),
         "cube": make_receptive_object(f"{UWLAB_CLOUD_ASSETS_DIR}/Props/Custom/ReceptiveCube/receptive_cube.usd"),
@@ -255,6 +262,8 @@ variants = {
         "openbox": make_receptive_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/OpenBox/open_box.usd"),
         # Local dev asset (box with seated PCB; lid task receptive, mating point at the top rim).
         "boxwithpcb": make_receptive_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/BoxWithPcb/box_with_pcb.usd"),
+        # Receptive fixture for "deltoblock" -- see the deltoslot note in reset_states_cfg.
+        "deltoslot": make_receptive_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/DeltoSlot/delto_slot.usd"),
     },
 }
 
