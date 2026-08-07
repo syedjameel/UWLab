@@ -135,12 +135,12 @@ class TableLegRewardsCfg(dexsuite.RewardsCfg):
     )
     any_finger_contact = RewTerm(
         func=mdp.any_contact,
-        weight=1.0,
+        weight=5.0,
         params={"threshold": CONTACT_THRESHOLD, "contact_names": FINGER_CONTACT_NAMES},
     )
     opposition_contact = RewTerm(
         func=mdp.contacts,
-        weight=3.0,
+        weight=30.0,
         params={
             "threshold": CONTACT_THRESHOLD,
             "thumb_contact_name": THUMB_CONTACT_NAMES,
@@ -149,7 +149,7 @@ class TableLegRewardsCfg(dexsuite.RewardsCfg):
     )
     stable_grasp = RewTerm(
         func=mdp.stable_grasp,
-        weight=2.0,
+        weight=20.0,
         params={
             "threshold": CONTACT_THRESHOLD,
             "thumb_contact_name": THUMB_CONTACT_NAMES,
@@ -159,7 +159,7 @@ class TableLegRewardsCfg(dexsuite.RewardsCfg):
     )
     object_upward_motion = RewTerm(
         func=mdp.object_upward_velocity_bonus,
-        weight=1.0,
+        weight=5.0,
         params={
             "std": 0.15,
             "threshold": CONTACT_THRESHOLD,
@@ -169,7 +169,7 @@ class TableLegRewardsCfg(dexsuite.RewardsCfg):
     )
     lift_progress = RewTerm(
         func=mdp.lift_progress,
-        weight=8.0,
+        weight=40.0,
         params={
             "start_height": START_HEIGHT,
             "target_height": SUCCESS_HEIGHT,
@@ -190,7 +190,7 @@ class TableLegRewardsCfg(dexsuite.RewardsCfg):
     )
     horizontal_displacement_penalty = RewTerm(
         func=mdp.excessive_horizontal_displacement,
-        weight=-2.0,
+        weight=-0.5,
         params={"center_x": WORKSPACE_X, "center_y": WORKSPACE_Y, "free_radius": 0.04},
     )
     object_speed_penalty = RewTerm(
