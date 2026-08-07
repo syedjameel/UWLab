@@ -291,6 +291,14 @@ class TableLegGraspLiftEnvCfg(UR10eDeltoMixinCfg, dexsuite.DexsuiteLiftEnvCfg):
         self.events.randomize_object_scale = None
         self.events.object_scale_mass = None
         self.events.variable_gravity = None
+        # Establish the nominal FurnitureBench policy before any sim-to-real
+        # finetuning.  Keep reset-pose variation, but do not change actuator,
+        # joint-friction, or contact-material parameters across training scenes.
+        self.events.randomize_arm_sysid = None
+        self.events.robot_physics_material = None
+        self.events.object_physics_material = None
+        self.events.joint_stiffness_and_damping = None
+        self.events.joint_friction = None
         # UR10eDeltoMixinCfg disables the generic early-termination term. Restore
         # this task's explicit launch/drop penalty after the mixin has run.
         self.rewards.early_termination = RewTerm(
