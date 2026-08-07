@@ -63,12 +63,12 @@ class TableLegRelJointPosActionCfg:
         asset_name="robot",
         joint_names=[".*"],
         scale={
-            "shoulder_pan_joint": 0.10,
-            "shoulder_lift_joint": 0.10,
-            "elbow_joint": 0.10,
-            "wrist_1_joint": 0.10,
-            "wrist_2_joint": 0.10,
-            "wrist_3_joint": 0.10,
+            "shoulder_pan_joint": 0.05,
+            "shoulder_lift_joint": 0.05,
+            "elbow_joint": 0.05,
+            "wrist_1_joint": 0.05,
+            "wrist_2_joint": 0.05,
+            "wrist_3_joint": 0.05,
             HAND_JOINT_REGEX: 0.03,
         },
     )
@@ -127,10 +127,10 @@ class TableLegRewardsCfg(dexsuite.RewardsCfg):
     )
     position_tracking = None
     orientation_tracking = None
-    success = RewTerm(func=mdp.is_terminated_term, weight=250.0, params={"term_keys": "success"})
+    success = RewTerm(func=mdp.is_terminated_term, weight=3000.0, params={"term_keys": "success"})
     early_termination = RewTerm(
         func=mdp.is_terminated_term,
-        weight=-250.0,
+        weight=-3000.0,
         params={"term_keys": ["object_out_of_bound", "dropped"]},
     )
     any_finger_contact = RewTerm(
@@ -295,7 +295,7 @@ class TableLegGraspLiftEnvCfg(UR10eDeltoMixinCfg, dexsuite.DexsuiteLiftEnvCfg):
         # this task's explicit launch/drop penalty after the mixin has run.
         self.rewards.early_termination = RewTerm(
             func=mdp.is_terminated_term,
-            weight=-250.0,
+            weight=-3000.0,
             params={"term_keys": ["object_out_of_bound", "dropped"]},
         )
         self.events.reset_table.params["pose_range"] = {
