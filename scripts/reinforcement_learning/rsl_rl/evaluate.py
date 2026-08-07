@@ -101,6 +101,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg, agent_cfg: RslRlBaseRunnerCfg):
         "checkpoint_sha256": hashlib.sha256(checkpoint.read_bytes()).hexdigest(),
         "seed": args_cli.seed,
         "episodes": completed,
+        "parallel_envs": env.num_envs,
+        "protocol": "one_terminal_outcome_per_environment_slot",
         "successes": successes,
         "success_rate": successes / completed,
         "wilson_95": [low, high],

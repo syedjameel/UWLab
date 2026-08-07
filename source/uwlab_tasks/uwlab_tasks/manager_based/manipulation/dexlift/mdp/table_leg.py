@@ -118,6 +118,21 @@ def excessive_object_speed(
     return ((speed - max_speed).clamp(min=0.0) / max_speed).square().clamp(max=25.0)
 
 
+def excessive_horizontal_displacement(
+    env: ManagerBasedRLEnv,
+    center_x: float,
+    center_y: float,
+    free_radius: float,
+    object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+) -> torch.Tensor:
+    """Squared penalty once the leg moves materially away from its receiver."""
+    obj: RigidObject = env.scene[object_cfg.name]
+    dx = obj.data.root_pos_w[:, 0] - center_x
+    dy = obj.data.root_pos_w[:, 1] - center_y
+    distance = torch.sqrt(dx.square() + dy.square())
+    return ((distance - free_radius).clamp(min=0.0) / free_radius).square().clamp(max=25.0)
+
+
 def excessive_contact_force(
     env: ManagerBasedRLEnv,
     contact_names: tuple[str, ...],

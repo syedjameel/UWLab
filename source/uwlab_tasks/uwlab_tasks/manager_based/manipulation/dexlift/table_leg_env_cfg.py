@@ -188,6 +188,11 @@ class TableLegRewardsCfg(dexsuite.RewardsCfg):
             "tip_contact_names": TIP_CONTACT_NAMES,
         },
     )
+    horizontal_displacement_penalty = RewTerm(
+        func=mdp.excessive_horizontal_displacement,
+        weight=-2.0,
+        params={"center_x": WORKSPACE_X, "center_y": WORKSPACE_Y, "free_radius": 0.04},
+    )
     object_speed_penalty = RewTerm(
         func=mdp.excessive_object_speed,
         weight=-0.5,
