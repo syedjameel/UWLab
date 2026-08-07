@@ -285,6 +285,7 @@ The full OmniReset pipeline from custom task creation to real-robot deployment:
 - :doc:`sim2real` -- Robot calibration & USD, system identification, camera calibration, then ADR finetuning, or use our pre-finetuned checkpoints.
 - :doc:`distillation` -- Evaluate pretrained RGB checkpoints, or collect demos and train your own ResNet18-MLP vision policy. Deploy on real robot.
 - :doc:`tesollo_delto` -- Run OmniReset or DexLift with the UR10e and Tesollo DELTO DG-5F hand.
+- :doc:`table_leg_grasp_lift` -- Train and evaluate the FurnitureBench table-leg grasp-and-lift task.
 
 .. toctree::
    :maxdepth: 1
@@ -295,6 +296,7 @@ The full OmniReset pipeline from custom task creation to real-robot deployment:
    sim2real
    distillation
    tesollo_delto
+   table_leg_grasp_lift
 
 ----
 

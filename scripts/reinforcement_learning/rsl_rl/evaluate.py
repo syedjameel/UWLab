@@ -74,21 +74,29 @@ def main(env_cfg: ManagerBasedRLEnvCfg, agent_cfg: RslRlBaseRunnerCfg):
 
     completed = 0
     successes = 0
+    terminal_counts = {name: 0 for name in env.unwrapped.termination_manager.active_terms}
+    episode_steps = 0
     obs, _ = env.reset()
     while completed < args_cli.episodes:
         batch_size = min(env.num_envs, args_cli.episodes - completed)
         active = torch.arange(env.num_envs, device=env.unwrapped.device) < batch_size
         finished = torch.zeros(env.num_envs, device=env.unwrapped.device, dtype=torch.bool)
+        steps = torch.zeros(env.num_envs, device=env.unwrapped.device, dtype=torch.long)
         while not bool(finished[active].all()):
             with torch.inference_mode():
                 actions = policy(obs)
             # Keep simulator state out of inference mode.  Otherwise tensors created by
             # ``env.step`` cannot be updated in-place by the reset between batches.
             obs, _, dones, _ = env.step(actions)
+            steps[active & ~finished] += 1
             done = dones.bool()
             newly_finished = done & active & ~finished
             success = env.unwrapped.termination_manager.get_term(args_cli.success_term)
             successes += int(success[newly_finished].sum().item())
+            for name in terminal_counts:
+                term = env.unwrapped.termination_manager.get_term(name)
+                terminal_counts[name] += int(term[newly_finished].sum().item())
+            episode_steps += int(steps[newly_finished].sum().item())
             finished |= newly_finished
             policy_nn.reset(dones)
         completed += batch_size
@@ -107,6 +115,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg, agent_cfg: RslRlBaseRunnerCfg):
         "protocol": "one_terminal_outcome_per_environment_slot",
         "successes": successes,
         "success_rate": successes / completed,
+        "terminal_counts": terminal_counts,
+        "mean_episode_steps": episode_steps / completed,
         "wilson_95": [low, high],
     }
     encoded = json.dumps(result, indent=2, sort_keys=True)

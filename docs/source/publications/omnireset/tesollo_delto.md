@@ -29,6 +29,11 @@ DexLift registers:
 - `DexLift-UR10eDelto-Lift-Play-v0`
 - `DexLift-UR10eDelto-Reorient-v0`
 - `DexLift-UR10eDelto-Reorient-Play-v0`
+- `DexLift-UR10eDelto-TableLeg-GraspLift-v0`
+- `DexLift-UR10eDelto-TableLeg-GraspLift-Curriculum-v0`
+- `DexLift-UR10eDelto-TableLeg-GraspLift-Play-v0`
+
+The FurnitureBench table-leg task has a separate [grasp-and-lift guide](table_leg_grasp_lift.md).
 
 ## Run
 
