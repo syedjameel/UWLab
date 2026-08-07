@@ -3,8 +3,9 @@
 One document, scratch → deployment, for the **UR10e + custom linear parallel-jaw gripper + 3× RealSense D405** port of the OmniReset pcb/openbox insertion task. Every command in order, plus the traps that matter. Supersedes `UR10E_PIPELINE_README.md` and `UR10E_SIM2REAL_PROCEDURE.md`.
 
 For the UR10e + Tesollo DG-5F variant, keep this pipeline but use the committed DELTO assets,
-DELTO task IDs, and part selectors documented in [`TESOLLO_DELTO.md`](TESOLLO_DELTO.md). Do not run
-the linear-gripper USD rebuild commands for the DELTO model.
+DELTO task IDs, and part selectors documented in
+[`tesollo_delto.md`](docs/source/publications/omnireset/tesollo_delto.md). Do not run the
+linear-gripper USD rebuild commands for the DELTO model.
 
 **Result achieved with this pipeline:** ~90% success on the real robot (beats the paper's ~85% peg transfer).
 

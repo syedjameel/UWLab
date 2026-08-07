@@ -48,7 +48,8 @@ python scripts_v2/tools/record_grasps.py \
 ```
 
 Build or train the OmniReset state task with the standard commands from
-`UR10E_OMNIRESET_GUIDE.md`, replacing the task prefix with `OmniReset-UR10eDelto-` and selecting:
+[`UR10E_OMNIRESET_GUIDE.md`](../../../../UR10E_OMNIRESET_GUIDE.md), replacing the task prefix with
+`OmniReset-UR10eDelto-` and selecting:
 
 ```text
 env.scene.insertive_object=deltoblock env.scene.receptive_object=deltoslot
