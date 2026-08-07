@@ -128,7 +128,11 @@ class TableLegRewardsCfg(dexsuite.RewardsCfg):
     position_tracking = None
     orientation_tracking = None
     success = RewTerm(func=mdp.is_terminated_term, weight=50.0, params={"term_keys": "success"})
-    early_termination = None
+    early_termination = RewTerm(
+        func=mdp.is_terminated_term,
+        weight=-25.0,
+        params={"term_keys": ["object_out_of_bound", "dropped"]},
+    )
     any_finger_contact = RewTerm(
         func=mdp.any_contact,
         weight=1.0,

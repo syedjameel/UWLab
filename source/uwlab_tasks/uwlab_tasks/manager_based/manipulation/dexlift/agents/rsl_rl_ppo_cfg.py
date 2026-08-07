@@ -53,3 +53,10 @@ class TableLegGraspLiftPPORunnerCfg(DexLiftUR10eDeltoPPORunnerCfg):
     max_iterations = 6000
     save_interval = 25
     experiment_name = "table_leg_grasp_lift_ur10e_delto"
+
+    def __post_init__(self):
+        # The leg is only 22.75 g, so the generic dexterous-lift exploration
+        # level produces many high-energy launches. Keep enough exploration for
+        # contact discovery while making successful grasp refinement dominant.
+        self.policy.init_noise_std = 0.6
+        self.algorithm.entropy_coef = 0.001
