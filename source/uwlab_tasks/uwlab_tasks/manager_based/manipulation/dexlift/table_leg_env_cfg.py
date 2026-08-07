@@ -228,7 +228,10 @@ class TableLegEventCfg(UR10eDeltoEventCfg):
         func=mdp.reset_joints_by_offset,
         mode="reset",
         params={
-            "position_range": [-0.03, 0.03],
+            # Match Play2Perfect evaluation: the arm/hand always starts from
+            # the calibrated pre-grasp pose; robustness comes from object-pose
+            # variation rather than perturbing every robot joint independently.
+            "position_range": [0.0, 0.0],
             "velocity_range": [0.0, 0.0],
             "asset_cfg": SceneEntityCfg("robot"),
         },
@@ -238,7 +241,7 @@ class TableLegEventCfg(UR10eDeltoEventCfg):
         mode="reset",
         params={
             "asset_cfg": SceneEntityCfg("robot", joint_names="wrist_3_joint"),
-            "position_range": [-0.05, 0.05],
+            "position_range": [0.0, 0.0],
             "velocity_range": [0.0, 0.0],
         },
     )
