@@ -291,14 +291,17 @@ class TableLegGraspLiftEnvCfg(UR10eDeltoMixinCfg, dexsuite.DexsuiteLiftEnvCfg):
         self.events.randomize_object_scale = None
         self.events.object_scale_mass = None
         self.events.variable_gravity = None
-        # Establish the nominal FurnitureBench policy before any sim-to-real
-        # finetuning.  Keep reset-pose variation, but do not change actuator,
-        # joint-friction, or contact-material parameters across training scenes.
-        self.events.randomize_arm_sysid = None
-        self.events.robot_physics_material = None
-        self.events.object_physics_material = None
-        self.events.joint_stiffness_and_damping = None
-        self.events.joint_friction = None
+        # Establish the nominal FurnitureBench policy at the deterministic center
+        # of the calibrated dynamics ranges.  Keep reset-pose variation; a later
+        # sim-to-real finetune can widen these ranges again.
+        self.events.randomize_arm_sysid.params["scale_range"] = (1.0, 1.0)
+        self.events.randomize_arm_sysid.params["delay_range"] = (0, 0)
+        for material_event in (self.events.robot_physics_material, self.events.object_physics_material):
+            material_event.params["static_friction_range"] = [0.75, 0.75]
+            material_event.params["dynamic_friction_range"] = [0.75, 0.75]
+        self.events.joint_stiffness_and_damping.params["stiffness_distribution_params"] = [1.0, 1.0]
+        self.events.joint_stiffness_and_damping.params["damping_distribution_params"] = [1.0, 1.0]
+        self.events.joint_friction.params["friction_distribution_params"] = [1.0, 1.0]
         # UR10eDeltoMixinCfg disables the generic early-termination term. Restore
         # this task's explicit launch/drop penalty after the mixin has run.
         self.rewards.early_termination = RewTerm(
