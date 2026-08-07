@@ -290,7 +290,12 @@ class TableLegGraspLiftEnvCfg(UR10eDeltoMixinCfg, dexsuite.DexsuiteLiftEnvCfg):
     curriculum = None
 
     def __post_init__(self):
+        # Dexsuite treats every non-null curriculum as its own ADR schema.
+        # Hide task-specific curricula until its initializer has completed.
+        task_curriculum = self.curriculum
+        self.curriculum = None
         super().__post_init__()
+        self.curriculum = task_curriculum
 
         self.scene.object = _leg_cfg()
         self.scene.table = _table_cfg()
