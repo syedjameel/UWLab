@@ -286,6 +286,13 @@ class TableLegGraspLiftEnvCfg(UR10eDeltoMixinCfg, dexsuite.DexsuiteLiftEnvCfg):
         self.events.randomize_object_scale = None
         self.events.object_scale_mass = None
         self.events.variable_gravity = None
+        # UR10eDeltoMixinCfg disables the generic early-termination term. Restore
+        # this task's explicit launch/drop penalty after the mixin has run.
+        self.rewards.early_termination = RewTerm(
+            func=mdp.is_terminated_term,
+            weight=-25.0,
+            params={"term_keys": ["object_out_of_bound", "dropped"]},
+        )
         self.events.reset_table.params["pose_range"] = {
             "x": [0.0, 0.0], "y": [0.0, 0.0], "z": [0.0, 0.0], "yaw": [0.0, 0.0]
         }
