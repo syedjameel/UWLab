@@ -63,12 +63,12 @@ class TableLegRelJointPosActionCfg:
         asset_name="robot",
         joint_names=[".*"],
         scale={
-            "shoulder_pan_joint": 0.05,
-            "shoulder_lift_joint": 0.05,
-            "elbow_joint": 0.05,
-            "wrist_1_joint": 0.05,
-            "wrist_2_joint": 0.05,
-            "wrist_3_joint": 0.05,
+            "shoulder_pan_joint": 0.10,
+            "shoulder_lift_joint": 0.10,
+            "elbow_joint": 0.10,
+            "wrist_1_joint": 0.10,
+            "wrist_2_joint": 0.10,
+            "wrist_3_joint": 0.10,
             HAND_JOINT_REGEX: 0.03,
         },
     )
