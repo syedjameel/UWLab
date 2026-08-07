@@ -82,13 +82,15 @@ def main(env_cfg: ManagerBasedRLEnvCfg, agent_cfg: RslRlBaseRunnerCfg):
         while not bool(finished[active].all()):
             with torch.inference_mode():
                 actions = policy(obs)
-                obs, _, dones, _ = env.step(actions)
-                done = dones.bool()
-                newly_finished = done & active & ~finished
-                success = env.unwrapped.termination_manager.get_term(args_cli.success_term)
-                successes += int(success[newly_finished].sum().item())
-                finished |= newly_finished
-                policy_nn.reset(dones)
+            # Keep simulator state out of inference mode.  Otherwise tensors created by
+            # ``env.step`` cannot be updated in-place by the reset between batches.
+            obs, _, dones, _ = env.step(actions)
+            done = dones.bool()
+            newly_finished = done & active & ~finished
+            success = env.unwrapped.termination_manager.get_term(args_cli.success_term)
+            successes += int(success[newly_finished].sum().item())
+            finished |= newly_finished
+            policy_nn.reset(dones)
         completed += batch_size
         if completed < args_cli.episodes:
             obs, _ = env.reset()
