@@ -43,7 +43,15 @@ python scripts/reinforcement_learning/rsl_rl/train.py \
 Continue the strongest curriculum checkpoint on the base `-v0` task with
 `--resume_path /path/to/model.pt`; the accepted run used 50 full-range iterations at
 learning rate `2e-5`. Use `torchrun --nproc_per_node=2` plus `--distributed` for two
-GPUs, or run independent seeded sweeps. Evaluate with the frozen metric:
+GPUs, or run independent seeded sweeps. Inspect a checkpoint interactively with:
+
+```bash
+python scripts/reinforcement_learning/rsl_rl/play.py \
+  --task DexLift-UR10eDelto-TableLeg-GraspLift-Play-v0 \
+  --checkpoint /path/to/model.pt --num_envs 1
+```
+
+Evaluate with the frozen metric:
 
 ```bash
 python scripts/reinforcement_learning/rsl_rl/evaluate.py \
