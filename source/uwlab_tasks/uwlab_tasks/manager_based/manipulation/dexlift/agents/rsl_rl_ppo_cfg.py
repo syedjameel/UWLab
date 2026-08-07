@@ -60,3 +60,5 @@ class TableLegGraspLiftPPORunnerCfg(DexLiftUR10eDeltoPPORunnerCfg):
         # contact discovery while making successful grasp refinement dominant.
         self.policy.init_noise_std = 0.6
         self.algorithm.entropy_coef = 0.001
+        self.algorithm.learning_rate = 2.0e-4
+        self.algorithm.schedule = "fixed"
