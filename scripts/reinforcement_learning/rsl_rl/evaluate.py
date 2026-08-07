@@ -74,18 +74,25 @@ def main(env_cfg: ManagerBasedRLEnvCfg, agent_cfg: RslRlBaseRunnerCfg):
 
     completed = 0
     successes = 0
-    obs = env.get_observations()
+    obs, _ = env.reset()
     while completed < args_cli.episodes:
-        with torch.inference_mode():
-            actions = policy(obs)
-            obs, _, dones, _ = env.step(actions)
-            success = env.unwrapped.termination_manager.get_term(args_cli.success_term)
-            done_ids = dones.nonzero(as_tuple=True)[0]
-            remaining = args_cli.episodes - completed
-            done_ids = done_ids[:remaining]
-            successes += int(success[done_ids].sum().item())
-            completed += int(done_ids.numel())
-            policy_nn.reset(dones)
+        batch_size = min(env.num_envs, args_cli.episodes - completed)
+        active = torch.arange(env.num_envs, device=env.unwrapped.device) < batch_size
+        finished = torch.zeros(env.num_envs, device=env.unwrapped.device, dtype=torch.bool)
+        while not bool(finished[active].all()):
+            with torch.inference_mode():
+                actions = policy(obs)
+                obs, _, dones, _ = env.step(actions)
+                done = dones.bool()
+                newly_finished = done & active & ~finished
+                success = env.unwrapped.termination_manager.get_term(args_cli.success_term)
+                successes += int(success[newly_finished].sum().item())
+                finished |= newly_finished
+                policy_nn.reset(dones)
+        completed += batch_size
+        if completed < args_cli.episodes:
+            obs, _ = env.reset()
+            policy_nn.reset(torch.ones(env.num_envs, device=env.unwrapped.device, dtype=torch.bool))
 
     low, high = _wilson(successes, completed)
     result = {
