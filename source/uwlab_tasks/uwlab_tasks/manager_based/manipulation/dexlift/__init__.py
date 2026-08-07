@@ -15,6 +15,7 @@ from . import agents
 
 _ENV_CFG = f"{__name__}.dexlift_ur10e_delto_env_cfg"
 _RSL_RL_CFG = f"{agents.__name__}.rsl_rl_ppo_cfg:DexLiftUR10eDeltoPPORunnerCfg"
+_TABLE_LEG_RSL_RL_CFG = f"{agents.__name__}.rsl_rl_ppo_cfg:TableLegGraspLiftPPORunnerCfg"
 
 gym.register(
     id="DexLift-UR10eDelto-Reorient-v0",
@@ -53,5 +54,25 @@ gym.register(
     kwargs={
         "env_cfg_entry_point": f"{_ENV_CFG}:DexLiftUR10eDeltoLiftEnvCfg_PLAY",
         "rsl_rl_cfg_entry_point": _RSL_RL_CFG,
+    },
+)
+
+gym.register(
+    id="DexLift-UR10eDelto-TableLeg-GraspLift-v0",
+    entry_point=f"{__name__}.table_leg_env:TableLegGraspLiftEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.table_leg_env_cfg:TableLegGraspLiftEnvCfg",
+        "rsl_rl_cfg_entry_point": _TABLE_LEG_RSL_RL_CFG,
+    },
+)
+
+gym.register(
+    id="DexLift-UR10eDelto-TableLeg-GraspLift-Play-v0",
+    entry_point=f"{__name__}.table_leg_env:TableLegGraspLiftEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.table_leg_env_cfg:TableLegGraspLiftEnvCfg_PLAY",
+        "rsl_rl_cfg_entry_point": _TABLE_LEG_RSL_RL_CFG,
     },
 )

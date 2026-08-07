@@ -43,3 +43,13 @@ class DexLiftUR10eDeltoPPORunnerCfg(RslRlOnPolicyRunnerCfg):
         desired_kl=0.01,
         max_grad_norm=1.0,
     )
+
+
+@configclass
+class TableLegGraspLiftPPORunnerCfg(DexLiftUR10eDeltoPPORunnerCfg):
+    """State-based PPO for the fixed-geometry FurnitureBench leg task."""
+
+    obs_groups = {"policy": ["policy", "proprio"], "critic": ["policy", "proprio"]}
+    max_iterations = 6000
+    save_interval = 25
+    experiment_name = "table_leg_grasp_lift_ur10e_delto"

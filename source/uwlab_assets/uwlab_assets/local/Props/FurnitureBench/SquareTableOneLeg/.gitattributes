@@ -1,0 +1,4 @@
+# Small, required runtime meshes are committed directly so this task works without Git LFS.
+*.obj -filter -diff -merge -text
+*.mtl -filter -diff -merge -text
+*.png -filter -diff -merge -text

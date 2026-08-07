@@ -50,8 +50,11 @@ def _sensor_force_magnitudes(env: ManagerBasedRLEnv, contact_names: list[str] | 
     magnitudes = []
     for name in contact_names:
         sensor: ContactSensor = env.scene.sensors[f"{name}_object_s"]
-        force_w = sensor.data.force_matrix_w.view(env.num_envs, 3)
-        magnitudes.append(torch.norm(force_w, dim=-1))
+        # A sensor may cover one rigid body (the original fingertip setup) or every
+        # phalange of a finger (the FurnitureBench leg task).  Reduce all matched
+        # body/filter pairs to the strongest force for that logical finger.
+        force_w = sensor.data.force_matrix_w.reshape(env.num_envs, -1, 3)
+        magnitudes.append(torch.norm(force_w, dim=-1).amax(dim=-1))
     return torch.stack(magnitudes, dim=-1)
 
 

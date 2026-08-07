@@ -54,18 +54,22 @@ Helper Classes - Private.
 class _StateDependentPolicyMixin(nn.Module):
     """Mixin class to handle state-dependent policy logic."""
 
+    def _split_actor(self):
+        """Split the actor without relying on subclass-preserving Sequential slicing."""
+        layers = list(self.actor.children())  # type: ignore
+        self.actor_features = nn.Sequential(*layers[:-1])
+        self.actor_final = layers[-1]
+
     def _setup_state_dependent_policy(self, policy):
         """Setup state-dependent policy components."""
-        self.actor_features = self.actor[:-1]  # type: ignore
-        self.actor_final = self.actor[-1]  # type: ignore
+        self._split_actor()
 
         self.register_buffer("log_std", policy.log_std.clone())
         self.epsilon = 1e-6
 
     def _setup_regular_policy(self, policy):
         """Setup regular policy components."""
-        self.actor_features = self.actor[:-1]  # type: ignore
-        self.actor_final = self.actor[-1]  # type: ignore
+        self._split_actor()
 
         if hasattr(policy, "std"):
             self.register_buffer("std", policy.std.clone())
