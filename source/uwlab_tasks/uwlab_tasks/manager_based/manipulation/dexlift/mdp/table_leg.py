@@ -381,6 +381,8 @@ class SustainedLiftSuccess(ManagerTermBase):
         contact_groups: tuple[tuple[str, ...], ...],
         minimum_contact_groups: int,
         contact_threshold: float,
+        unwanted_contact_names: tuple[str, ...],
+        max_unwanted_contact_force: float,
         max_object_speed: float,
         minimum_lift: float,
         max_palm_distance: float,
@@ -401,6 +403,7 @@ class SustainedLiftSuccess(ManagerTermBase):
         palm_distance = torch.linalg.vector_norm(obj.data.root_pos_w - palm_pos, dim=-1)
         relative_speed = torch.linalg.vector_norm(obj.data.root_lin_vel_w - palm_velocity, dim=-1)
         contact_count = logical_finger_contacts(env, contact_groups, contact_threshold).sum(dim=-1)
+        unwanted_force = max_finger_contact_force(env, unwanted_contact_names)
         valid = (
             (height >= minimum_height)
             & ((height - self._lowest_height) >= minimum_lift)
@@ -408,6 +411,7 @@ class SustainedLiftSuccess(ManagerTermBase):
             & (palm_distance <= max_palm_distance)
             & (relative_speed <= max_relative_speed)
             & (contact_count >= minimum_contact_groups)
+            & (unwanted_force <= max_unwanted_contact_force)
             & (env.episode_length_buf >= minimum_episode_steps)
         )
         self._counter = torch.where(valid, self._counter + 1, torch.zeros_like(self._counter))

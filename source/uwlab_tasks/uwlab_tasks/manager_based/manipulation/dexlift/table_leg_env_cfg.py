@@ -197,7 +197,7 @@ class TableLegRewardsCfg(dexsuite.RewardsCfg):
     )
     palm_contact_penalty = RewTerm(
         func=mdp.unwanted_contact_force,
-        weight=-100.0,
+        weight=-2000.0,
         params={"contact_names": NON_FINGER_HAND_CONTACT_NAMES, "clip": 5.0},
     )
     position_tracking = None
@@ -291,6 +291,8 @@ class TableLegTerminationsCfg(dexsuite.TerminationsCfg):
             "contact_groups": FINGER_CONTACT_GROUPS,
             "minimum_contact_groups": 2,
             "contact_threshold": CONTACT_THRESHOLD,
+            "unwanted_contact_names": NON_FINGER_HAND_CONTACT_NAMES,
+            "max_unwanted_contact_force": CONTACT_THRESHOLD,
             "max_object_speed": 0.5,
             "minimum_lift": 0.08,
             "max_palm_distance": 0.30,
