@@ -77,9 +77,9 @@ class TableLegBinaryGraspActionCfg:
             "shoulder_pan_joint": 0.10,
             "shoulder_lift_joint": 0.10,
             "elbow_joint": 0.10,
-            "wrist_1_joint": 0.10,
-            "wrist_2_joint": 0.10,
-            "wrist_3_joint": 0.10,
+            "wrist_1_joint": 0.05,
+            "wrist_2_joint": 0.05,
+            "wrist_3_joint": 0.05,
         },
     )
     gripper_action = DELTO_BINARY_ACTIONS
@@ -169,8 +169,8 @@ class TableLegRewardsCfg(dexsuite.RewardsCfg):
     )
     grasp_frame_alignment = RewTerm(
         func=mdp.GraspFrameAlignment,
-        weight=20.0,
-        params={"std": 0.7, "palm_body": PALM_BODY},
+        weight=50.0,
+        params={"std": 1.5, "palm_body": PALM_BODY},
     )
     opposition_contact = RewTerm(
         func=mdp.contacts,
