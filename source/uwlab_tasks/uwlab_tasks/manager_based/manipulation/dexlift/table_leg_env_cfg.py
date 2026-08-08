@@ -239,6 +239,9 @@ class TableLegRewardsCfg(dexsuite.RewardsCfg):
             "desired_object_pos_p": DESIRED_OBJECT_POS_P,
             "desired_object_quat_p": DESIRED_OBJECT_QUAT_P,
             "target_joint_pos": OPPOSED_GRASP_JOINT_POS,
+            "action_term_name": "hand_action",
+            "action_std": 0.4,
+            "action_prior_weight": 0.75,
             # Do not teach closure while the palm is still in its approach
             # phase.  At the reset distance this score is effectively zero.
             "position_std": 0.04,

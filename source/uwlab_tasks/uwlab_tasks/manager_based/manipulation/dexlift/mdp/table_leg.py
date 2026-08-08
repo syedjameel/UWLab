@@ -416,8 +416,8 @@ class GraspPostureProgressReward(ManagerTermBase):
     Independent hand control removes the old binary ``close`` action, so contact
     rewards alone are too sparse to teach which of the 20 joints should flex.
     This term supplies that missing dense bridge while leaving every finger
-    independently actuated.  Progress is measured only along joints that differ
-    from the default posture and is gated by the palm-relative object pose.
+    independently actuated.  It blends physical joint travel with a prior on
+    the collision-validated close command, gated by the palm-relative pose.
     """
 
     def __init__(self, cfg, env: ManagerBasedRLEnv):
@@ -445,6 +445,15 @@ class GraspPostureProgressReward(ManagerTermBase):
         self._travel_magnitude = travel.abs().clamp(min=1.0e-6)
         self._moving_joints = travel.abs() > 1.0e-4
 
+        action_term = env.action_manager.get_term(self.cfg.params["action_term_name"])
+        moving_names = [name for name, moving in zip(joint_names, self._moving_joints[0]) if bool(moving)]
+        self._action_term = action_term
+        self._action_ids = [action_term._joint_names.index(name) for name in moving_names]
+        target_position = self._target_joint_pos[:, self._moving_joints[0]]
+        action_scale = action_term._scale[:, self._action_ids]
+        action_offset = action_term._offset[:, self._action_ids]
+        self._target_action = (target_position - action_offset[:1]) / action_scale[:1]
+
         desired_quat = self.cfg.params.get("desired_object_quat_p")
         self._desired_object_quat_p = torch.tensor(
             desired_quat or (1.0, 0.0, 0.0, 0.0), device=env.device
@@ -455,6 +464,9 @@ class GraspPostureProgressReward(ManagerTermBase):
         env: ManagerBasedRLEnv,
         desired_object_pos_p: tuple[float, float, float],
         target_joint_pos: dict[str, float],
+        action_term_name: str,
+        action_std: float,
+        action_prior_weight: float,
         position_std: float,
         orientation_std: float,
         desired_object_quat_p: tuple[float, float, float, float] | None = None,
@@ -464,7 +476,7 @@ class GraspPostureProgressReward(ManagerTermBase):
         object_name: str = "object",
         palm_body: str = "rl_dg_mount",
     ) -> torch.Tensor:
-        del target_joint_pos, desired_object_quat_p, palm_body
+        del target_joint_pos, action_term_name, desired_object_quat_p, palm_body
         robot = env.scene[robot_name]
         object_asset = env.scene[object_name]
 
@@ -486,6 +498,11 @@ class GraspPostureProgressReward(ManagerTermBase):
             self._travel_magnitude * moving
         ).sum(dim=-1).clamp(min=1.0e-6)
         posture_score = 0.5 * (posture_progress + 1.0)
+        action_error = torch.sqrt(
+            (self._action_term.raw_actions[:, self._action_ids] - self._target_action).square().mean(dim=-1)
+        )
+        action_score = 1.0 - torch.tanh(action_error / action_std)
+        closure_score = (1.0 - action_prior_weight) * posture_score + action_prior_weight * action_score
 
         palm_pos_w = robot.data.body_pos_w[:, self._palm_body_id]
         palm_quat_w = robot.data.body_quat_w[:, self._palm_body_id]
@@ -497,7 +514,7 @@ class GraspPostureProgressReward(ManagerTermBase):
         object_quat_p = quat_mul(quat_conjugate(palm_quat_w), object_asset.data.root_quat_w)
         orientation_error = quat_error_magnitude(object_quat_p, self._desired_object_quat_p)
         orientation_score = 1.0 - torch.tanh(orientation_error / orientation_std)
-        score = posture_score * position_score * orientation_score
+        score = closure_score * position_score * orientation_score
         if unwanted_contact_names:
             valid_contact = max_finger_contact_force(env, unwanted_contact_names) <= max_unwanted_contact_force
             score = score * valid_contact.float()
