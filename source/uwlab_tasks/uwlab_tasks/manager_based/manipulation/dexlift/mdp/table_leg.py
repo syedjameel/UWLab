@@ -61,6 +61,28 @@ def finger_contact_count(
     return count
 
 
+def pregrasp_arm_action_l2(
+    env: ManagerBasedRLEnv,
+    arm_action_dim: int,
+    thumb_contact_name: str | tuple[str, ...],
+    tip_contact_names: tuple[str, ...],
+    threshold: float,
+    unwanted_contact_names: tuple[str, ...] | None = None,
+    max_unwanted_contact_force: float = 0.05,
+) -> torch.Tensor:
+    """Penalize arm motion until an opposed grasp frees the policy to lift."""
+    opposed = contacts(
+        env,
+        threshold,
+        thumb_contact_name,
+        tip_contact_names,
+        unwanted_contact_names,
+        max_unwanted_contact_force,
+    )
+    arm_action = env.action_manager.action[:, :arm_action_dim]
+    return arm_action.square().sum(dim=-1) * (~opposed).float()
+
+
 def max_finger_contact_force(
     env: ManagerBasedRLEnv,
     contact_names: tuple[str, ...],

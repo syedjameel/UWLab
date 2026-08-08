@@ -177,6 +177,17 @@ def _table_cfg() -> RigidObjectCfg:
 class TableLegRewardsCfg(dexsuite.RewardsCfg):
     action_l2 = RewTerm(func=mdp.action_l2_clamped, weight=-0.001)
     action_rate_l2 = RewTerm(func=mdp.action_rate_l2_clamped, weight=-0.003)
+    pregrasp_arm_motion = RewTerm(
+        func=mdp.pregrasp_arm_action_l2,
+        weight=-500.0,
+        params={
+            "arm_action_dim": len(ARM_JOINT_NAMES),
+            "threshold": CONTACT_THRESHOLD,
+            "thumb_contact_name": THUMB_CONTACT_NAMES,
+            "tip_contact_names": TIP_CONTACT_NAMES,
+            "unwanted_contact_names": NON_FINGER_HAND_CONTACT_NAMES,
+        },
+    )
     fingers_to_object = RewTerm(
         func=mdp.object_ee_distance,
         weight=8.0,
