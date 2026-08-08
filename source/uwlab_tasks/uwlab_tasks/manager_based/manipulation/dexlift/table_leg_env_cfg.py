@@ -45,6 +45,9 @@ LEG_SPAWN_ROOT_Z = 0.42
 # Lift shaping measures progress from the episode's observed minimum height.
 SUCCESS_HEIGHT = 0.31
 CONTACT_THRESHOLD = 0.05
+# Collision sweep: four finger groups remain opposed for all 120 close steps,
+# with 30 mm more clearance from the palm than the previous target.
+DESIRED_OBJECT_POS_P = (0.0586, 0.0600, 0.2000)
 # Post-reset object orientation in the nominal palm frame (w, x, y, z).
 DESIRED_OBJECT_QUAT_P = (-0.00000212, 0.70710826, -0.70710582, -0.00000001)
 FULL_OBJECT_POSE_RANGE = {
@@ -137,10 +140,7 @@ class TableLegRewardsCfg(dexsuite.RewardsCfg):
         func=mdp.GraspPoseReward,
         weight=50.0,
         params={
-            # The URDF root is at the thread/body junction.  A collider sweep
-            # places the cage 30 mm into the square body, where all five digits
-            # maintain contact without requiring an interpenetrating reset.
-            "desired_object_pos_p": (0.0586, 0.0900, 0.1700),
+            "desired_object_pos_p": DESIRED_OBJECT_POS_P,
             "position_std": 0.15,
             "orientation_std": 1.5,
             "position_only": True,
@@ -151,7 +151,7 @@ class TableLegRewardsCfg(dexsuite.RewardsCfg):
         func=mdp.GraspPoseReward,
         weight=1500.0,
         params={
-            "desired_object_pos_p": (0.0586, 0.0900, 0.1700),
+            "desired_object_pos_p": DESIRED_OBJECT_POS_P,
             "desired_object_quat_p": DESIRED_OBJECT_QUAT_P,
             "position_std": 0.20,
             "orientation_std": 1.0,
@@ -162,7 +162,7 @@ class TableLegRewardsCfg(dexsuite.RewardsCfg):
         func=mdp.GraspPoseReward,
         weight=300.0,
         params={
-            "desired_object_pos_p": (0.0586, 0.0900, 0.1700),
+            "desired_object_pos_p": DESIRED_OBJECT_POS_P,
             "desired_object_quat_p": DESIRED_OBJECT_QUAT_P,
             "position_std": 0.05,
             "orientation_std": 0.5,
@@ -173,7 +173,7 @@ class TableLegRewardsCfg(dexsuite.RewardsCfg):
         func=mdp.GraspPoseReward,
         weight=1000.0,
         params={
-            "desired_object_pos_p": (0.0586, 0.0900, 0.1700),
+            "desired_object_pos_p": DESIRED_OBJECT_POS_P,
             "desired_object_quat_p": DESIRED_OBJECT_QUAT_P,
             "position_std": 0.05,
             "orientation_std": 1.0,
@@ -186,7 +186,7 @@ class TableLegRewardsCfg(dexsuite.RewardsCfg):
         func=mdp.GraspPoseReward,
         weight=500.0,
         params={
-            "desired_object_pos_p": (0.0586, 0.0900, 0.1700),
+            "desired_object_pos_p": DESIRED_OBJECT_POS_P,
             "desired_object_quat_p": DESIRED_OBJECT_QUAT_P,
             "position_std": 0.05,
             "orientation_std": 0.5,
