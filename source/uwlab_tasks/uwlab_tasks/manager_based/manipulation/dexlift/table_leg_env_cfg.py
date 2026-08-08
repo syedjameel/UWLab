@@ -18,11 +18,12 @@ from isaaclab.utils import configclass
 from isaaclab_tasks.manager_based.manipulation.dexsuite.adr_curriculum import CurriculumCfg as DexsuiteCurriculumCfg
 
 from uwlab_assets import UWLAB_LOCAL_ASSETS_DIR
+from uwlab_assets.robots.ur10e_delto.actions import DELTO_BINARY_ACTIONS
 
 from . import mdp
 from .dexlift_ur10e_delto_env_cfg import (
     ALL_TIP_NAMES,
-    HAND_JOINT_REGEX,
+    ARM_JOINT_NAMES,
     TIP_BODY_REGEX,
     UR10eDeltoEventCfg,
     UR10eDeltoMixinCfg,
@@ -60,12 +61,12 @@ TIP_CONTACT_NAMES = tuple(name for name in FINGER_CONTACT_NAMES if name.startswi
 
 
 @configclass
-class TableLegRelJointPosActionCfg:
-    """Faster arm authority with finer hand closure increments for this contact task."""
+class TableLegBinaryGraspActionCfg:
+    """Six relative arm joints plus the calibrated DELTO open/close synergy."""
 
-    action = mdp.RelativeJointPositionActionCfg(
+    arm_action = mdp.RelativeJointPositionActionCfg(
         asset_name="robot",
-        joint_names=[".*"],
+        joint_names=ARM_JOINT_NAMES,
         scale={
             "shoulder_pan_joint": 0.10,
             "shoulder_lift_joint": 0.10,
@@ -73,9 +74,9 @@ class TableLegRelJointPosActionCfg:
             "wrist_1_joint": 0.10,
             "wrist_2_joint": 0.10,
             "wrist_3_joint": 0.10,
-            HAND_JOINT_REGEX: 0.04,
         },
     )
+    gripper_action = DELTO_BINARY_ACTIONS
 
 
 def _leg_cfg() -> RigidObjectCfg:
@@ -281,7 +282,7 @@ class TableLegCurriculumCfg(DexsuiteCurriculumCfg):
 @configclass
 class TableLegGraspLiftEnvCfg(UR10eDeltoMixinCfg, dexsuite.DexsuiteLiftEnvCfg):
     rewards: TableLegRewardsCfg = TableLegRewardsCfg()
-    actions: TableLegRelJointPosActionCfg = TableLegRelJointPosActionCfg()
+    actions: TableLegBinaryGraspActionCfg = TableLegBinaryGraspActionCfg()
     terminations: TableLegTerminationsCfg = TableLegTerminationsCfg()
     events: TableLegEventCfg = TableLegEventCfg()
     curriculum = None
