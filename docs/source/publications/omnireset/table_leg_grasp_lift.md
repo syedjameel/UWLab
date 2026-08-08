@@ -19,21 +19,25 @@ cuboid support table.
 
 ## Task contract
 
-`DexLift-UR10eDelto-TableLeg-GraspLift-Curriculum-v0` starts the leg airborne in the
-open hand's grasp corridor. A held-lift success promotes 0.25 difficulty levels and a
-failure demotes one, making 80% success the curriculum's interior fixed point. Levels
+`DexLift-UR10eDelto-TableLeg-GraspLift-Curriculum-v0` starts the leg airborne below
+the open palm, with no hand contact. A held-lift success promotes 0.25 difficulty
+levels and a failure demotes one, making 80% success the curriculum's interior fixed
+point. Levels
 0–10 ramp gravity from zero to −9.81 m/s²; levels 10–15 widen reset translation, and
-levels 15–20 then widen orientation. At full range, the leg starts
-255–285 mm above the tabletop with x/y offsets of ±80/120 mm, roll/pitch offsets of
+levels 15–20 then widen orientation. At full range, the leg root starts
+165–195 mm above the tabletop with x/y offsets of ±80/120 mm, roll/pitch offsets of
 ±0.35 rad, and arbitrary yaw. It falls onto the support table when it is not caught.
 
 The policy has six relative UR10e actions and one calibrated DELTO open/close action.
 All 25 phalanges retain collision geometry and object-filtered contact sensors.
 Success requires, for 12 consecutive control steps:
 
-- leg-root clearance of at least 310 mm above the tabletop;
+- leg-root clearance of at least 250 mm above the tabletop and at least 80 mm of
+  measured lift from the episode's low point;
 - contact from at least two distinct fingers;
-- leg linear speed no greater than 0.5 m/s.
+- no object contact on the mount, base, or palm;
+- leg linear speed no greater than 0.5 m/s and palm-relative speed no greater than
+  0.2 m/s.
 
 Thus an untouched spawn, table-supported leg, ballistic launch, or proximity-only
 motion cannot succeed.
