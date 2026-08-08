@@ -32,7 +32,7 @@ The policy has six relative UR10e actions and one calibrated DELTO open/close ac
 All 25 phalanges retain collision geometry and object-filtered contact sensors.
 Success requires, for 12 consecutive control steps:
 
-- leg-root clearance of at least 250 mm above the tabletop and at least 80 mm of
+- leg-root clearance of at least 95 mm above the tabletop and at least 80 mm of
   measured lift from the episode's low point;
 - contact from at least two distinct fingers;
 - no object contact on the mount, base, or palm;

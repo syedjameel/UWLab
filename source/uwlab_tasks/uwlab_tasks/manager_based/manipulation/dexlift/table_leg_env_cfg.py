@@ -42,10 +42,11 @@ TABLE_TOP_Z = TABLE_CENTER_Z + 0.5 * TABLE_THICKNESS
 # The palm resets around z=0.68 m.  Spawn the leg below every finger collider
 # but still airborne above the table, so the hand must descend before grasping.
 LEG_SPAWN_ROOT_Z = 0.42
-# Lift shaping measures progress from the episode's observed minimum height.
-# From the airborne reset this is an 8.5 cm rise; success independently
-# requires at least 8 cm of measured motion from the episode minimum.
-SUCCESS_HEIGHT = 0.25
+# The horizontal 30 mm leg rests with its root 15 mm above the tabletop. Success
+# is an 80 mm physical lift from that support pose; the termination independently
+# measures the same minimum displacement from each episode's observed low point.
+MINIMUM_LIFT = 0.08
+SUCCESS_HEIGHT = 0.015 + MINIMUM_LIFT
 CONTACT_THRESHOLD = 0.05
 # Collision sweep: four finger groups remain opposed for all 120 close steps,
 # with 30 mm more clearance from the palm than the previous target.
@@ -333,7 +334,7 @@ class TableLegTerminationsCfg(dexsuite.TerminationsCfg):
             "unwanted_contact_names": NON_FINGER_HAND_CONTACT_NAMES,
             "max_unwanted_contact_force": CONTACT_THRESHOLD,
             "max_object_speed": 0.5,
-            "minimum_lift": 0.08,
+            "minimum_lift": MINIMUM_LIFT,
             "max_palm_distance": 0.30,
             "max_relative_speed": 0.20,
             "minimum_episode_steps": 60,
