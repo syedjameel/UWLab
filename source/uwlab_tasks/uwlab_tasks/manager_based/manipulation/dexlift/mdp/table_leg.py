@@ -190,14 +190,18 @@ class GraspPoseReward(ManagerTermBase):
     def __init__(self, cfg, env: ManagerBasedRLEnv):
         super().__init__(cfg, env)
         robot = env.scene[self.cfg.params.get("robot_name", "robot")]
-        object_asset = env.scene[self.cfg.params.get("object_name", "object")]
         palm_body = self.cfg.params.get("palm_body", "rl_dg_mount")
         palm_ids, _ = robot.find_bodies(palm_body)
         if len(palm_ids) != 1:
             raise ValueError(f"Expected one palm body matching {palm_body!r}, found {palm_ids}")
         self._palm_body_id = palm_ids[0]
-        palm_quat_w = robot.data.body_quat_w[:, self._palm_body_id]
-        self._desired_object_quat_p = quat_mul(quat_conjugate(palm_quat_w), object_asset.data.root_quat_w).clone()
+        desired_quat = self.cfg.params.get("desired_object_quat_p")
+        position_only = self.cfg.params.get("position_only", False)
+        if desired_quat is None and not position_only:
+            raise ValueError("desired_object_quat_p is required for a full grasp-pose reward")
+        self._desired_object_quat_p = torch.tensor(
+            desired_quat or (1.0, 0.0, 0.0, 0.0), device=env.device
+        ).repeat(env.num_envs, 1)
 
     def __call__(
         self,
@@ -205,13 +209,14 @@ class GraspPoseReward(ManagerTermBase):
         desired_object_pos_p: tuple[float, float, float],
         position_std: float,
         orientation_std: float,
+        desired_object_quat_p: tuple[float, float, float, float] | None = None,
         position_only: bool = False,
         close_only: bool = False,
         robot_name: str = "robot",
         object_name: str = "object",
         palm_body: str = "rl_dg_mount",
     ) -> torch.Tensor:
-        del palm_body
+        del desired_object_quat_p, palm_body
         robot = env.scene[robot_name]
         object_asset = env.scene[object_name]
         palm_pos_w = robot.data.body_pos_w[:, self._palm_body_id]

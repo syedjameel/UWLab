@@ -45,6 +45,8 @@ LEG_SPAWN_ROOT_Z = 0.42
 # Lift shaping measures progress from the episode's observed minimum height.
 SUCCESS_HEIGHT = 0.31
 CONTACT_THRESHOLD = 0.05
+# Post-reset object orientation in the nominal palm frame (w, x, y, z).
+DESIRED_OBJECT_QUAT_P = (-0.00000212, 0.70710826, -0.70710582, -0.00000001)
 FULL_OBJECT_POSE_RANGE = {
     "x": (-0.08, 0.08),
     "y": (-0.12, 0.12),
@@ -150,6 +152,7 @@ class TableLegRewardsCfg(dexsuite.RewardsCfg):
         weight=1500.0,
         params={
             "desired_object_pos_p": (0.0586, 0.0900, 0.1700),
+            "desired_object_quat_p": DESIRED_OBJECT_QUAT_P,
             "position_std": 0.20,
             "orientation_std": 1.0,
             "palm_body": PALM_BODY,
@@ -160,6 +163,7 @@ class TableLegRewardsCfg(dexsuite.RewardsCfg):
         weight=300.0,
         params={
             "desired_object_pos_p": (0.0586, 0.0900, 0.1700),
+            "desired_object_quat_p": DESIRED_OBJECT_QUAT_P,
             "position_std": 0.05,
             "orientation_std": 0.5,
             "palm_body": PALM_BODY,
@@ -170,6 +174,7 @@ class TableLegRewardsCfg(dexsuite.RewardsCfg):
         weight=200.0,
         params={
             "desired_object_pos_p": (0.0586, 0.0900, 0.1700),
+            "desired_object_quat_p": DESIRED_OBJECT_QUAT_P,
             "position_std": 0.05,
             "orientation_std": 1.0,
             "position_only": True,
@@ -182,6 +187,7 @@ class TableLegRewardsCfg(dexsuite.RewardsCfg):
         weight=500.0,
         params={
             "desired_object_pos_p": (0.0586, 0.0900, 0.1700),
+            "desired_object_quat_p": DESIRED_OBJECT_QUAT_P,
             "position_std": 0.05,
             "orientation_std": 0.5,
             "close_only": True,
