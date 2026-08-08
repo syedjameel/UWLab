@@ -341,7 +341,10 @@ class TableLegGraspLiftEnvCfg(UR10eDeltoMixinCfg, dexsuite.DexsuiteLiftEnvCfg):
                 (0.0, 0.0, -9.81),
             )
         else:
-            task_curriculum.adr.params.update({"pos_tol": 0.04, "rot_tol": None, "promotion_only": True})
+            # Promotion is based on the object pose at reset.  A 10 cm position
+            # tolerance admits contact-held lifts that move laterally while still
+            # excluding the untouched airborne spawn (at least 11 cm below the command).
+            task_curriculum.adr.params.update({"pos_tol": 0.10, "rot_tol": None, "promotion_only": True})
 
         # Generic fingertip sensors target the old primitive root. Replace them with one
         # sensor per phalange: PhysX filtered-contact views require one source body per
@@ -372,7 +375,7 @@ class TableLegGraspLiftEnvCfg(UR10eDeltoMixinCfg, dexsuite.DexsuiteLiftEnvCfg):
 
         self.commands.object_pose.ranges.pos_x = (WORKSPACE_X, WORKSPACE_X)
         self.commands.object_pose.ranges.pos_y = (WORKSPACE_Y, WORKSPACE_Y)
-        self.commands.object_pose.ranges.pos_z = (0.59, 0.59)
+        self.commands.object_pose.ranges.pos_z = (0.65, 0.65)
         self.commands.object_pose.ranges.roll = (0.0, 0.0)
         self.commands.object_pose.ranges.pitch = (0.0, 0.0)
         self.commands.object_pose.ranges.yaw = (0.0, 0.0)
