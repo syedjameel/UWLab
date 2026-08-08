@@ -61,26 +61,45 @@ def finger_contact_count(
     return count
 
 
-def pregrasp_arm_action_l2(
-    env: ManagerBasedRLEnv,
-    arm_action_dim: int,
-    thumb_contact_name: str | tuple[str, ...],
-    tip_contact_names: tuple[str, ...],
-    threshold: float,
-    unwanted_contact_names: tuple[str, ...] | None = None,
-    max_unwanted_contact_force: float = 0.05,
-) -> torch.Tensor:
-    """Penalize arm motion until an opposed grasp frees the policy to lift."""
-    opposed = contacts(
-        env,
-        threshold,
-        thumb_contact_name,
-        tip_contact_names,
-        unwanted_contact_names,
-        max_unwanted_contact_force,
-    )
-    arm_action = env.action_manager.action[:, :arm_action_dim]
-    return arm_action.square().sum(dim=-1) * (~opposed).float()
+class PregraspArmActionPenalty(ManagerTermBase):
+    """Hold the arm before acquisition without reacting to one-frame contact loss."""
+
+    def __init__(self, cfg, env: ManagerBasedRLEnv):
+        super().__init__(cfg, env)
+        self._contact_memory = torch.zeros(env.num_envs, dtype=torch.long, device=env.device)
+
+    def reset(self, env_ids: Sequence[int] | torch.Tensor | None = None) -> None:
+        if env_ids is None:
+            self._contact_memory.zero_()
+        else:
+            self._contact_memory[env_ids] = 0
+
+    def __call__(
+        self,
+        env: ManagerBasedRLEnv,
+        arm_action_dim: int,
+        memory_steps: int,
+        thumb_contact_name: str | tuple[str, ...],
+        tip_contact_names: tuple[str, ...],
+        threshold: float,
+        unwanted_contact_names: tuple[str, ...] | None = None,
+        max_unwanted_contact_force: float = 0.05,
+    ) -> torch.Tensor:
+        opposed = contacts(
+            env,
+            threshold,
+            thumb_contact_name,
+            tip_contact_names,
+            unwanted_contact_names,
+            max_unwanted_contact_force,
+        )
+        self._contact_memory = torch.where(
+            opposed,
+            torch.full_like(self._contact_memory, memory_steps),
+            (self._contact_memory - 1).clamp(min=0),
+        )
+        arm_action = env.action_manager.action[:, :arm_action_dim]
+        return arm_action.square().sum(dim=-1) * (self._contact_memory == 0).float()
 
 
 class PostgraspArmActionReward(ManagerTermBase):
@@ -105,6 +124,13 @@ class PostgraspArmActionReward(ManagerTermBase):
         self._action_term = action_term
         self._action_ids = action_ids
         self._target_action = (target_position - action_offset[:1]) / action_scale[:1]
+        self._contact_memory = torch.zeros(env.num_envs, dtype=torch.long, device=env.device)
+
+    def reset(self, env_ids: Sequence[int] | torch.Tensor | None = None) -> None:
+        if env_ids is None:
+            self._contact_memory.zero_()
+        else:
+            self._contact_memory[env_ids] = 0
 
     def __call__(
         self,
@@ -112,6 +138,7 @@ class PostgraspArmActionReward(ManagerTermBase):
         target_joint_pos: dict[str, float],
         action_term_name: str,
         std: float,
+        memory_steps: int,
         thumb_contact_name: str | tuple[str, ...],
         tip_contact_names: tuple[str, ...],
         threshold: float,
@@ -133,7 +160,12 @@ class PostgraspArmActionReward(ManagerTermBase):
             unwanted_contact_names,
             max_unwanted_contact_force,
         )
-        return score * opposed.float()
+        self._contact_memory = torch.where(
+            opposed,
+            torch.full_like(self._contact_memory, memory_steps),
+            (self._contact_memory - 1).clamp(min=0),
+        )
+        return score * (self._contact_memory > 0).float()
 
 
 def max_finger_contact_force(
