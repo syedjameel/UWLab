@@ -59,9 +59,10 @@ MAX_SUCCESS_RELATIVE_SPEED = 0.15
 PALM_DOWN_WRIST_2 = -2.094395
 # Equivalent wrapped angle to -3.665191 rad, kept inside the USD's [-pi, pi] limit.
 PALM_DOWN_WRIST_3 = 2.617994
-# Collision sweep: four finger groups remain opposed for all 120 close steps,
-# with 30 mm more clearance from the palm than the previous target.
-DESIRED_OBJECT_POS_P = (0.0586, 0.0600, 0.2000)
+# Collider-grid search followed by a free-body close test: fingers 1 and 2
+# maintain opposed contact at roughly 1.2 N each, without mount/base/palm
+# contact.  The former z=0.20 m target touched only finger 2.
+DESIRED_OBJECT_POS_P = (0.0600, 0.0450, 0.1400)
 # Post-reset object orientation in the nominal palm frame (w, x, y, z).
 DESIRED_OBJECT_QUAT_P = (-0.06698579, -0.93301314, -0.24999975, 0.25000033)
 FULL_OBJECT_POSE_RANGE = {
