@@ -21,18 +21,21 @@ cuboid support table.
 
 `DexLift-UR10eDelto-TableLeg-GraspLift-Curriculum-v0` starts the leg airborne below
 the open, palm-down hand, with no hand contact. The calibrated hand approach axis
-points toward the nominal leg spawn and 16° from vertical. A held-lift success promotes 0.25 difficulty
-levels and a failure demotes one, making 80% success the curriculum's interior fixed
+points toward the nominal leg spawn and 16° from vertical. A held-lift success promotes one difficulty
+level and a failure demotes four, making 80% success the curriculum's interior fixed
 point. Levels
 0–10 ramp gravity from zero to −9.81 m/s²; levels 10–15 widen reset translation, and
-levels 15–20 then widen orientation. At full range, the leg root starts
-165–195 mm above the tabletop with x/y offsets of ±80/120 mm, roll/pitch offsets of
-±0.35 rad, and arbitrary yaw. It falls onto the support table when it is not caught.
+levels 15–20 then widen orientation. At full range, the nominal leg root is 154 mm
+above the tabletop and is randomized by ±2 mm in x, ±3 mm in y, 0–1 mm in z, and
+±0.02 rad on each rotation axis. This is a local acquisition task around the
+collision-validated pregrasp; larger search-and-approach offsets are out of scope.
+The leg falls onto the support table when it is not caught.
 
-The policy has six relative UR10e joint-position actions and twenty independent,
-default-centered DELTO joint-position actions at 0.30 rad per unit action. Zero DELTO
-action therefore holds the open hand posture while the arm moves. All 25 phalanges retain collision geometry and
-object-filtered contact sensors. The fixed
+The policy has six absolute, default-centered UR10e joint-position actions and twenty
+independent, default-centered DELTO actions. Arm scales are 1.00/0.75/0.75/1.50/1.50/3.20
+rad; DELTO scales are 0.30 rad for joints 1–3 and 1.50 rad for distal joint 4. Zero
+action therefore holds the validated open pregrasp while the arm moves. All 25
+phalanges retain collision geometry and object-filtered contact sensors. The fixed
 object target is `(0.75, 0.10, 0.65)` m in the robot-root frame. Success requires, for
 30 consecutive control steps (0.5 s):
 
@@ -70,3 +73,13 @@ python scripts/reinforcement_learning/rsl_rl/evaluate.py \
 The evaluator reports checkpoint SHA-256, terminal counts, mean episode length, and a
 95% Wilson interval. Checkpoints, W&B data, evaluations, images, and videos are runtime
 artifacts and are not committed.
+
+## Validated checkpoint
+
+The frozen full-gravity checkpoint `table_leg_lift_bc_fullgravity_widearm_v240.pt`
+(SHA-256 `4c6f97356d7fe758ba00033e0c958c5ac204f31f213b368a0f0cf7bb48d81109`)
+was evaluated on two independent held-out seeds. It achieved 880/1,002 = 87.82%
+(95% Wilson interval 85.65–89.71%) and 844/1,007 = 83.81% (81.41–85.96%). The
+combined diagnostic is 1,724/2,009 = 85.81%; acceptance uses the lower independent
+result. The checkpoint and evaluation logs remain outside git under
+`/home/dom_iva/UWLab_table_leg/runtime_training/` on `DL_4090`.

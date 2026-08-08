@@ -15,7 +15,8 @@ dexterous lifting task. The required USD assets are committed; no model-generati
 
 The hand is mounted directly on the UR flange (zero standoff). It has 20 actuated finger joints;
 all 25 finger-link colliders are enabled. OmniReset uses a binary, calibrated grasp posture while
-DexLift exposes all 26 arm-and-hand joints as relative position actions.
+generic DexLift exposes all 26 arm-and-hand joints as relative position actions. The table-leg
+task instead uses absolute, default-centered targets so zero action holds its validated pregrasp.
 
 ## Task IDs
 
