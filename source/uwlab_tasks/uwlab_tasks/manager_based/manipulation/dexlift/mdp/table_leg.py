@@ -472,13 +472,19 @@ class GraspPostureProgressReward(ManagerTermBase):
             robot.data.joint_pos[:, self._joint_ids]
             - robot.data.default_joint_pos[:, self._joint_ids]
         )
-        # Retain a gradient for motion away from the target.  Clamping at zero
-        # makes every wrong-direction command equally unrewarded and lets half
-        # the independent fingers drift open without a corrective signal.
-        joint_progress = (joint_displacement * self._travel_direction / self._travel_magnitude).clamp(-1.0, 1.0)
-        posture_progress = (
-            joint_progress.masked_select(self._moving_joints).reshape(env.num_envs, -1).mean(dim=-1)
+        # Weight progress by physical joint travel.  Averaging per-joint
+        # normalized fractions lets a few-milliradian proximal target saturate
+        # as cheaply as a contact-forming distal joint with over one radian of
+        # travel, creating an open-hand local optimum.
+        directed_travel = joint_displacement * self._travel_direction
+        bounded_travel = torch.maximum(
+            torch.minimum(directed_travel, self._travel_magnitude),
+            -self._travel_magnitude,
         )
+        moving = self._moving_joints.float()
+        posture_progress = (bounded_travel * moving).sum(dim=-1) / (
+            self._travel_magnitude * moving
+        ).sum(dim=-1).clamp(min=1.0e-6)
 
         palm_pos_w = robot.data.body_pos_w[:, self._palm_body_id]
         palm_quat_w = robot.data.body_quat_w[:, self._palm_body_id]
