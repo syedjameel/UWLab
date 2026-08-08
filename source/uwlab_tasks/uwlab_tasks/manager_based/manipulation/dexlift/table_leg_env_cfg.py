@@ -115,11 +115,13 @@ class TableLegJointPositionActionCfg:
         },
     )
     # Absolute default-centered targets make a zero action actively hold the
-    # open posture while the arm accelerates; scale is radians per unit action.
+    # open posture while the arm accelerates.  The collision-validated close
+    # posture needs 0.94-1.34 rad of distal travel, so retaining the uniform
+    # 0.30 scale would require implausible policy outputs of 3.15-4.46 there.
     hand_action = mdp.JointPositionActionCfg(
         asset_name="robot",
         joint_names=[HAND_JOINT_REGEX],
-        scale=0.30,
+        scale={r"rj_dg_[1-5]_[1-3]": 0.30, r"rj_dg_[1-5]_4": 1.50},
         use_default_offset=True,
     )
 
