@@ -21,6 +21,7 @@ from uwlab_assets import UWLAB_LOCAL_ASSETS_DIR
 from . import mdp
 from .dexlift_ur10e_delto_env_cfg import (
     ALL_TIP_NAMES,
+    ARM_JOINT_NAMES,
     HAND_JOINT_REGEX,
     PALM_BODY,
     TIP_BODY_REGEX,
@@ -84,22 +85,29 @@ NON_FINGER_HAND_CONTACT_NAMES = (PALM_BODY, "rl_dg_base", "rl_dg_palm")
 
 @configclass
 class TableLegJointPositionActionCfg:
-    """Independent relative-position control for six arm and twenty finger joints."""
+    """Relative arm motion plus default-centered position control for every finger joint."""
 
-    action = mdp.RelativeJointPositionActionCfg(
+    arm_action = mdp.RelativeJointPositionActionCfg(
         asset_name="robot",
-        joint_names=[".*"],
+        joint_names=ARM_JOINT_NAMES,
         scale={
             # Initial PPO exploration uses std=0.15. The smaller legacy scales
-            # made both approach and finger motion nearly invisible at startup.
+            # made approach motion nearly invisible at startup.
             "shoulder_pan_joint": 0.20,
             "shoulder_lift_joint": 0.20,
             "elbow_joint": 0.20,
             "wrist_1_joint": 0.10,
             "wrist_2_joint": 0.10,
             "wrist_3_joint": 0.10,
-            HAND_JOINT_REGEX: 0.15,
         },
+    )
+    # Absolute default-centered targets make a zero action actively hold the
+    # open posture while the arm accelerates; scale is radians per unit action.
+    hand_action = mdp.JointPositionActionCfg(
+        asset_name="robot",
+        joint_names=[HAND_JOINT_REGEX],
+        scale=0.30,
+        use_default_offset=True,
     )
 
 
@@ -435,6 +443,15 @@ class TableLegGraspLiftEnvCfg(UR10eDeltoMixinCfg, dexsuite.DexsuiteLiftEnvCfg):
         self.scene.object = _leg_cfg()
         self.scene.table = _table_cfg()
         self.scene.robot.actuators["arm"] = self.scene.robot.actuators["arm"].replace(stiffness=1600.0, damping=80.0)
+        hand_actuator = self.scene.robot.actuators["hand"]
+        # Preserve the identified per-joint gain and effort-limit shapes, but add
+        # enough conservative servo authority to hold posture through arm motion.
+        # Critical damping scales with sqrt(stiffness), hence 4x Kp and 2x Kd.
+        self.scene.robot.actuators["hand"] = hand_actuator.replace(
+            stiffness={name: 4.0 * value for name, value in hand_actuator.stiffness.items()},
+            damping={name: 2.0 * value for name, value in hand_actuator.damping.items()},
+            effort_limit_sim={name: 3.0 * value for name, value in hand_actuator.effort_limit_sim.items()},
+        )
         self.scene.robot.spawn.articulation_props = self.scene.robot.spawn.articulation_props.replace(
             solver_velocity_iteration_count=2
         )

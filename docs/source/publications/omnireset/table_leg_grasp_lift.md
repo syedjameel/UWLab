@@ -28,9 +28,10 @@ levels 15–20 then widen orientation. At full range, the leg root starts
 165–195 mm above the tabletop with x/y offsets of ±80/120 mm, roll/pitch offsets of
 ±0.35 rad, and arbitrary yaw. It falls onto the support table when it is not caught.
 
-The policy has six relative UR10e joint-position actions and twenty independent
-relative DELTO joint-position actions, matching the DexSuite control structure. All
-25 phalanges retain collision geometry and object-filtered contact sensors. The fixed
+The policy has six relative UR10e joint-position actions and twenty independent,
+default-centered DELTO joint-position actions at 0.30 rad per unit action. Zero DELTO
+action therefore holds the open hand posture while the arm moves. All 25 phalanges retain collision geometry and
+object-filtered contact sensors. The fixed
 object target is `(0.75, 0.10, 0.65)` m in the robot-root frame. Success requires, for
 30 consecutive control steps (0.5 s):
 
