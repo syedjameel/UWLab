@@ -107,6 +107,19 @@ def grasp_frame_position(
     return 1.0 - torch.tanh(error / std)
 
 
+def close_gripper_at_grasp_frame(
+    env: ManagerBasedRLEnv,
+    desired_object_pos_p: tuple[float, float, float],
+    std: float,
+    robot_cfg: SceneEntityCfg,
+    object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+) -> torch.Tensor:
+    """Encourage the binary close command only after the leg enters the finger cage."""
+    at_grasp_frame = grasp_frame_position(env, desired_object_pos_p, std, robot_cfg, object_cfg)
+    close_command = env.action_manager.action[:, -1] < 0.0
+    return at_grasp_frame * close_command.float()
+
+
 def lift_progress(
     env: ManagerBasedRLEnv,
     start_height: float,

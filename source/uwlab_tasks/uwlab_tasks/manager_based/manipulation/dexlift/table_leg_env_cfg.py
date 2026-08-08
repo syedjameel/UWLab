@@ -145,6 +145,15 @@ class TableLegRewardsCfg(dexsuite.RewardsCfg):
             "robot_cfg": SceneEntityCfg("robot", body_names=[PALM_BODY]),
         },
     )
+    close_at_grasp_frame = RewTerm(
+        func=mdp.close_gripper_at_grasp_frame,
+        weight=5.0,
+        params={
+            "desired_object_pos_p": (0.0586, 0.1441, 0.1669),
+            "std": 0.05,
+            "robot_cfg": SceneEntityCfg("robot", body_names=[PALM_BODY]),
+        },
+    )
     position_tracking = None
     orientation_tracking = None
     success = RewTerm(func=mdp.is_terminated_term, weight=3000.0, params={"term_keys": "success"})
