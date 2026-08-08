@@ -39,10 +39,9 @@ WORKSPACE_Y = 0.10
 TABLE_CENTER_Z = 0.235
 TABLE_THICKNESS = 0.04
 TABLE_TOP_Z = TABLE_CENTER_Z + 0.5 * TABLE_THICKNESS
-# Spawn the leg above the open hand with a visible free-flight interval.  The
-# palm resets near z=0.68 m and the fingers extend below it; z=0.90 m keeps the
-# complete 200 mm leg clear of every hand collider at reset.
-LEG_SPAWN_ROOT_Z = 0.90
+# The palm resets around z=0.68 m.  Spawn the leg below every finger collider
+# but still airborne above the table, so the hand must descend before grasping.
+LEG_SPAWN_ROOT_Z = 0.42
 # Lift shaping starts near the table-supported root height, not at the airborne
 # reset height.  Tying this to LEG_SPAWN_ROOT_Z would reward the initial fall.
 START_HEIGHT = 0.05
