@@ -179,7 +179,7 @@ class TableLegRewardsCfg(dexsuite.RewardsCfg):
     action_rate_l2 = RewTerm(func=mdp.action_rate_l2_clamped, weight=-0.003)
     pregrasp_arm_motion = RewTerm(
         func=mdp.pregrasp_arm_action_l2,
-        weight=-500.0,
+        weight=-5000.0,
         params={
             "arm_action_dim": len(ARM_JOINT_NAMES),
             "threshold": CONTACT_THRESHOLD,
