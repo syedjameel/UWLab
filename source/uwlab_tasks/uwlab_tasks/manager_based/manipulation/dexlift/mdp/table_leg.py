@@ -88,6 +88,25 @@ def object_velocity_b(
     )
 
 
+def grasp_frame_position(
+    env: ManagerBasedRLEnv,
+    desired_object_pos_p: tuple[float, float, float],
+    std: float,
+    robot_cfg: SceneEntityCfg,
+    object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+) -> torch.Tensor:
+    """Reward placing the palm so the leg lies inside the open finger cage."""
+    robot = env.scene[robot_cfg.name]
+    obj: RigidObject = env.scene[object_cfg.name]
+    palm_id = robot_cfg.body_ids[0]
+    object_pos_p = quat_apply_inverse(
+        robot.data.body_quat_w[:, palm_id], obj.data.root_pos_w - robot.data.body_pos_w[:, palm_id]
+    )
+    desired = object_pos_p.new_tensor(desired_object_pos_p)
+    error = torch.linalg.vector_norm(object_pos_p - desired, dim=-1)
+    return 1.0 - torch.tanh(error / std)
+
+
 def lift_progress(
     env: ManagerBasedRLEnv,
     start_height: float,

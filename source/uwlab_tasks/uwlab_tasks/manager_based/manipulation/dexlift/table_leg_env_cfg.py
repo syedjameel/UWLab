@@ -133,10 +133,14 @@ class TableLegRewardsCfg(dexsuite.RewardsCfg):
         weight=8.0,
         params={"std": 0.20, "asset_cfg": SceneEntityCfg("robot", body_names=[TIP_BODY_REGEX])},
     )
-    palm_to_object = RewTerm(
-        func=mdp.object_ee_distance,
-        weight=5.0,
-        params={"std": 0.30, "asset_cfg": SceneEntityCfg("robot", body_names=[PALM_BODY])},
+    grasp_frame_position = RewTerm(
+        func=mdp.grasp_frame_position,
+        weight=8.0,
+        params={
+            "desired_object_pos_p": (0.0586, 0.0741, 0.1669),
+            "std": 0.15,
+            "robot_cfg": SceneEntityCfg("robot", body_names=[PALM_BODY]),
+        },
     )
     position_tracking = None
     orientation_tracking = None
