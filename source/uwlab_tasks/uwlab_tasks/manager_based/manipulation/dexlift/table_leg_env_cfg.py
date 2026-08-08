@@ -39,9 +39,9 @@ WORKSPACE_Y = 0.10
 TABLE_CENTER_Z = 0.235
 TABLE_THICKNESS = 0.04
 TABLE_TOP_Z = TABLE_CENTER_Z + 0.5 * TABLE_THICKNESS
-# The palm resets around z=0.68 m.  Spawn the leg below every finger collider
-# but still airborne above the table, so the hand must descend before grasping.
-LEG_SPAWN_ROOT_Z = 0.42
+# The palm resets above this airborne leg pose.  Its exact position places the
+# free body in the dynamically validated open-hand grasp frame below.
+LEG_SPAWN_POS = (0.75855923, 0.07825003, 0.40887862)
 # The horizontal 30 mm leg rests with its root 15 mm above the tabletop. Success
 # is an 80 mm physical lift from that support pose; the termination independently
 # measures the same minimum displacement from each episode's observed low point.
@@ -54,10 +54,10 @@ MINIMUM_ARTICULATED_FINGERS = 2
 MINIMUM_JOINT_DISPLACEMENT = 0.10
 MAX_SUCCESS_OBJECT_SPEED = 0.15
 MAX_SUCCESS_RELATIVE_SPEED = 0.15
-# Collider-grid search followed by a free-body close test: fingers 1 and 2
-# maintain opposed contact at roughly 1.2 N each, without mount/base/palm
-# contact.  The former z=0.20 m target touched only finger 2.
-DESIRED_OBJECT_POS_P = (0.0600, 0.0450, 0.1400)
+# A dynamic free-body search found that fingers 1 and 2 close into opposed
+# contact in 99.4% of environments with 6 mm object drift and no unwanted
+# mount/base/palm contact.
+DESIRED_OBJECT_POS_P = (0.0425, 0.0450, 0.1600)
 # Post-reset object orientation in the nominal palm frame (w, x, y, z).
 DESIRED_OBJECT_QUAT_P = (-0.06698579, -0.93301314, -0.24999975, 0.25000033)
 # Collision-free open-hand pose found by batched IK.  The airborne leg is not
@@ -154,7 +154,7 @@ def _leg_cfg() -> RigidObjectCfg:
             ),
         ),
         init_state=RigidObjectCfg.InitialStateCfg(
-            pos=(WORKSPACE_X, WORKSPACE_Y, LEG_SPAWN_ROOT_Z),
+            pos=LEG_SPAWN_POS,
             rot=(0.707107, 0.0, 0.0, 0.707107),
         ),
     )
