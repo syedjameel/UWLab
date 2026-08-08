@@ -24,6 +24,7 @@ from . import mdp
 from .dexlift_ur10e_delto_env_cfg import (
     ALL_TIP_NAMES,
     ARM_JOINT_NAMES,
+    PALM_BODY,
     TIP_BODY_REGEX,
     UR10eDeltoEventCfg,
     UR10eDeltoMixinCfg,
@@ -140,6 +141,11 @@ class TableLegRewardsCfg(dexsuite.RewardsCfg):
         func=mdp.finger_contact_count,
         weight=15.0,
         params={"threshold": CONTACT_THRESHOLD, "contact_groups": FINGER_CONTACT_GROUPS},
+    )
+    grasp_frame_alignment = RewTerm(
+        func=mdp.GraspFrameAlignment,
+        weight=5.0,
+        params={"std": 0.5, "palm_body": PALM_BODY},
     )
     opposition_contact = RewTerm(
         func=mdp.contacts,

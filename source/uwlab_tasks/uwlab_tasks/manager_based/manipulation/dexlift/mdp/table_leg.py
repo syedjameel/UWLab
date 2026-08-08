@@ -12,7 +12,7 @@ import torch
 
 from isaaclab.assets import RigidObject
 from isaaclab.managers import ManagerTermBase, SceneEntityCfg
-from isaaclab.utils.math import quat_apply_inverse
+from isaaclab.utils.math import quat_apply_inverse, quat_conjugate, quat_error_magnitude, quat_mul
 
 from .rewards import _sensor_force_magnitudes, contacts
 
@@ -162,6 +162,38 @@ def object_dropped(
 ) -> torch.Tensor:
     """Terminate once the leg falls materially below the receptive table root."""
     return root_height_above_table(env) < minimum_height
+
+
+class GraspFrameAlignment(ManagerTermBase):
+    """Reward the palm for matching the leg's nominal grasp-frame orientation."""
+
+    def __init__(self, cfg, env: ManagerBasedRLEnv):
+        super().__init__(cfg, env)
+        robot = env.scene[self.cfg.params.get("robot_name", "robot")]
+        object_asset = env.scene[self.cfg.params.get("object_name", "object")]
+        palm_body = self.cfg.params.get("palm_body", "rl_dg_mount")
+        palm_ids, _ = robot.find_bodies(palm_body)
+        if len(palm_ids) != 1:
+            raise ValueError(f"Expected one palm body matching {palm_body!r}, found {palm_ids}")
+        self._palm_body_id = palm_ids[0]
+        palm_quat_w = robot.data.body_quat_w[:, self._palm_body_id]
+        self._desired_object_quat_p = quat_mul(quat_conjugate(palm_quat_w), object_asset.data.root_quat_w).clone()
+
+    def __call__(
+        self,
+        env: ManagerBasedRLEnv,
+        std: float,
+        robot_name: str = "robot",
+        object_name: str = "object",
+        palm_body: str = "rl_dg_mount",
+    ) -> torch.Tensor:
+        del palm_body
+        robot = env.scene[robot_name]
+        object_asset = env.scene[object_name]
+        palm_quat_w = robot.data.body_quat_w[:, self._palm_body_id]
+        object_quat_p = quat_mul(quat_conjugate(palm_quat_w), object_asset.data.root_quat_w)
+        error = quat_error_magnitude(object_quat_p, self._desired_object_quat_p)
+        return 1.0 - torch.tanh(error / std)
 
 
 class SuccessDifficultyScheduler(ManagerTermBase):

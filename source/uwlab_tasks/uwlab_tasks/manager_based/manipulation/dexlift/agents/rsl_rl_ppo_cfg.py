@@ -55,7 +55,7 @@ class TableLegGraspLiftPPORunnerCfg(DexLiftUR10eDeltoPPORunnerCfg):
     experiment_name = "table_leg_grasp_lift_ur10e_delto"
 
     def __post_init__(self):
-        # The leg is only 22.75 g, so the generic dexterous-lift exploration
+        # The 200 mm leg is 57.354 g, so the generic dexterous-lift exploration
         # level produces many high-energy launches. Keep enough exploration for
         # contact discovery while making successful grasp refinement dominant.
         self.policy.init_noise_std = 0.6
