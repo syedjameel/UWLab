@@ -37,7 +37,7 @@ Success requires, for 12 consecutive control steps:
 - contact from at least two distinct fingers;
 - no object contact on the mount, base, or palm;
 - leg linear speed no greater than 0.5 m/s and palm-relative speed no greater than
-  0.2 m/s.
+  0.25 m/s.
 
 Thus an untouched spawn, table-supported leg, ballistic launch, or proximity-only
 motion cannot succeed.

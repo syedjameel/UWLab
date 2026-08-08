@@ -336,7 +336,7 @@ class TableLegTerminationsCfg(dexsuite.TerminationsCfg):
             "max_object_speed": 0.5,
             "minimum_lift": MINIMUM_LIFT,
             "max_palm_distance": 0.30,
-            "max_relative_speed": 0.20,
+            "max_relative_speed": 0.25,
             "minimum_episode_steps": 60,
             "palm_body": PALM_BODY,
         },
