@@ -128,8 +128,11 @@ def excessive_horizontal_displacement(
 ) -> torch.Tensor:
     """Squared penalty once the leg moves materially away from its receiver."""
     obj: RigidObject = env.scene[object_cfg.name]
-    dx = obj.data.root_pos_w[:, 0] - center_x
-    dy = obj.data.root_pos_w[:, 1] - center_y
+    # Asset root poses are expressed in world coordinates, while task workspace
+    # constants are local to each replicated environment.
+    object_pos_e = obj.data.root_pos_w - env.scene.env_origins
+    dx = object_pos_e[:, 0] - center_x
+    dy = object_pos_e[:, 1] - center_y
     distance = torch.sqrt(dx.square() + dy.square())
     return ((distance - free_radius).clamp(min=0.0) / free_radius).square().clamp(max=25.0)
 
