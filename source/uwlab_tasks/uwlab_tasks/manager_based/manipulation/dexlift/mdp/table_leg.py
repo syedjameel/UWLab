@@ -185,6 +185,66 @@ def stable_grasp(
     ).float()
 
 
+def upward_velocity_until_height(
+    env: ManagerBasedRLEnv,
+    target_height: float,
+    std: float,
+    thumb_contact_name: str | tuple[str, ...],
+    tip_contact_names: tuple[str, ...],
+    threshold: float,
+    object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+    unwanted_contact_names: tuple[str, ...] | None = None,
+    max_unwanted_contact_force: float = 0.05,
+) -> torch.Tensor:
+    """Reward upward motion only until the held leg reaches the lift target."""
+    obj: RigidObject = env.scene[object_cfg.name]
+    below_target = root_height_above_table(env, object_cfg=object_cfg) < target_height
+    reward = torch.tanh(obj.data.root_lin_vel_w[:, 2] / max(std, 1.0e-6))
+    return reward * below_target.float() * contacts(
+        env,
+        threshold,
+        thumb_contact_name,
+        tip_contact_names,
+        unwanted_contact_names,
+        max_unwanted_contact_force,
+    ).float()
+
+
+def held_lift_stability(
+    env: ManagerBasedRLEnv,
+    minimum_height: float,
+    linear_speed_std: float,
+    relative_speed_std: float,
+    thumb_contact_name: str | tuple[str, ...],
+    tip_contact_names: tuple[str, ...],
+    threshold: float,
+    robot_cfg: SceneEntityCfg,
+    object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+    unwanted_contact_names: tuple[str, ...] | None = None,
+    max_unwanted_contact_force: float = 0.05,
+) -> torch.Tensor:
+    """Reward a calm finger-only hold after reaching the lift target."""
+    obj: RigidObject = env.scene[object_cfg.name]
+    robot = env.scene[robot_cfg.name]
+    palm_id = robot_cfg.body_ids[0]
+    object_speed = torch.linalg.vector_norm(obj.data.root_lin_vel_w, dim=-1)
+    relative_speed = torch.linalg.vector_norm(
+        obj.data.root_lin_vel_w - robot.data.body_lin_vel_w[:, palm_id], dim=-1
+    )
+    calm = (1.0 - torch.tanh(object_speed / max(linear_speed_std, 1.0e-6))) * (
+        1.0 - torch.tanh(relative_speed / max(relative_speed_std, 1.0e-6))
+    )
+    above_target = root_height_above_table(env, object_cfg=object_cfg) >= minimum_height
+    return calm * above_target.float() * contacts(
+        env,
+        threshold,
+        thumb_contact_name,
+        tip_contact_names,
+        unwanted_contact_names,
+        max_unwanted_contact_force,
+    ).float()
+
+
 def excessive_object_speed(
     env: ManagerBasedRLEnv,
     max_speed: float,

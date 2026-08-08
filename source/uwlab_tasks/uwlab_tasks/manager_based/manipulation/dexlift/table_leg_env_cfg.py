@@ -255,13 +255,28 @@ class TableLegRewardsCfg(dexsuite.RewardsCfg):
         },
     )
     object_upward_motion = RewTerm(
-        func=mdp.object_upward_velocity_bonus,
+        func=mdp.upward_velocity_until_height,
         weight=150.0,
         params={
+            "target_height": SUCCESS_HEIGHT,
             "std": 0.15,
             "threshold": CONTACT_THRESHOLD,
             "thumb_contact_name": THUMB_CONTACT_NAMES,
             "tip_contact_names": TIP_CONTACT_NAMES,
+            "unwanted_contact_names": NON_FINGER_HAND_CONTACT_NAMES,
+        },
+    )
+    held_lift_stability = RewTerm(
+        func=mdp.held_lift_stability,
+        weight=500.0,
+        params={
+            "minimum_height": SUCCESS_HEIGHT,
+            "linear_speed_std": 0.15,
+            "relative_speed_std": 0.10,
+            "threshold": CONTACT_THRESHOLD,
+            "thumb_contact_name": THUMB_CONTACT_NAMES,
+            "tip_contact_names": TIP_CONTACT_NAMES,
+            "robot_cfg": SceneEntityCfg("robot", body_names=[PALM_BODY]),
             "unwanted_contact_names": NON_FINGER_HAND_CONTACT_NAMES,
         },
     )
