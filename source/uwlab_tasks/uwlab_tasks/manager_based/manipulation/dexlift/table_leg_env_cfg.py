@@ -221,7 +221,7 @@ class TableLegRewardsCfg(dexsuite.RewardsCfg):
     )
     grasp_posture_progress = RewTerm(
         func=mdp.GraspPostureProgressReward,
-        weight=1200.0,
+        weight=4000.0,
         params={
             "desired_object_pos_p": DESIRED_OBJECT_POS_P,
             "desired_object_quat_p": DESIRED_OBJECT_QUAT_P,
