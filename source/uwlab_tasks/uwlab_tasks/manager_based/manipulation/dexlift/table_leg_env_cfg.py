@@ -90,13 +90,15 @@ class TableLegJointPositionActionCfg:
         asset_name="robot",
         joint_names=[".*"],
         scale={
-            "shoulder_pan_joint": 0.10,
-            "shoulder_lift_joint": 0.10,
-            "elbow_joint": 0.10,
-            "wrist_1_joint": 0.02,
-            "wrist_2_joint": 0.02,
-            "wrist_3_joint": 0.02,
-            HAND_JOINT_REGEX: 0.10,
+            # Initial PPO exploration uses std=0.15. The smaller legacy scales
+            # made both approach and finger motion nearly invisible at startup.
+            "shoulder_pan_joint": 0.20,
+            "shoulder_lift_joint": 0.20,
+            "elbow_joint": 0.20,
+            "wrist_1_joint": 0.10,
+            "wrist_2_joint": 0.10,
+            "wrist_3_joint": 0.10,
+            HAND_JOINT_REGEX: 0.15,
         },
     )
 
