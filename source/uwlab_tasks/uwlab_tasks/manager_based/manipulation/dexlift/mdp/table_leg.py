@@ -88,38 +88,6 @@ def object_velocity_b(
     )
 
 
-def grasp_frame_position(
-    env: ManagerBasedRLEnv,
-    desired_object_pos_p: tuple[float, float, float],
-    std: float,
-    robot_cfg: SceneEntityCfg,
-    object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
-) -> torch.Tensor:
-    """Reward placing the palm so the leg lies inside the open finger cage."""
-    robot = env.scene[robot_cfg.name]
-    obj: RigidObject = env.scene[object_cfg.name]
-    palm_id = robot_cfg.body_ids[0]
-    object_pos_p = quat_apply_inverse(
-        robot.data.body_quat_w[:, palm_id], obj.data.root_pos_w - robot.data.body_pos_w[:, palm_id]
-    )
-    desired = object_pos_p.new_tensor(desired_object_pos_p)
-    error = torch.linalg.vector_norm(object_pos_p - desired, dim=-1)
-    return 1.0 - torch.tanh(error / std)
-
-
-def close_gripper_at_grasp_frame(
-    env: ManagerBasedRLEnv,
-    desired_object_pos_p: tuple[float, float, float],
-    std: float,
-    robot_cfg: SceneEntityCfg,
-    object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
-) -> torch.Tensor:
-    """Encourage the binary close command only after the leg enters the finger cage."""
-    at_grasp_frame = grasp_frame_position(env, desired_object_pos_p, std, robot_cfg, object_cfg)
-    close_command = env.action_manager.action[:, -1] < 0.0
-    return at_grasp_frame * close_command.float()
-
-
 def lift_progress(
     env: ManagerBasedRLEnv,
     start_height: float,
@@ -196,8 +164,14 @@ def object_dropped(
     return root_height_above_table(env) < minimum_height
 
 
-class GraspFrameAlignment(ManagerTermBase):
-    """Reward the palm for matching the leg's nominal grasp-frame orientation."""
+class GraspPoseReward(ManagerTermBase):
+    """Reward the complete palm-relative grasp pose, optionally gated by closing.
+
+    Multiplying the position and orientation scores prevents the policy from
+    collecting either reward while approaching the leg with an unusable wrist
+    orientation.  The desired relative orientation is the collision-validated
+    nominal spawn orientation.
+    """
 
     def __init__(self, cfg, env: ManagerBasedRLEnv):
         super().__init__(cfg, env)
@@ -214,7 +188,10 @@ class GraspFrameAlignment(ManagerTermBase):
     def __call__(
         self,
         env: ManagerBasedRLEnv,
-        std: float,
+        desired_object_pos_p: tuple[float, float, float],
+        position_std: float,
+        orientation_std: float,
+        close_only: bool = False,
         robot_name: str = "robot",
         object_name: str = "object",
         palm_body: str = "rl_dg_mount",
@@ -222,10 +199,21 @@ class GraspFrameAlignment(ManagerTermBase):
         del palm_body
         robot = env.scene[robot_name]
         object_asset = env.scene[object_name]
+        palm_pos_w = robot.data.body_pos_w[:, self._palm_body_id]
         palm_quat_w = robot.data.body_quat_w[:, self._palm_body_id]
+
+        object_pos_p = quat_apply_inverse(palm_quat_w, object_asset.data.root_pos_w - palm_pos_w)
+        desired_pos = object_pos_p.new_tensor(desired_object_pos_p)
+        position_error = torch.linalg.vector_norm(object_pos_p - desired_pos, dim=-1)
+        position_score = 1.0 - torch.tanh(position_error / position_std)
+
         object_quat_p = quat_mul(quat_conjugate(palm_quat_w), object_asset.data.root_quat_w)
-        error = quat_error_magnitude(object_quat_p, self._desired_object_quat_p)
-        return 1.0 - torch.tanh(error / std)
+        orientation_error = quat_error_magnitude(object_quat_p, self._desired_object_quat_p)
+        orientation_score = 1.0 - torch.tanh(orientation_error / orientation_std)
+        score = position_score * orientation_score
+        if close_only:
+            score = score * (env.action_manager.action[:, -1] < 0.0).float()
+        return score
 
 
 class SuccessDifficultyScheduler(ManagerTermBase):

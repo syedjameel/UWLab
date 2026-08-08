@@ -133,25 +133,28 @@ class TableLegRewardsCfg(dexsuite.RewardsCfg):
         weight=8.0,
         params={"std": 0.20, "asset_cfg": SceneEntityCfg("robot", body_names=[TIP_BODY_REGEX])},
     )
-    grasp_frame_position = RewTerm(
-        func=mdp.grasp_frame_position,
-        weight=8.0,
+    grasp_pose = RewTerm(
+        func=mdp.GraspPoseReward,
+        weight=50.0,
         params={
             # The URDF root is at the thread/body junction.  A collider sweep
             # places the cage 30 mm into the square body, where all five digits
             # maintain contact without requiring an interpenetrating reset.
             "desired_object_pos_p": (0.0586, 0.0900, 0.1700),
-            "std": 0.15,
-            "robot_cfg": SceneEntityCfg("robot", body_names=[PALM_BODY]),
+            "position_std": 0.15,
+            "orientation_std": 1.5,
+            "palm_body": PALM_BODY,
         },
     )
-    close_at_grasp_frame = RewTerm(
-        func=mdp.close_gripper_at_grasp_frame,
-        weight=10.0,
+    close_at_grasp_pose = RewTerm(
+        func=mdp.GraspPoseReward,
+        weight=15.0,
         params={
             "desired_object_pos_p": (0.0586, 0.0900, 0.1700),
-            "std": 0.05,
-            "robot_cfg": SceneEntityCfg("robot", body_names=[PALM_BODY]),
+            "position_std": 0.05,
+            "orientation_std": 0.5,
+            "close_only": True,
+            "palm_body": PALM_BODY,
         },
     )
     position_tracking = None
@@ -166,11 +169,6 @@ class TableLegRewardsCfg(dexsuite.RewardsCfg):
         func=mdp.finger_contact_count,
         weight=15.0,
         params={"threshold": CONTACT_THRESHOLD, "contact_groups": FINGER_CONTACT_GROUPS},
-    )
-    grasp_frame_alignment = RewTerm(
-        func=mdp.GraspFrameAlignment,
-        weight=50.0,
-        params={"std": 1.5, "palm_body": PALM_BODY},
     )
     opposition_contact = RewTerm(
         func=mdp.contacts,
