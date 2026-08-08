@@ -167,7 +167,7 @@ def object_dropped(
 class SuccessDifficultyScheduler(ManagerTermBase):
     """Adaptive two-stage difficulty driven by the real held-lift termination.
 
-    A success promotes one level and a failure demotes four.  Away from the
+    A failure demotes four times as much as a success promotes.  Away from the
     bounds, an 80% success rate is therefore the fixed point.
     """
 
@@ -176,13 +176,18 @@ class SuccessDifficultyScheduler(ManagerTermBase):
         initial = float(self.cfg.params.get("initial_level", 0.0))
         self.levels = torch.full((env.num_envs,), initial, device=env.device)
         self.mean_level = initial
-        self.difficulty_frac = initial / max(float(self.cfg.params.get("max_level", 20.0)), 1.0)
+        self.difficulty_frac = torch.tensor(
+            initial / max(float(self.cfg.params.get("max_level", 20.0)), 1.0), device=env.device
+        )
 
     def get_state(self) -> torch.Tensor:
         return self.levels
 
     def set_state(self, state: torch.Tensor) -> None:
         self.levels = state.clone().to(self._env.device)
+        self.mean_level = float(self.levels.mean().item())
+        max_level = max(float(self.cfg.params.get("max_level", 20.0)), 1.0)
+        self.difficulty_frac = self.levels.mean() / max_level
 
     def __call__(
         self,
@@ -192,8 +197,8 @@ class SuccessDifficultyScheduler(ManagerTermBase):
         initial_level: float = 0.0,
         min_level: float = 0.0,
         max_level: float = 20.0,
-        promotion_step: float = 1.0,
-        demotion_step: float = 4.0,
+        promotion_step: float = 0.25,
+        demotion_step: float = 1.0,
     ) -> float:
         del initial_level
         if int(env.common_step_counter) > 0 and len(env_ids) > 0:
@@ -204,8 +209,11 @@ class SuccessDifficultyScheduler(ManagerTermBase):
                 torch.full_like(self.levels[env_ids], -demotion_step),
             )
             self.levels[env_ids] = (self.levels[env_ids] + delta).clamp(min=min_level, max=max_level)
-        self.mean_level = float(self.levels.mean().item())
-        self.difficulty_frac = self.mean_level / max(max_level, 1.0)
+        mean_level = self.levels.mean()
+        self.mean_level = float(mean_level.item())
+        # DexSuite's interpolation helper calls ``.item()`` on expressions
+        # involving this value, so preserve its scalar-tensor contract.
+        self.difficulty_frac = mean_level / max(max_level, 1.0)
         return self.mean_level
 
 
