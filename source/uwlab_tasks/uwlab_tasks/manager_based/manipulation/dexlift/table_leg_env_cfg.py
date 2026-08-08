@@ -72,6 +72,16 @@ PREGRASP_ARM_JOINT_POS = {
     "wrist_2_joint": -2.04733872,
     "wrist_3_joint": 2.56176877,
 }
+# Damped-least-squares IK solution that preserves the validated grasp
+# orientation while carrying the nominal leg root to TARGET_OBJECT_POS_B.
+LIFT_ARM_JOINT_POS = {
+    "shoulder_pan_joint": -0.00057236,
+    "shoulder_lift_joint": -1.46712756,
+    "elbow_joint": 1.22789574,
+    "wrist_1_joint": -1.31365275,
+    "wrist_2_joint": -2.04703569,
+    "wrist_3_joint": 2.59462404,
+}
 # Only this opposed pair contacts at the validated pose.  Shaping all five
 # fingers lets PPO collect posture progress on irrelevant, non-contact digits.
 OPPOSED_GRASP_JOINT_POS = {
@@ -112,14 +122,14 @@ class TableLegJointPositionActionCfg:
         asset_name="robot",
         joint_names=ARM_JOINT_NAMES,
         scale={
-            # Initial PPO exploration uses std=0.15. The smaller legacy scales
-            # made approach motion nearly invisible at startup.
-            "shoulder_pan_joint": 0.20,
-            "shoulder_lift_joint": 0.20,
-            "elbow_joint": 0.20,
-            "wrist_1_joint": 0.10,
-            "wrist_2_joint": 0.10,
-            "wrist_3_joint": 0.10,
+            # Keep initial exploration conservative while making the full IK
+            # lift target reachable inside the policy's [-1, 1] action range.
+            "shoulder_pan_joint": 0.25,
+            "shoulder_lift_joint": 0.25,
+            "elbow_joint": 0.50,
+            "wrist_1_joint": 0.50,
+            "wrist_2_joint": 0.25,
+            "wrist_3_joint": 0.25,
         },
         use_default_offset=True,
     )
@@ -258,6 +268,19 @@ class TableLegRewardsCfg(dexsuite.RewardsCfg):
             "contact_groups": FINGER_CONTACT_GROUPS,
             "minimum_contact_groups": 2,
             "contact_threshold": CONTACT_THRESHOLD,
+            "unwanted_contact_names": NON_FINGER_HAND_CONTACT_NAMES,
+        },
+    )
+    postgrasp_lift_action = RewTerm(
+        func=mdp.PostgraspArmActionReward,
+        weight=4000.0,
+        params={
+            "target_joint_pos": LIFT_ARM_JOINT_POS,
+            "action_term_name": "arm_action",
+            "std": 0.5,
+            "threshold": CONTACT_THRESHOLD,
+            "thumb_contact_name": THUMB_CONTACT_NAMES,
+            "tip_contact_names": TIP_CONTACT_NAMES,
             "unwanted_contact_names": NON_FINGER_HAND_CONTACT_NAMES,
         },
     )
