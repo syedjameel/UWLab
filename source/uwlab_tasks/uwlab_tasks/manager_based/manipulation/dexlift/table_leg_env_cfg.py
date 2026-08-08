@@ -470,8 +470,10 @@ class TableLegCurriculumCfg(DexsuiteCurriculumCfg):
             "initial_level": 0.0,
             "min_level": 0.0,
             "max_level": 20.0,
-            "promotion_step": 0.25,
-            "demotion_step": 1.0,
+            # Preserve the 80% fixed point while traversing the staged task
+            # four times faster than the legacy 0.25/-1.0 increments.
+            "promotion_step": 1.0,
+            "demotion_step": 4.0,
         },
     )
 
