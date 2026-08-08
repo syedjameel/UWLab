@@ -531,7 +531,9 @@ class TableLegGraspLiftEnvCfg(UR10eDeltoMixinCfg, dexsuite.DexsuiteLiftEnvCfg):
         self.terminations.object_out_of_bound.params["in_bound_range"] = {
             "x": (0.2, 0.9), "y": (-0.45, 0.45), "z": (0.0, 1.0)
         }
-        self.episode_length_s = 8.0
+        # The airborne leg needs time to fall, be acquired, lift 80 mm, and remain
+        # stable for the held-success window.
+        self.episode_length_s = 12.0
         self.viewer.eye = (1.35, -0.8, 0.75)
         self.viewer.lookat = (WORKSPACE_X, WORKSPACE_Y, 0.36)
 
