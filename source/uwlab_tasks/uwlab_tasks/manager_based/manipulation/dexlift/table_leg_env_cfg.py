@@ -122,14 +122,15 @@ class TableLegJointPositionActionCfg:
         asset_name="robot",
         joint_names=ARM_JOINT_NAMES,
         scale={
-            # Keep initial exploration conservative while making the full IK
-            # lift target reachable inside the policy's [-1, 1] action range.
-            "shoulder_pan_joint": 0.25,
-            "shoulder_lift_joint": 0.25,
-            "elbow_joint": 0.50,
-            "wrist_1_joint": 0.50,
-            "wrist_2_joint": 0.25,
-            "wrist_3_joint": 0.25,
+            # Absolute zero still holds the validated reset pose.  These ranges
+            # make both the IK lift and the full +/-pi object-yaw curriculum
+            # reachable inside the policy's [-1, 1] action range.
+            "shoulder_pan_joint": 1.00,
+            "shoulder_lift_joint": 0.75,
+            "elbow_joint": 0.75,
+            "wrist_1_joint": 1.50,
+            "wrist_2_joint": 1.50,
+            "wrist_3_joint": 3.20,
         },
         use_default_offset=True,
     )
