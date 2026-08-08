@@ -77,9 +77,9 @@ class TableLegBinaryGraspActionCfg:
             "shoulder_pan_joint": 0.10,
             "shoulder_lift_joint": 0.10,
             "elbow_joint": 0.10,
-            "wrist_1_joint": 0.05,
-            "wrist_2_joint": 0.05,
-            "wrist_3_joint": 0.05,
+            "wrist_1_joint": 0.02,
+            "wrist_2_joint": 0.02,
+            "wrist_3_joint": 0.02,
         },
     )
     gripper_action = DELTO_BINARY_ACTIONS
@@ -171,7 +171,7 @@ class TableLegRewardsCfg(dexsuite.RewardsCfg):
     )
     close_near_grasp_position = RewTerm(
         func=mdp.GraspPoseReward,
-        weight=200.0,
+        weight=1000.0,
         params={
             "desired_object_pos_p": (0.0586, 0.0900, 0.1700),
             "desired_object_quat_p": DESIRED_OBJECT_QUAT_P,
