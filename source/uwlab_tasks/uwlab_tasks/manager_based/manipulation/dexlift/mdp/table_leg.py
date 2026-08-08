@@ -191,6 +191,7 @@ class GraspPoseReward(ManagerTermBase):
         desired_object_pos_p: tuple[float, float, float],
         position_std: float,
         orientation_std: float,
+        score_mode: str = "pose",
         close_only: bool = False,
         robot_name: str = "robot",
         object_name: str = "object",
@@ -210,7 +211,14 @@ class GraspPoseReward(ManagerTermBase):
         object_quat_p = quat_mul(quat_conjugate(palm_quat_w), object_asset.data.root_quat_w)
         orientation_error = quat_error_magnitude(object_quat_p, self._desired_object_quat_p)
         orientation_score = 1.0 - torch.tanh(orientation_error / orientation_std)
-        score = position_score * orientation_score
+        if score_mode == "position":
+            score = position_score
+        elif score_mode == "orientation":
+            score = orientation_score
+        elif score_mode == "pose":
+            score = position_score * orientation_score
+        else:
+            raise ValueError(f"Unknown grasp-pose score mode: {score_mode!r}")
         if close_only:
             score = score * (env.action_manager.action[:, -1] < 0.0).float()
         return score
