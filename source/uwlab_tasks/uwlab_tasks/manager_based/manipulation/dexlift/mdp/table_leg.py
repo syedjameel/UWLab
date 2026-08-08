@@ -388,6 +388,90 @@ class GraspPoseReward(ManagerTermBase):
         return score
 
 
+class GraspPostureProgressReward(ManagerTermBase):
+    """Reward closing toward a collision-validated hand posture at the grasp pose.
+
+    Independent hand control removes the old binary ``close`` action, so contact
+    rewards alone are too sparse to teach which of the 20 joints should flex.
+    This term supplies that missing dense bridge while leaving every finger
+    independently actuated.  Progress is measured only along joints that differ
+    from the default posture and is gated by the palm-relative object pose.
+    """
+
+    def __init__(self, cfg, env: ManagerBasedRLEnv):
+        super().__init__(cfg, env)
+        robot = env.scene[self.cfg.params.get("robot_name", "robot")]
+        palm_body = self.cfg.params.get("palm_body", "rl_dg_mount")
+        palm_ids, _ = robot.find_bodies(palm_body)
+        if len(palm_ids) != 1:
+            raise ValueError(f"Expected one palm body matching {palm_body!r}, found {palm_ids}")
+        self._palm_body_id = palm_ids[0]
+
+        target_joint_pos = self.cfg.params["target_joint_pos"]
+        joint_ids, joint_names = robot.find_joints(list(target_joint_pos), preserve_order=True)
+        if len(joint_ids) != len(target_joint_pos):
+            raise ValueError(
+                f"Expected {len(target_joint_pos)} grasp-posture joints, found {len(joint_ids)}: {joint_names}"
+            )
+        self._joint_ids = joint_ids
+        self._target_joint_pos = torch.tensor(
+            [target_joint_pos[name] for name in joint_names], device=env.device
+        ).unsqueeze(0)
+        default_joint_pos = robot.data.default_joint_pos[:, joint_ids]
+        travel = self._target_joint_pos - default_joint_pos
+        self._travel_direction = travel.sign()
+        self._travel_magnitude = travel.abs().clamp(min=1.0e-6)
+        self._moving_joints = travel.abs() > 1.0e-4
+
+        desired_quat = self.cfg.params.get("desired_object_quat_p")
+        self._desired_object_quat_p = torch.tensor(
+            desired_quat or (1.0, 0.0, 0.0, 0.0), device=env.device
+        ).repeat(env.num_envs, 1)
+
+    def __call__(
+        self,
+        env: ManagerBasedRLEnv,
+        desired_object_pos_p: tuple[float, float, float],
+        target_joint_pos: dict[str, float],
+        position_std: float,
+        orientation_std: float,
+        desired_object_quat_p: tuple[float, float, float, float] | None = None,
+        unwanted_contact_names: tuple[str, ...] | None = None,
+        max_unwanted_contact_force: float = 0.05,
+        robot_name: str = "robot",
+        object_name: str = "object",
+        palm_body: str = "rl_dg_mount",
+    ) -> torch.Tensor:
+        del target_joint_pos, desired_object_quat_p, palm_body
+        robot = env.scene[robot_name]
+        object_asset = env.scene[object_name]
+
+        joint_displacement = (
+            robot.data.joint_pos[:, self._joint_ids]
+            - robot.data.default_joint_pos[:, self._joint_ids]
+        )
+        joint_progress = (joint_displacement * self._travel_direction / self._travel_magnitude).clamp(0.0, 1.0)
+        posture_progress = (
+            joint_progress.masked_select(self._moving_joints).reshape(env.num_envs, -1).mean(dim=-1)
+        )
+
+        palm_pos_w = robot.data.body_pos_w[:, self._palm_body_id]
+        palm_quat_w = robot.data.body_quat_w[:, self._palm_body_id]
+        object_pos_p = quat_apply_inverse(palm_quat_w, object_asset.data.root_pos_w - palm_pos_w)
+        desired_pos = object_pos_p.new_tensor(desired_object_pos_p)
+        position_error = torch.linalg.vector_norm(object_pos_p - desired_pos, dim=-1)
+        position_score = 1.0 - torch.tanh(position_error / position_std)
+
+        object_quat_p = quat_mul(quat_conjugate(palm_quat_w), object_asset.data.root_quat_w)
+        orientation_error = quat_error_magnitude(object_quat_p, self._desired_object_quat_p)
+        orientation_score = 1.0 - torch.tanh(orientation_error / orientation_std)
+        score = posture_progress * position_score * orientation_score
+        if unwanted_contact_names:
+            valid_contact = max_finger_contact_force(env, unwanted_contact_names) <= max_unwanted_contact_force
+            score = score * valid_contact.float()
+        return score
+
+
 class SuccessDifficultyScheduler(ManagerTermBase):
     """Adaptive two-stage difficulty driven by the real held-lift termination.
 

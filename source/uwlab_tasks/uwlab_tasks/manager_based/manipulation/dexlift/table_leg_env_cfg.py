@@ -18,6 +18,7 @@ from isaaclab.utils import configclass
 from isaaclab_tasks.manager_based.manipulation.dexsuite.adr_curriculum import CurriculumCfg as DexsuiteCurriculumCfg
 
 from uwlab_assets import UWLAB_LOCAL_ASSETS_DIR
+from uwlab_assets.robots.ur10e_delto.actions import DELTO_HAND_CLOSED_JOINT_POS
 from . import mdp
 from .dexlift_ur10e_delto_env_cfg import (
     ALL_TIP_NAMES,
@@ -196,6 +197,19 @@ class TableLegRewardsCfg(dexsuite.RewardsCfg):
             "desired_object_quat_p": DESIRED_OBJECT_QUAT_P,
             "position_std": 0.05,
             "orientation_std": 0.5,
+            "unwanted_contact_names": NON_FINGER_HAND_CONTACT_NAMES,
+            "palm_body": PALM_BODY,
+        },
+    )
+    grasp_posture_progress = RewTerm(
+        func=mdp.GraspPostureProgressReward,
+        weight=1200.0,
+        params={
+            "desired_object_pos_p": DESIRED_OBJECT_POS_P,
+            "desired_object_quat_p": DESIRED_OBJECT_QUAT_P,
+            "target_joint_pos": DELTO_HAND_CLOSED_JOINT_POS,
+            "position_std": 0.08,
+            "orientation_std": 0.75,
             "unwanted_contact_names": NON_FINGER_HAND_CONTACT_NAMES,
             "palm_body": PALM_BODY,
         },
