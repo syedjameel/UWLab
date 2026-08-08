@@ -219,10 +219,10 @@ class TableLegRewardsCfg(dexsuite.RewardsCfg):
     )
     position_tracking = None
     orientation_tracking = None
-    success = RewTerm(func=mdp.is_terminated_term, weight=3000.0, params={"term_keys": "success"})
+    success = RewTerm(func=mdp.is_terminated_term, weight=10000.0, params={"term_keys": "success"})
     early_termination = RewTerm(
         func=mdp.is_terminated_term,
-        weight=-3000.0,
+        weight=-10000.0,
         params={"term_keys": ["object_out_of_bound", "dropped"]},
     )
     finger_contacts = RewTerm(
@@ -257,7 +257,7 @@ class TableLegRewardsCfg(dexsuite.RewardsCfg):
     )
     object_upward_motion = RewTerm(
         func=mdp.upward_velocity_until_height,
-        weight=150.0,
+        weight=300.0,
         params={
             "target_height": SUCCESS_HEIGHT,
             "std": 0.15,
@@ -269,7 +269,7 @@ class TableLegRewardsCfg(dexsuite.RewardsCfg):
     )
     held_lift_stability = RewTerm(
         func=mdp.held_lift_stability,
-        weight=500.0,
+        weight=1000.0,
         params={
             "minimum_height": SUCCESS_HEIGHT,
             "linear_speed_std": 0.15,
@@ -283,7 +283,7 @@ class TableLegRewardsCfg(dexsuite.RewardsCfg):
     )
     lift_progress = RewTerm(
         func=mdp.ActualLiftProgress,
-        weight=300.0,
+        weight=1000.0,
         params={
             "target_height": SUCCESS_HEIGHT,
             "threshold": CONTACT_THRESHOLD,
@@ -304,19 +304,19 @@ class TableLegRewardsCfg(dexsuite.RewardsCfg):
     )
     horizontal_displacement_penalty = RewTerm(
         func=mdp.excessive_horizontal_displacement,
-        weight=-0.5,
+        weight=-200.0,
         # Do not penalize valid samples from the 8 x 12 cm airborne reset range.
         # The term should only discourage launches beyond that workspace.
         params={"center_x": WORKSPACE_X, "center_y": WORKSPACE_Y, "free_radius": 0.15},
     )
     object_speed_penalty = RewTerm(
         func=mdp.excessive_object_speed,
-        weight=-0.5,
-        params={"max_speed": 0.5},
+        weight=-20.0,
+        params={"max_speed": 0.3},
     )
     contact_force_penalty = RewTerm(
         func=mdp.excessive_contact_force,
-        weight=-0.05,
+        weight=-5.0,
         params={"contact_names": FINGER_CONTACT_NAMES, "max_force": 10.0},
     )
 
@@ -469,7 +469,7 @@ class TableLegGraspLiftEnvCfg(UR10eDeltoMixinCfg, dexsuite.DexsuiteLiftEnvCfg):
         # this task's explicit launch/drop penalty after the mixin has run.
         self.rewards.early_termination = RewTerm(
             func=mdp.is_terminated_term,
-            weight=-3000.0,
+            weight=-10000.0,
             params={"term_keys": ["object_out_of_bound", "dropped"]},
         )
         self.events.reset_table.params["pose_range"] = {
