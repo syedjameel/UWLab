@@ -194,6 +194,11 @@ class TableLegRewardsCfg(dexsuite.RewardsCfg):
             "palm_body": PALM_BODY,
         },
     )
+    palm_contact_penalty = RewTerm(
+        func=mdp.unwanted_contact_force,
+        weight=-100.0,
+        params={"contact_names": (PALM_BODY,), "clip": 5.0},
+    )
     position_tracking = None
     orientation_tracking = None
     success = RewTerm(func=mdp.is_terminated_term, weight=3000.0, params={"term_keys": "success"})
@@ -450,6 +455,10 @@ class TableLegGraspLiftEnvCfg(UR10eDeltoMixinCfg, dexsuite.DexsuiteLiftEnvCfg):
                     filter_prim_paths_expr=["{ENV_REGEX_NS}/Object/base_link"],
                 ),
             )
+        self.scene.palm_object_s = ContactSensorCfg(
+            prim_path=f"{{ENV_REGEX_NS}}/Robot/gripper/{PALM_BODY}",
+            filter_prim_paths_expr=["{ENV_REGEX_NS}/Object/base_link"],
+        )
         self.scene.table_s = ContactSensorCfg(
             prim_path="{ENV_REGEX_NS}/table",
             filter_prim_paths_expr=["{ENV_REGEX_NS}/Object/base_link"],

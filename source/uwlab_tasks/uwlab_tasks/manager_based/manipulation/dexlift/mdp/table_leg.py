@@ -58,6 +58,15 @@ def max_finger_contact_force(
     return _sensor_force_magnitudes(env, contact_names).amax(dim=-1)
 
 
+def unwanted_contact_force(
+    env: ManagerBasedRLEnv,
+    contact_names: tuple[str, ...],
+    clip: float,
+) -> torch.Tensor:
+    """Clipped force from robot bodies that must not carry the object."""
+    return max_finger_contact_force(env, contact_names).clamp(max=clip)
+
+
 def root_height_above_table(
     env: ManagerBasedRLEnv,
     object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
