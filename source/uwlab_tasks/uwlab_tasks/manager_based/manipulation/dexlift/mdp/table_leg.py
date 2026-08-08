@@ -164,47 +164,95 @@ def object_dropped(
     return root_height_above_table(env) < minimum_height
 
 
-def object_pose_reset_curriculum(
+class SuccessDifficultyScheduler(ManagerTermBase):
+    """Adaptive two-stage difficulty driven by the real held-lift termination.
+
+    A success promotes one level and a failure demotes four.  Away from the
+    bounds, an 80% success rate is therefore the fixed point.
+    """
+
+    def __init__(self, cfg, env: ManagerBasedRLEnv):
+        super().__init__(cfg, env)
+        initial = float(self.cfg.params.get("initial_level", 0.0))
+        self.levels = torch.full((env.num_envs,), initial, device=env.device)
+        self.mean_level = initial
+        self.difficulty_frac = initial / max(float(self.cfg.params.get("max_level", 20.0)), 1.0)
+
+    def get_state(self) -> torch.Tensor:
+        return self.levels
+
+    def set_state(self, state: torch.Tensor) -> None:
+        self.levels = state.clone().to(self._env.device)
+
+    def __call__(
+        self,
+        env: ManagerBasedRLEnv,
+        env_ids: Sequence[int] | torch.Tensor,
+        success_term: str = "success",
+        initial_level: float = 0.0,
+        min_level: float = 0.0,
+        max_level: float = 20.0,
+        promotion_step: float = 1.0,
+        demotion_step: float = 4.0,
+    ) -> float:
+        del initial_level
+        if int(env.common_step_counter) > 0 and len(env_ids) > 0:
+            success = env.termination_manager.get_term(success_term)[env_ids]
+            delta = torch.where(
+                success,
+                torch.full_like(self.levels[env_ids], promotion_step),
+                torch.full_like(self.levels[env_ids], -demotion_step),
+            )
+            self.levels[env_ids] = (self.levels[env_ids] + delta).clamp(min=min_level, max=max_level)
+        self.mean_level = float(self.levels.mean().item())
+        self.difficulty_frac = self.mean_level / max(max_level, 1.0)
+        return self.mean_level
+
+
+def _adaptive_stage_progress(env: ManagerBasedRLEnv, difficulty_term: str, start: float, end: float) -> float:
+    scheduler: SuccessDifficultyScheduler = getattr(env.curriculum_manager.cfg, difficulty_term).func
+    return min(max((scheduler.mean_level - start) / (end - start), 0.0), 1.0)
+
+
+def adaptive_gravity_curriculum(
     env: ManagerBasedRLEnv,
     env_ids: Sequence[int] | torch.Tensor,
     event_term_name: str,
-    full_pose_range: dict[str, tuple[float, float]],
-    warmup_steps: int,
-    ramp_steps: int,
-) -> float:
-    """Smoothly widen object reset offsets from centered to the evaluation range."""
-    del env_ids
-    if ramp_steps <= 0:
-        raise ValueError("ramp_steps must be positive")
-    progress = min(max((int(env.common_step_counter) - warmup_steps) / ramp_steps, 0.0), 1.0)
-    term_cfg = env.event_manager.get_term_cfg(event_term_name)
-    term_cfg.params["pose_range"] = {
-        axis: [float(bounds[0]) * progress, float(bounds[1]) * progress]
-        for axis, bounds in full_pose_range.items()
-    }
-    env.event_manager.set_term_cfg(event_term_name, term_cfg)
-    return progress
-
-
-def gravity_reset_curriculum(
-    env: ManagerBasedRLEnv,
-    env_ids: Sequence[int] | torch.Tensor,
-    event_term_name: str,
-    warmup_steps: int,
-    ramp_steps: int,
+    difficulty_term: str,
+    stage_start: float,
+    stage_end: float,
     final_gravity: float = -9.81,
 ) -> float:
-    """Ramp reset gravity from zero to Earth gravity on a fixed training schedule."""
+    """Map adaptive difficulty levels onto zero-to-Earth gravity."""
     del env_ids
-    if ramp_steps <= 0:
-        raise ValueError("ramp_steps must be positive")
-    progress = min(max((int(env.common_step_counter) - warmup_steps) / ramp_steps, 0.0), 1.0)
-    gravity = float(final_gravity) * progress
+    progress = _adaptive_stage_progress(env, difficulty_term, stage_start, stage_end)
+    gravity = final_gravity * progress
     term_cfg = env.event_manager.get_term_cfg(event_term_name)
     term_cfg.params["gravity_distribution_params"] = (
         (0.0, 0.0, gravity),
         (0.0, 0.0, gravity),
     )
+    env.event_manager.set_term_cfg(event_term_name, term_cfg)
+    return progress
+
+
+def adaptive_object_pose_curriculum(
+    env: ManagerBasedRLEnv,
+    env_ids: Sequence[int] | torch.Tensor,
+    event_term_name: str,
+    difficulty_term: str,
+    stage_start: float,
+    stage_end: float,
+    full_pose_range: dict[str, tuple[float, float]],
+) -> float:
+    """Widen reset pose only after the adaptive gravity stage is mastered."""
+    del env_ids
+    progress = _adaptive_stage_progress(env, difficulty_term, stage_start, stage_end)
+    term_cfg = env.event_manager.get_term_cfg(event_term_name)
+    term_cfg.params["pose_range"] = {
+        axis: [float(bounds[0]) * progress, float(bounds[1]) * progress]
+        for axis, bounds in full_pose_range.items()
+    }
     env.event_manager.set_term_cfg(event_term_name, term_cfg)
     return progress
 

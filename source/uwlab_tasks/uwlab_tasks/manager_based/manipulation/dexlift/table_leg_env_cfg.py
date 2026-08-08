@@ -263,31 +263,43 @@ class TableLegEventCfg(UR10eDeltoEventCfg):
 
 @configclass
 class TableLegCurriculumCfg(DexsuiteCurriculumCfg):
-    """DexSuite gravity ADR plus a smooth ramp to the full airborne reset distribution."""
+    """Success-adaptive gravity followed by airborne pose randomization."""
+
+    adr = CurrTerm(
+        func=mdp.SuccessDifficultyScheduler,
+        params={
+            "success_term": "success",
+            "initial_level": 0.0,
+            "min_level": 0.0,
+            "max_level": 20.0,
+            "promotion_step": 1.0,
+            "demotion_step": 4.0,
+        },
+    )
 
     # Point-cloud perception is intentionally absent from this state-only task.
     object_obs_unoise_min_adr = None
     object_obs_unoise_max_adr = None
 
     gravity_adr = CurrTerm(
-        func=mdp.gravity_reset_curriculum,
+        func=mdp.adaptive_gravity_curriculum,
         params={
             "event_term_name": "variable_gravity",
-            "warmup_steps": 1600,
-            "ramp_steps": 6400,
+            "difficulty_term": "adr",
+            "stage_start": 0.0,
+            "stage_end": 10.0,
             "final_gravity": -9.81,
         },
     )
 
     object_pose_range = CurrTerm(
-        func=mdp.object_pose_reset_curriculum,
+        func=mdp.adaptive_object_pose_curriculum,
         params={
             "event_term_name": "reset_object",
+            "difficulty_term": "adr",
+            "stage_start": 10.0,
+            "stage_end": 20.0,
             "full_pose_range": FULL_OBJECT_POSE_RANGE,
-            # First master grasping under full gravity, then widen the airborne
-            # pose distribution instead of applying both shifts at once.
-            "warmup_steps": 8000,
-            "ramp_steps": 9600,
         },
     )
 
@@ -352,11 +364,6 @@ class TableLegGraspLiftEnvCfg(UR10eDeltoMixinCfg, dexsuite.DexsuiteLiftEnvCfg):
                 (0.0, 0.0, -9.81),
                 (0.0, 0.0, -9.81),
             )
-        else:
-            # Promotion is based on the object pose at reset.  A 10 cm position
-            # tolerance admits contact-held lifts that move laterally while still
-            # excluding the untouched airborne spawn (at least 11 cm below the command).
-            task_curriculum.adr.params.update({"pos_tol": 0.10, "rot_tol": None, "promotion_only": True})
 
         # Generic fingertip sensors target the old primitive root. Replace them with one
         # sensor per phalange: PhysX filtered-contact views require one source body per

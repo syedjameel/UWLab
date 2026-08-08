@@ -20,9 +20,10 @@ cuboid support table.
 ## Task contract
 
 `DexLift-UR10eDelto-TableLeg-GraspLift-Curriculum-v0` starts the leg airborne in the
-open hand's grasp corridor. Gravity stays at zero for 50 PPO iterations and ramps to
-−9.81 m/s² over the next 200; reset position and orientation start widening after 250
-iterations and reach the full range after another 300. At full range, the leg starts
+open hand's grasp corridor. A held-lift success promotes one difficulty level and a
+failure demotes four, making 80% success the curriculum's interior fixed point. Levels
+0–10 ramp gravity from zero to −9.81 m/s²; levels 10–20 then widen reset position and
+orientation. At full range, the leg starts
 255–285 mm above the tabletop with x/y offsets of ±80/120 mm, roll/pitch offsets of
 ±0.35 rad, and arbitrary yaw. It falls onto the support table when it is not caught.
 
