@@ -45,9 +45,14 @@ def finger_contact_count(
     env: ManagerBasedRLEnv,
     contact_groups: tuple[tuple[str, ...], ...],
     threshold: float,
+    unwanted_contact_names: tuple[str, ...] | None = None,
+    max_unwanted_contact_force: float = 0.05,
 ) -> torch.Tensor:
     """Number of distinct fingers touching the leg, independent of the contacted phalanx."""
-    return logical_finger_contacts(env, contact_groups, threshold).float().sum(dim=-1)
+    count = logical_finger_contacts(env, contact_groups, threshold).float().sum(dim=-1)
+    if unwanted_contact_names:
+        count = count * (max_finger_contact_force(env, unwanted_contact_names) <= max_unwanted_contact_force).float()
+    return count
 
 
 def max_finger_contact_force(
@@ -139,12 +144,21 @@ class ActualLiftProgress(ManagerTermBase):
         thumb_contact_name: str | tuple[str, ...],
         tip_contact_names: tuple[str, ...],
         threshold: float,
+        unwanted_contact_names: tuple[str, ...] | None = None,
+        max_unwanted_contact_force: float = 0.05,
     ) -> torch.Tensor:
         height = root_height_above_table(env)
         self._lowest_height = torch.minimum(self._lowest_height, height)
         distance_to_target = (target_height - self._lowest_height).clamp(min=1.0e-6)
         progress = ((height - self._lowest_height) / distance_to_target).clamp(0.0, 1.0)
-        return progress * contacts(env, threshold, thumb_contact_name, tip_contact_names).float()
+        return progress * contacts(
+            env,
+            threshold,
+            thumb_contact_name,
+            tip_contact_names,
+            unwanted_contact_names,
+            max_unwanted_contact_force,
+        ).float()
 
 
 def stable_grasp(
@@ -154,12 +168,21 @@ def stable_grasp(
     threshold: float,
     max_object_speed: float,
     object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+    unwanted_contact_names: tuple[str, ...] | None = None,
+    max_unwanted_contact_force: float = 0.05,
 ) -> torch.Tensor:
     """Opposition contact discounted when the leg is moving violently."""
     obj: RigidObject = env.scene[object_cfg.name]
     speed = torch.linalg.vector_norm(obj.data.root_lin_vel_w, dim=-1)
     calm = (1.0 - (speed / max_object_speed).clamp(0.0, 1.0))
-    return calm * contacts(env, threshold, thumb_contact_name, tip_contact_names).float()
+    return calm * contacts(
+        env,
+        threshold,
+        thumb_contact_name,
+        tip_contact_names,
+        unwanted_contact_names,
+        max_unwanted_contact_force,
+    ).float()
 
 
 def excessive_object_speed(

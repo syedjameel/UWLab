@@ -225,7 +225,11 @@ class TableLegRewardsCfg(dexsuite.RewardsCfg):
     finger_contacts = RewTerm(
         func=mdp.finger_contact_count,
         weight=15.0,
-        params={"threshold": CONTACT_THRESHOLD, "contact_groups": FINGER_CONTACT_GROUPS},
+        params={
+            "threshold": CONTACT_THRESHOLD,
+            "contact_groups": FINGER_CONTACT_GROUPS,
+            "unwanted_contact_names": NON_FINGER_HAND_CONTACT_NAMES,
+        },
     )
     opposition_contact = RewTerm(
         func=mdp.contacts,
@@ -234,6 +238,7 @@ class TableLegRewardsCfg(dexsuite.RewardsCfg):
             "threshold": CONTACT_THRESHOLD,
             "thumb_contact_name": THUMB_CONTACT_NAMES,
             "tip_contact_names": TIP_CONTACT_NAMES,
+            "unwanted_contact_names": NON_FINGER_HAND_CONTACT_NAMES,
         },
     )
     stable_grasp = RewTerm(
@@ -244,6 +249,7 @@ class TableLegRewardsCfg(dexsuite.RewardsCfg):
             "thumb_contact_name": THUMB_CONTACT_NAMES,
             "tip_contact_names": TIP_CONTACT_NAMES,
             "max_object_speed": 0.5,
+            "unwanted_contact_names": NON_FINGER_HAND_CONTACT_NAMES,
         },
     )
     object_upward_motion = RewTerm(
@@ -254,6 +260,7 @@ class TableLegRewardsCfg(dexsuite.RewardsCfg):
             "threshold": CONTACT_THRESHOLD,
             "thumb_contact_name": THUMB_CONTACT_NAMES,
             "tip_contact_names": TIP_CONTACT_NAMES,
+            "unwanted_contact_names": NON_FINGER_HAND_CONTACT_NAMES,
         },
     )
     lift_progress = RewTerm(
@@ -264,6 +271,7 @@ class TableLegRewardsCfg(dexsuite.RewardsCfg):
             "threshold": CONTACT_THRESHOLD,
             "thumb_contact_name": THUMB_CONTACT_NAMES,
             "tip_contact_names": TIP_CONTACT_NAMES,
+            "unwanted_contact_names": NON_FINGER_HAND_CONTACT_NAMES,
         },
     )
     table_contact_penalty = RewTerm(

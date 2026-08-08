@@ -72,6 +72,8 @@ def contacts(
     threshold: float,
     thumb_contact_name: str | list[str] | tuple[str, ...],
     tip_contact_names: tuple[str, ...],
+    unwanted_contact_names: tuple[str, ...] | None = None,
+    max_unwanted_contact_force: float = 0.05,
 ) -> torch.Tensor:
     """The opposition gate shared by every task reward below.
 
@@ -83,7 +85,11 @@ def contacts(
         thumb_contact_name = [thumb_contact_name]
     thumb_contact = _sensor_force_magnitudes(env, thumb_contact_name).gt(threshold).any(dim=-1)
     tip_contact = _sensor_force_magnitudes(env, tip_contact_names).gt(threshold).any(dim=-1)
-    return thumb_contact & tip_contact
+    valid = thumb_contact & tip_contact
+    if unwanted_contact_names:
+        unwanted_force = _sensor_force_magnitudes(env, unwanted_contact_names).amax(dim=-1)
+        valid = valid & (unwanted_force <= max_unwanted_contact_force)
+    return valid
 
 
 def success_reward(
@@ -242,6 +248,8 @@ def object_upward_velocity_bonus(
     tip_contact_names: tuple[str, ...],
     threshold: float = 0.1,
     object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+    unwanted_contact_names: tuple[str, ...] | None = None,
+    max_unwanted_contact_force: float = 0.05,
 ) -> torch.Tensor:
     """Reward lifting the object while gripping it.
 
@@ -251,4 +259,11 @@ def object_upward_velocity_bonus(
     object: RigidObject = env.scene[object_cfg.name]
     vel_z = object.data.root_lin_vel_w[:, 2]
     reward = torch.tanh(vel_z / max(std, 1.0e-6))
-    return reward * contacts(env, threshold, thumb_contact_name, tip_contact_names).float()
+    return reward * contacts(
+        env,
+        threshold,
+        thumb_contact_name,
+        tip_contact_names,
+        unwanted_contact_names,
+        max_unwanted_contact_force,
+    ).float()
