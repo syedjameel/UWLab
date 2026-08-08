@@ -250,19 +250,24 @@ def adaptive_object_pose_curriculum(
     event_term_name: str,
     difficulty_term: str,
     stage_start: float,
+    stage_mid: float,
     stage_end: float,
     full_pose_range: dict[str, tuple[float, float]],
 ) -> float:
-    """Widen reset pose only after the adaptive gravity stage is mastered."""
+    """Widen translation first, then orientation, after gravity is mastered."""
     del env_ids
-    progress = _adaptive_stage_progress(env, difficulty_term, stage_start, stage_end)
+    translation_progress = _adaptive_stage_progress(env, difficulty_term, stage_start, stage_mid)
+    orientation_progress = _adaptive_stage_progress(env, difficulty_term, stage_mid, stage_end)
     term_cfg = env.event_manager.get_term_cfg(event_term_name)
     term_cfg.params["pose_range"] = {
-        axis: [float(bounds[0]) * progress, float(bounds[1]) * progress]
+        axis: [
+            float(bounds[0]) * (translation_progress if axis in ("x", "y", "z") else orientation_progress),
+            float(bounds[1]) * (translation_progress if axis in ("x", "y", "z") else orientation_progress),
+        ]
         for axis, bounds in full_pose_range.items()
     }
     env.event_manager.set_term_cfg(event_term_name, term_cfg)
-    return progress
+    return _adaptive_stage_progress(env, difficulty_term, stage_start, stage_end)
 
 
 class SustainedLiftSuccess(ManagerTermBase):

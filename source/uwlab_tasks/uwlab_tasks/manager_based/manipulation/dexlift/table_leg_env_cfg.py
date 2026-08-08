@@ -298,6 +298,7 @@ class TableLegCurriculumCfg(DexsuiteCurriculumCfg):
             "event_term_name": "reset_object",
             "difficulty_term": "adr",
             "stage_start": 10.0,
+            "stage_mid": 15.0,
             "stage_end": 20.0,
             "full_pose_range": FULL_OBJECT_POSE_RANGE,
         },
