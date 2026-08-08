@@ -455,9 +455,13 @@ class TableLegGraspLiftEnvCfg(UR10eDeltoMixinCfg, dexsuite.DexsuiteLiftEnvCfg):
                     filter_prim_paths_expr=["{ENV_REGEX_NS}/Object/base_link"],
                 ),
             )
-        self.scene.palm_object_s = ContactSensorCfg(
-            prim_path=f"{{ENV_REGEX_NS}}/Robot/gripper/{PALM_BODY}",
-            filter_prim_paths_expr=["{ENV_REGEX_NS}/Object/base_link"],
+        setattr(
+            self.scene,
+            f"{PALM_BODY}_object_s",
+            ContactSensorCfg(
+                prim_path=f"{{ENV_REGEX_NS}}/Robot/gripper/{PALM_BODY}",
+                filter_prim_paths_expr=["{ENV_REGEX_NS}/Object/base_link"],
+            ),
         )
         self.scene.table_s = ContactSensorCfg(
             prim_path="{ENV_REGEX_NS}/table",
