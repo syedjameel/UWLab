@@ -60,16 +60,17 @@ MAX_SUCCESS_RELATIVE_SPEED = 0.15
 DESIRED_OBJECT_POS_P = (0.0600, 0.0450, 0.1400)
 # Post-reset object orientation in the nominal palm frame (w, x, y, z).
 DESIRED_OBJECT_QUAT_P = (-0.06698579, -0.93301314, -0.24999975, 0.25000033)
-# Collision-free point 60% along a batched IK path from the original reset to
-# the grasp pose.  It leaves a visible 49 mm approach gap, keeps the palm-down
-# orientation within 0.036 rad of the target, and has zero finger/palm contact.
+# Collision-free open-hand pose found by batched IK.  The airborne leg is not
+# touching or supported by the hand at reset; putting it directly in the
+# validated grasp frame lets the zero-gravity stage teach closure first.  The
+# later object-pose curriculum then adds translation and rotation robustness.
 PREGRASP_ARM_JOINT_POS = {
-    "shoulder_pan_joint": -0.01786222,
-    "shoulder_lift_joint": -1.51081026,
-    "elbow_joint": 1.62457716,
-    "wrist_1_joint": -1.68285811,
-    "wrist_2_joint": -2.06616116,
-    "wrist_3_joint": 2.58425879,
+    "shoulder_pan_joint": -0.02977037,
+    "shoulder_lift_joint": -1.47081721,
+    "elbow_joint": 1.66042864,
+    "wrist_1_joint": -1.75756347,
+    "wrist_2_joint": -2.04733872,
+    "wrist_3_joint": 2.56176877,
 }
 # Only this opposed pair contacts at the validated pose.  Shaping all five
 # fingers lets PPO collect posture progress on irrelevant, non-contact digits.
