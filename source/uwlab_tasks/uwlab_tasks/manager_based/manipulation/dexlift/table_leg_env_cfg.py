@@ -168,10 +168,12 @@ class TableLegRewardsCfg(dexsuite.RewardsCfg):
     )
     grasp_position = RewTerm(
         func=mdp.GraspPoseReward,
-        weight=50.0,
+        # Keep translation learnable even while a random wrist action degrades
+        # orientation; the full-pose term then refines the approach.
+        weight=1500.0,
         params={
             "desired_object_pos_p": DESIRED_OBJECT_POS_P,
-            "position_std": 0.15,
+            "position_std": 0.20,
             "orientation_std": 1.5,
             "position_only": True,
             "unwanted_contact_names": NON_FINGER_HAND_CONTACT_NAMES,
@@ -209,7 +211,9 @@ class TableLegRewardsCfg(dexsuite.RewardsCfg):
             "desired_object_pos_p": DESIRED_OBJECT_POS_P,
             "desired_object_quat_p": DESIRED_OBJECT_QUAT_P,
             "target_joint_pos": DELTO_HAND_CLOSED_JOINT_POS,
-            "position_std": 0.08,
+            # Do not teach closure while the palm is still in its approach
+            # phase.  At the reset distance this score is effectively zero.
+            "position_std": 0.04,
             "orientation_std": 0.75,
             "unwanted_contact_names": NON_FINGER_HAND_CONTACT_NAMES,
             "palm_body": PALM_BODY,
