@@ -18,12 +18,10 @@ from isaaclab.utils import configclass
 from isaaclab_tasks.manager_based.manipulation.dexsuite.adr_curriculum import CurriculumCfg as DexsuiteCurriculumCfg
 
 from uwlab_assets import UWLAB_LOCAL_ASSETS_DIR
-from uwlab_assets.robots.ur10e_delto.actions import DELTO_BINARY_ACTIONS
-
 from . import mdp
 from .dexlift_ur10e_delto_env_cfg import (
     ALL_TIP_NAMES,
-    ARM_JOINT_NAMES,
+    HAND_JOINT_REGEX,
     PALM_BODY,
     TIP_BODY_REGEX,
     UR10eDeltoEventCfg,
@@ -46,8 +44,14 @@ LEG_SPAWN_ROOT_Z = 0.42
 # is an 80 mm physical lift from that support pose; the termination independently
 # measures the same minimum displacement from each episode's observed low point.
 MINIMUM_LIFT = 0.08
-SUCCESS_HEIGHT = 0.015 + MINIMUM_LIFT
+TARGET_OBJECT_POS_B = (WORKSPACE_X, WORKSPACE_Y, 0.65)
+TARGET_CLEARANCE = TARGET_OBJECT_POS_B[2] - TABLE_TOP_Z
+TARGET_POSITION_TOLERANCE = 0.05
 CONTACT_THRESHOLD = 0.05
+MINIMUM_ARTICULATED_FINGERS = 2
+MINIMUM_JOINT_DISPLACEMENT = 0.10
+MAX_SUCCESS_OBJECT_SPEED = 0.15
+MAX_SUCCESS_RELATIVE_SPEED = 0.15
 # Collision sweep: four finger groups remain opposed for all 120 close steps,
 # with 30 mm more clearance from the palm than the previous target.
 DESIRED_OBJECT_POS_P = (0.0586, 0.0600, 0.2000)
@@ -68,18 +72,23 @@ FINGER_CONTACT_GROUPS = tuple(
     tuple(name for name in FINGER_CONTACT_NAMES if name.startswith(f"rl_dg_{finger}_"))
     for finger in range(1, 6)
 )
+FINGER_JOINT_GROUPS = tuple(
+    tuple(f"rj_dg_{finger}_{joint}" for joint in range(1, 5)) for finger in range(1, 6)
+)
 THUMB_CONTACT_NAMES = tuple(name for name in FINGER_CONTACT_NAMES if name.startswith(("rl_dg_1_", "rl_dg_5_")))
-TIP_CONTACT_NAMES = tuple(name for name in FINGER_CONTACT_NAMES if name.startswith(("rl_dg_2_", "rl_dg_3_", "rl_dg_4_")))
+TIP_CONTACT_NAMES = tuple(
+    name for name in FINGER_CONTACT_NAMES if name.startswith(("rl_dg_2_", "rl_dg_3_", "rl_dg_4_"))
+)
 NON_FINGER_HAND_CONTACT_NAMES = (PALM_BODY, "rl_dg_base", "rl_dg_palm")
 
 
 @configclass
-class TableLegBinaryGraspActionCfg:
-    """Six relative arm joints plus the calibrated DELTO open/close synergy."""
+class TableLegJointPositionActionCfg:
+    """Independent relative-position control for six arm and twenty finger joints."""
 
-    arm_action = mdp.RelativeJointPositionActionCfg(
+    action = mdp.RelativeJointPositionActionCfg(
         asset_name="robot",
-        joint_names=ARM_JOINT_NAMES,
+        joint_names=[".*"],
         scale={
             "shoulder_pan_joint": 0.10,
             "shoulder_lift_joint": 0.10,
@@ -87,9 +96,9 @@ class TableLegBinaryGraspActionCfg:
             "wrist_1_joint": 0.02,
             "wrist_2_joint": 0.02,
             "wrist_3_joint": 0.02,
+            HAND_JOINT_REGEX: 0.10,
         },
     )
-    gripper_action = DELTO_BINARY_ACTIONS
 
 
 def _leg_cfg() -> RigidObjectCfg:
@@ -176,40 +185,16 @@ class TableLegRewardsCfg(dexsuite.RewardsCfg):
             "palm_body": PALM_BODY,
         },
     )
-    close_near_grasp_position = RewTerm(
-        func=mdp.GraspPoseReward,
+    position_tracking = RewTerm(
+        func=mdp.target_position_tracking,
         weight=1000.0,
         params={
-            "desired_object_pos_p": DESIRED_OBJECT_POS_P,
-            "desired_object_quat_p": DESIRED_OBJECT_QUAT_P,
-            "position_std": 0.05,
-            "orientation_std": 1.0,
-            "position_only": True,
-            "close_only": True,
+            "command_name": "object_pose",
+            "std": 0.10,
+            "contact_groups": FINGER_CONTACT_GROUPS,
+            "minimum_contact_groups": 2,
+            "contact_threshold": CONTACT_THRESHOLD,
             "unwanted_contact_names": NON_FINGER_HAND_CONTACT_NAMES,
-            "palm_body": PALM_BODY,
-        },
-    )
-    close_at_grasp_pose = RewTerm(
-        func=mdp.GraspPoseReward,
-        weight=500.0,
-        params={
-            "desired_object_pos_p": DESIRED_OBJECT_POS_P,
-            "desired_object_quat_p": DESIRED_OBJECT_QUAT_P,
-            "position_std": 0.05,
-            "orientation_std": 0.5,
-            "close_only": True,
-            "unwanted_contact_names": NON_FINGER_HAND_CONTACT_NAMES,
-            "palm_body": PALM_BODY,
-        },
-    )
-    arm_motion_while_closing = RewTerm(
-        func=mdp.arm_motion_near_grasp_position,
-        weight=-20.0,
-        params={
-            "desired_object_pos_p": DESIRED_OBJECT_POS_P,
-            "std": 0.05,
-            "robot_cfg": SceneEntityCfg("robot", body_names=[PALM_BODY]),
         },
     )
     palm_contact_penalty = RewTerm(
@@ -217,7 +202,6 @@ class TableLegRewardsCfg(dexsuite.RewardsCfg):
         weight=-2000.0,
         params={"contact_names": NON_FINGER_HAND_CONTACT_NAMES, "clip": 5.0},
     )
-    position_tracking = None
     orientation_tracking = None
     success = RewTerm(func=mdp.is_terminated_term, weight=10000.0, params={"term_keys": "success"})
     early_termination = RewTerm(
@@ -259,7 +243,7 @@ class TableLegRewardsCfg(dexsuite.RewardsCfg):
         func=mdp.upward_velocity_until_height,
         weight=300.0,
         params={
-            "target_height": SUCCESS_HEIGHT,
+            "target_height": TARGET_CLEARANCE,
             "std": 0.15,
             "threshold": CONTACT_THRESHOLD,
             "thumb_contact_name": THUMB_CONTACT_NAMES,
@@ -271,7 +255,7 @@ class TableLegRewardsCfg(dexsuite.RewardsCfg):
         func=mdp.held_lift_stability,
         weight=1000.0,
         params={
-            "minimum_height": SUCCESS_HEIGHT,
+            "minimum_height": TARGET_CLEARANCE - TARGET_POSITION_TOLERANCE,
             "linear_speed_std": 0.15,
             "relative_speed_std": 0.10,
             "threshold": CONTACT_THRESHOLD,
@@ -285,7 +269,7 @@ class TableLegRewardsCfg(dexsuite.RewardsCfg):
         func=mdp.ActualLiftProgress,
         weight=1000.0,
         params={
-            "target_height": SUCCESS_HEIGHT,
+            "target_height": TARGET_CLEARANCE,
             "threshold": CONTACT_THRESHOLD,
             "thumb_contact_name": THUMB_CONTACT_NAMES,
             "tip_contact_names": TIP_CONTACT_NAMES,
@@ -326,17 +310,24 @@ class TableLegTerminationsCfg(dexsuite.TerminationsCfg):
     success = DoneTerm(
         func=mdp.SustainedLiftSuccess,
         params={
-            "minimum_height": SUCCESS_HEIGHT,
-            "hold_steps": 12,
+            "minimum_height": TARGET_CLEARANCE - TARGET_POSITION_TOLERANCE,
+            "hold_steps": 30,
+            "command_name": "object_pose",
+            "position_tolerance": TARGET_POSITION_TOLERANCE,
             "contact_groups": FINGER_CONTACT_GROUPS,
+            "finger_joint_groups": FINGER_JOINT_GROUPS,
             "minimum_contact_groups": 2,
+            "thumb_contact_names": THUMB_CONTACT_NAMES,
+            "tip_contact_names": TIP_CONTACT_NAMES,
+            "minimum_articulated_fingers": MINIMUM_ARTICULATED_FINGERS,
+            "minimum_joint_displacement": MINIMUM_JOINT_DISPLACEMENT,
             "contact_threshold": CONTACT_THRESHOLD,
             "unwanted_contact_names": NON_FINGER_HAND_CONTACT_NAMES,
             "max_unwanted_contact_force": CONTACT_THRESHOLD,
-            "max_object_speed": 0.5,
+            "max_object_speed": MAX_SUCCESS_OBJECT_SPEED,
             "minimum_lift": MINIMUM_LIFT,
             "max_palm_distance": 0.30,
-            "max_relative_speed": 0.25,
+            "max_relative_speed": MAX_SUCCESS_RELATIVE_SPEED,
             "minimum_episode_steps": 60,
             "palm_body": PALM_BODY,
         },
@@ -426,7 +417,7 @@ class TableLegCurriculumCfg(DexsuiteCurriculumCfg):
 @configclass
 class TableLegGraspLiftEnvCfg(UR10eDeltoMixinCfg, dexsuite.DexsuiteLiftEnvCfg):
     rewards: TableLegRewardsCfg = TableLegRewardsCfg()
-    actions: TableLegBinaryGraspActionCfg = TableLegBinaryGraspActionCfg()
+    actions: TableLegJointPositionActionCfg = TableLegJointPositionActionCfg()
     terminations: TableLegTerminationsCfg = TableLegTerminationsCfg()
     events: TableLegEventCfg = TableLegEventCfg()
     curriculum = None
@@ -442,6 +433,9 @@ class TableLegGraspLiftEnvCfg(UR10eDeltoMixinCfg, dexsuite.DexsuiteLiftEnvCfg):
         self.scene.object = _leg_cfg()
         self.scene.table = _table_cfg()
         self.scene.robot.actuators["arm"] = self.scene.robot.actuators["arm"].replace(stiffness=1600.0, damping=80.0)
+        self.scene.robot.spawn.articulation_props = self.scene.robot.spawn.articulation_props.replace(
+            solver_velocity_iteration_count=2
+        )
         self.scene.num_envs = 2048
         self.scene.env_spacing = 2.0
         self.scene.replicate_physics = True
@@ -520,9 +514,9 @@ class TableLegGraspLiftEnvCfg(UR10eDeltoMixinCfg, dexsuite.DexsuiteLiftEnvCfg):
         )
         self.observations.perception = None
 
-        self.commands.object_pose.ranges.pos_x = (WORKSPACE_X, WORKSPACE_X)
-        self.commands.object_pose.ranges.pos_y = (WORKSPACE_Y, WORKSPACE_Y)
-        self.commands.object_pose.ranges.pos_z = (0.65, 0.65)
+        self.commands.object_pose.ranges.pos_x = (TARGET_OBJECT_POS_B[0], TARGET_OBJECT_POS_B[0])
+        self.commands.object_pose.ranges.pos_y = (TARGET_OBJECT_POS_B[1], TARGET_OBJECT_POS_B[1])
+        self.commands.object_pose.ranges.pos_z = (TARGET_OBJECT_POS_B[2], TARGET_OBJECT_POS_B[2])
         self.commands.object_pose.ranges.roll = (0.0, 0.0)
         self.commands.object_pose.ranges.pitch = (0.0, 0.0)
         self.commands.object_pose.ranges.yaw = (0.0, 0.0)
@@ -551,3 +545,4 @@ class TableLegGraspLiftEnvCfg_PLAY(TableLegGraspLiftEnvCfg):
         super().__post_init__()
         self.scene.num_envs = 32
         self.events.reset_robot_joints.params["position_range"] = [0.0, 0.0]
+        self.commands.object_pose.debug_vis = True

@@ -28,19 +28,21 @@ levels 15–20 then widen orientation. At full range, the leg root starts
 165–195 mm above the tabletop with x/y offsets of ±80/120 mm, roll/pitch offsets of
 ±0.35 rad, and arbitrary yaw. It falls onto the support table when it is not caught.
 
-The policy has six relative UR10e actions and one calibrated DELTO open/close action.
-All 25 phalanges retain collision geometry and object-filtered contact sensors.
-Success requires, for 12 consecutive control steps:
+The policy has six relative UR10e joint-position actions and twenty independent
+relative DELTO joint-position actions, matching the DexSuite control structure. All
+25 phalanges retain collision geometry and object-filtered contact sensors. The fixed
+object target is `(0.75, 0.10, 0.65)` m in the robot-root frame. Success requires, for
+30 consecutive control steps (0.5 s):
 
-- leg-root clearance of at least 95 mm above the tabletop and at least 80 mm of
-  measured lift from the episode's low point;
-- contact from at least two distinct fingers;
+- object-root position within 50 mm of the target and at least 80 mm of measured lift
+  from the episode's low point;
+- opposed contact from at least one opposable digit and one other finger;
+- at least two fingers flexed by 0.10 rad or more from their reset posture;
 - no object contact on the mount, base, or palm;
-- leg linear speed no greater than 0.5 m/s and palm-relative speed no greater than
-  0.25 m/s.
+- leg linear speed and palm-relative speed no greater than 0.15 m/s.
 
-Thus an untouched spawn, table-supported leg, ballistic launch, or proximity-only
-motion cannot succeed.
+Thus an untouched spawn, rigid-hand push, table-supported leg, ballistic launch,
+transient threshold crossing, or proximity-only motion cannot succeed.
 
 ## Train and evaluate
 
