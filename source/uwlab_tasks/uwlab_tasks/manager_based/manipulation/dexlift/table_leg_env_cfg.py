@@ -502,10 +502,15 @@ class TableLegGraspLiftEnvCfg(UR10eDeltoMixinCfg, dexsuite.DexsuiteLiftEnvCfg):
         # Preserve the identified per-joint gain and effort-limit shapes, but add
         # enough conservative servo authority to hold posture through arm motion.
         # Critical damping scales with sqrt(stiffness), hence 4x Kp and 2x Kd.
+        # Cap closure near hardware speed so first contact does not eject the
+        # zero-gravity leg before the opposing finger can arrive.
         self.scene.robot.actuators["hand"] = hand_actuator.replace(
             stiffness={name: 4.0 * value for name, value in hand_actuator.stiffness.items()},
             damping={name: 2.0 * value for name, value in hand_actuator.damping.items()},
             effort_limit_sim={name: 3.0 * value for name, value in hand_actuator.effort_limit_sim.items()},
+            velocity_limit_sim={
+                name: min(value, 1.0) for name, value in hand_actuator.velocity_limit_sim.items()
+            },
         )
         self.scene.robot.spawn.articulation_props = self.scene.robot.spawn.articulation_props.replace(
             solver_velocity_iteration_count=2
