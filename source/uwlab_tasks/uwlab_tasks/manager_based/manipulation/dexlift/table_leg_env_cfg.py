@@ -130,8 +130,13 @@ class TableLegRewardsCfg(dexsuite.RewardsCfg):
     action_rate_l2 = RewTerm(func=mdp.action_rate_l2_clamped, weight=-0.003)
     fingers_to_object = RewTerm(
         func=mdp.object_ee_distance,
-        weight=2.0,
+        weight=8.0,
         params={"std": 0.20, "asset_cfg": SceneEntityCfg("robot", body_names=[TIP_BODY_REGEX])},
+    )
+    palm_to_object = RewTerm(
+        func=mdp.object_ee_distance,
+        weight=5.0,
+        params={"std": 0.30, "asset_cfg": SceneEntityCfg("robot", body_names=[PALM_BODY])},
     )
     position_tracking = None
     orientation_tracking = None
