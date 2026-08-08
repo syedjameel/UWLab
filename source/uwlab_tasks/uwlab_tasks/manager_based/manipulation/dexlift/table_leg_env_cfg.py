@@ -157,7 +157,7 @@ class TableLegRewardsCfg(dexsuite.RewardsCfg):
     )
     close_at_grasp_pose = RewTerm(
         func=mdp.GraspPoseReward,
-        weight=25.0,
+        weight=150.0,
         params={
             "desired_object_pos_p": (0.0586, 0.0900, 0.1700),
             "position_std": 0.10,
@@ -181,7 +181,7 @@ class TableLegRewardsCfg(dexsuite.RewardsCfg):
     )
     opposition_contact = RewTerm(
         func=mdp.contacts,
-        weight=60.0,
+        weight=150.0,
         params={
             "threshold": CONTACT_THRESHOLD,
             "thumb_contact_name": THUMB_CONTACT_NAMES,
@@ -190,7 +190,7 @@ class TableLegRewardsCfg(dexsuite.RewardsCfg):
     )
     stable_grasp = RewTerm(
         func=mdp.stable_grasp,
-        weight=20.0,
+        weight=60.0,
         params={
             "threshold": CONTACT_THRESHOLD,
             "thumb_contact_name": THUMB_CONTACT_NAMES,
@@ -200,7 +200,7 @@ class TableLegRewardsCfg(dexsuite.RewardsCfg):
     )
     object_upward_motion = RewTerm(
         func=mdp.object_upward_velocity_bonus,
-        weight=20.0,
+        weight=30.0,
         params={
             "std": 0.15,
             "threshold": CONTACT_THRESHOLD,
@@ -210,7 +210,7 @@ class TableLegRewardsCfg(dexsuite.RewardsCfg):
     )
     lift_progress = RewTerm(
         func=mdp.ActualLiftProgress,
-        weight=80.0,
+        weight=100.0,
         params={
             "target_height": SUCCESS_HEIGHT,
             "threshold": CONTACT_THRESHOLD,

@@ -58,7 +58,7 @@ class TableLegGraspLiftPPORunnerCfg(DexLiftUR10eDeltoPPORunnerCfg):
         # The 200 mm leg is 57.354 g, so the generic dexterous-lift exploration
         # level produces many high-energy launches. Keep enough exploration for
         # contact discovery while making successful grasp refinement dominant.
-        self.policy.init_noise_std = 0.6
+        self.policy.init_noise_std = 0.3
         self.algorithm.entropy_coef = 0.001
         self.algorithm.learning_rate = 2.0e-4
         self.algorithm.schedule = "fixed"
