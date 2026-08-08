@@ -54,17 +54,23 @@ MINIMUM_ARTICULATED_FINGERS = 2
 MINIMUM_JOINT_DISPLACEMENT = 0.10
 MAX_SUCCESS_OBJECT_SPEED = 0.15
 MAX_SUCCESS_RELATIVE_SPEED = 0.15
-# Palm-down approach pose found from the calibrated DELTO approach axis. It
-# points 16 degrees from vertical and directly toward the nominal leg spawn.
-PALM_DOWN_WRIST_2 = -2.094395
-# Equivalent wrapped angle to -3.665191 rad, kept inside the USD's [-pi, pi] limit.
-PALM_DOWN_WRIST_3 = 2.617994
 # Collider-grid search followed by a free-body close test: fingers 1 and 2
 # maintain opposed contact at roughly 1.2 N each, without mount/base/palm
 # contact.  The former z=0.20 m target touched only finger 2.
 DESIRED_OBJECT_POS_P = (0.0600, 0.0450, 0.1400)
 # Post-reset object orientation in the nominal palm frame (w, x, y, z).
 DESIRED_OBJECT_QUAT_P = (-0.06698579, -0.93301314, -0.24999975, 0.25000033)
+# Collision-free point 60% along a batched IK path from the original reset to
+# the grasp pose.  It leaves a visible 49 mm approach gap, keeps the palm-down
+# orientation within 0.036 rad of the target, and has zero finger/palm contact.
+PREGRASP_ARM_JOINT_POS = {
+    "shoulder_pan_joint": -0.01786222,
+    "shoulder_lift_joint": -1.51081026,
+    "elbow_joint": 1.62457716,
+    "wrist_1_joint": -1.68285811,
+    "wrist_2_joint": -2.06616116,
+    "wrist_3_joint": 2.58425879,
+}
 FULL_OBJECT_POSE_RANGE = {
     "x": (-0.08, 0.08),
     "y": (-0.12, 0.12),
@@ -466,8 +472,7 @@ class TableLegGraspLiftEnvCfg(UR10eDeltoMixinCfg, dexsuite.DexsuiteLiftEnvCfg):
 
         self.scene.object = _leg_cfg()
         self.scene.table = _table_cfg()
-        self.scene.robot.init_state.joint_pos["wrist_2_joint"] = PALM_DOWN_WRIST_2
-        self.scene.robot.init_state.joint_pos["wrist_3_joint"] = PALM_DOWN_WRIST_3
+        self.scene.robot.init_state.joint_pos.update(PREGRASP_ARM_JOINT_POS)
         self.scene.robot.actuators["arm"] = self.scene.robot.actuators["arm"].replace(stiffness=1600.0, damping=80.0)
         hand_actuator = self.scene.robot.actuators["hand"]
         # Preserve the identified per-joint gain and effort-limit shapes, but add
