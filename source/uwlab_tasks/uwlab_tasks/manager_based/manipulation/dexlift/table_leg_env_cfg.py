@@ -67,6 +67,7 @@ FINGER_CONTACT_GROUPS = tuple(
 )
 THUMB_CONTACT_NAMES = tuple(name for name in FINGER_CONTACT_NAMES if name.startswith(("rl_dg_1_", "rl_dg_5_")))
 TIP_CONTACT_NAMES = tuple(name for name in FINGER_CONTACT_NAMES if name.startswith(("rl_dg_2_", "rl_dg_3_", "rl_dg_4_")))
+NON_FINGER_HAND_CONTACT_NAMES = (PALM_BODY, "rl_dg_base", "rl_dg_palm")
 
 
 @configclass
@@ -197,7 +198,7 @@ class TableLegRewardsCfg(dexsuite.RewardsCfg):
     palm_contact_penalty = RewTerm(
         func=mdp.unwanted_contact_force,
         weight=-100.0,
-        params={"contact_names": (PALM_BODY,), "clip": 5.0},
+        params={"contact_names": NON_FINGER_HAND_CONTACT_NAMES, "clip": 5.0},
     )
     position_tracking = None
     orientation_tracking = None
@@ -455,14 +456,15 @@ class TableLegGraspLiftEnvCfg(UR10eDeltoMixinCfg, dexsuite.DexsuiteLiftEnvCfg):
                     filter_prim_paths_expr=["{ENV_REGEX_NS}/Object/base_link"],
                 ),
             )
-        setattr(
-            self.scene,
-            f"{PALM_BODY}_object_s",
-            ContactSensorCfg(
-                prim_path=f"{{ENV_REGEX_NS}}/Robot/gripper/{PALM_BODY}",
-                filter_prim_paths_expr=["{ENV_REGEX_NS}/Object/base_link"],
-            ),
-        )
+        for link_name in NON_FINGER_HAND_CONTACT_NAMES:
+            setattr(
+                self.scene,
+                f"{link_name}_object_s",
+                ContactSensorCfg(
+                    prim_path=f"{{ENV_REGEX_NS}}/Robot/gripper/{link_name}",
+                    filter_prim_paths_expr=["{ENV_REGEX_NS}/Object/base_link"],
+                ),
+            )
         self.scene.table_s = ContactSensorCfg(
             prim_path="{ENV_REGEX_NS}/table",
             filter_prim_paths_expr=["{ENV_REGEX_NS}/Object/base_link"],
