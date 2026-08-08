@@ -450,7 +450,10 @@ class GraspPostureProgressReward(ManagerTermBase):
             robot.data.joint_pos[:, self._joint_ids]
             - robot.data.default_joint_pos[:, self._joint_ids]
         )
-        joint_progress = (joint_displacement * self._travel_direction / self._travel_magnitude).clamp(0.0, 1.0)
+        # Retain a gradient for motion away from the target.  Clamping at zero
+        # makes every wrong-direction command equally unrewarded and lets half
+        # the independent fingers drift open without a corrective signal.
+        joint_progress = (joint_displacement * self._travel_direction / self._travel_magnitude).clamp(-1.0, 1.0)
         posture_progress = (
             joint_progress.masked_select(self._moving_joints).reshape(env.num_envs, -1).mean(dim=-1)
         )
