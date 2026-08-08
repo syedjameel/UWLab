@@ -20,7 +20,8 @@ cuboid support table.
 ## Task contract
 
 `DexLift-UR10eDelto-TableLeg-GraspLift-Curriculum-v0` starts the leg airborne below
-the open palm, with no hand contact. A held-lift success promotes 0.25 difficulty
+the open, palm-down hand, with no hand contact. The calibrated hand approach axis
+points toward the nominal leg spawn and 16° from vertical. A held-lift success promotes 0.25 difficulty
 levels and a failure demotes one, making 80% success the curriculum's interior fixed
 point. Levels
 0–10 ramp gravity from zero to −9.81 m/s²; levels 10–15 widen reset translation, and

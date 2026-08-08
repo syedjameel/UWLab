@@ -53,11 +53,16 @@ MINIMUM_ARTICULATED_FINGERS = 2
 MINIMUM_JOINT_DISPLACEMENT = 0.10
 MAX_SUCCESS_OBJECT_SPEED = 0.15
 MAX_SUCCESS_RELATIVE_SPEED = 0.15
+# Palm-down approach pose found from the calibrated DELTO approach axis. It
+# points 16 degrees from vertical and directly toward the nominal leg spawn.
+PALM_DOWN_WRIST_2 = -2.094395
+# Equivalent wrapped angle to -3.665191 rad, kept inside the USD's [-pi, pi] limit.
+PALM_DOWN_WRIST_3 = 2.617994
 # Collision sweep: four finger groups remain opposed for all 120 close steps,
 # with 30 mm more clearance from the palm than the previous target.
 DESIRED_OBJECT_POS_P = (0.0586, 0.0600, 0.2000)
 # Post-reset object orientation in the nominal palm frame (w, x, y, z).
-DESIRED_OBJECT_QUAT_P = (-0.00000212, 0.70710826, -0.70710582, -0.00000001)
+DESIRED_OBJECT_QUAT_P = (-0.06698579, -0.93301314, -0.24999975, 0.25000033)
 FULL_OBJECT_POSE_RANGE = {
     "x": (-0.08, 0.08),
     "y": (-0.12, 0.12),
@@ -442,6 +447,8 @@ class TableLegGraspLiftEnvCfg(UR10eDeltoMixinCfg, dexsuite.DexsuiteLiftEnvCfg):
 
         self.scene.object = _leg_cfg()
         self.scene.table = _table_cfg()
+        self.scene.robot.init_state.joint_pos["wrist_2_joint"] = PALM_DOWN_WRIST_2
+        self.scene.robot.init_state.joint_pos["wrist_3_joint"] = PALM_DOWN_WRIST_3
         self.scene.robot.actuators["arm"] = self.scene.robot.actuators["arm"].replace(stiffness=1600.0, damping=80.0)
         hand_actuator = self.scene.robot.actuators["hand"]
         # Preserve the identified per-joint gain and effort-limit shapes, but add
