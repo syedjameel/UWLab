@@ -147,7 +147,7 @@ class TableLegRewardsCfg(dexsuite.RewardsCfg):
     )
     close_at_grasp_frame = RewTerm(
         func=mdp.close_gripper_at_grasp_frame,
-        weight=5.0,
+        weight=10.0,
         params={
             "desired_object_pos_p": (0.0586, 0.1441, 0.1300),
             "std": 0.05,
@@ -169,8 +169,8 @@ class TableLegRewardsCfg(dexsuite.RewardsCfg):
     )
     grasp_frame_alignment = RewTerm(
         func=mdp.GraspFrameAlignment,
-        weight=5.0,
-        params={"std": 1.5, "palm_body": PALM_BODY},
+        weight=20.0,
+        params={"std": 0.7, "palm_body": PALM_BODY},
     )
     opposition_contact = RewTerm(
         func=mdp.contacts,
