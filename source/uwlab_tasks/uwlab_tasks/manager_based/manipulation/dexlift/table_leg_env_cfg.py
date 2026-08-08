@@ -43,7 +43,9 @@ TABLE_TOP_Z = TABLE_CENTER_Z + 0.5 * TABLE_THICKNESS
 # but still airborne above the table, so the hand must descend before grasping.
 LEG_SPAWN_ROOT_Z = 0.42
 # Lift shaping measures progress from the episode's observed minimum height.
-SUCCESS_HEIGHT = 0.31
+# From the airborne reset this is an 8.5 cm rise; success independently
+# requires at least 8 cm of measured motion from the episode minimum.
+SUCCESS_HEIGHT = 0.25
 CONTACT_THRESHOLD = 0.05
 # Collision sweep: four finger groups remain opposed for all 120 close steps,
 # with 30 mm more clearance from the palm than the previous target.
