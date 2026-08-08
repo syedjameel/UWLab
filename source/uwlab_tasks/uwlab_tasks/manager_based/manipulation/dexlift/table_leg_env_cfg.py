@@ -155,13 +155,23 @@ class TableLegRewardsCfg(dexsuite.RewardsCfg):
             "palm_body": PALM_BODY,
         },
     )
-    close_at_grasp_pose = RewTerm(
+    precise_grasp_pose = RewTerm(
         func=mdp.GraspPoseReward,
-        weight=150.0,
+        weight=300.0,
         params={
             "desired_object_pos_p": (0.0586, 0.0900, 0.1700),
-            "position_std": 0.10,
-            "orientation_std": 1.0,
+            "position_std": 0.05,
+            "orientation_std": 0.3,
+            "palm_body": PALM_BODY,
+        },
+    )
+    close_at_grasp_pose = RewTerm(
+        func=mdp.GraspPoseReward,
+        weight=500.0,
+        params={
+            "desired_object_pos_p": (0.0586, 0.0900, 0.1700),
+            "position_std": 0.05,
+            "orientation_std": 0.3,
             "close_only": True,
             "palm_body": PALM_BODY,
         },
