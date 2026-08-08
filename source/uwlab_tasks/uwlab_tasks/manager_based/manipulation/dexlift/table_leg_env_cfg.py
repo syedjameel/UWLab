@@ -192,7 +192,9 @@ class TableLegRewardsCfg(dexsuite.RewardsCfg):
     horizontal_displacement_penalty = RewTerm(
         func=mdp.excessive_horizontal_displacement,
         weight=-0.5,
-        params={"center_x": WORKSPACE_X, "center_y": WORKSPACE_Y, "free_radius": 0.04},
+        # Do not penalize valid samples from the 8 x 12 cm airborne reset range.
+        # The term should only discourage launches beyond that workspace.
+        params={"center_x": WORKSPACE_X, "center_y": WORKSPACE_Y, "free_radius": 0.15},
     )
     object_speed_penalty = RewTerm(
         func=mdp.excessive_object_speed,
