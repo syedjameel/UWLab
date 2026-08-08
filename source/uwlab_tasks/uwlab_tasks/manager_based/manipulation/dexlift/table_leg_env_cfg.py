@@ -90,12 +90,15 @@ OPPOSED_GRASP_JOINT_POS = {
     if name.startswith(("rj_dg_1_", "rj_dg_2_"))
 }
 FULL_OBJECT_POSE_RANGE = {
-    "x": (-0.08, 0.08),
-    "y": (-0.12, 0.12),
-    "z": (0.0, 0.03),
-    "roll": (-0.35, 0.35),
-    "pitch": (-0.35, 0.35),
-    "yaw": (-3.14159, 3.14159),
+    # Local robustness around the collision-validated airborne acquisition.
+    # Larger offsets are a separate search-and-approach task: they are outside
+    # this fixed pre-grasp environment's reachable opposed-contact basin.
+    "x": (-0.002, 0.002),
+    "y": (-0.003, 0.003),
+    "z": (0.0, 0.001),
+    "roll": (-0.02, 0.02),
+    "pitch": (-0.02, 0.02),
+    "yaw": (-0.02, 0.02),
 }
 FINGER_CONTACT_NAMES = tuple(
     f"rl_dg_{finger}_{link}" for finger in range(1, 6) for link in ("1", "2", "3", "4", "tip")
