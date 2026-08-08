@@ -97,6 +97,28 @@ def object_velocity_b(
     )
 
 
+def arm_motion_near_grasp_position(
+    env: ManagerBasedRLEnv,
+    desired_object_pos_p: tuple[float, float, float],
+    std: float,
+    robot_cfg: SceneEntityCfg,
+    object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+) -> torch.Tensor:
+    """Penalize arm motion while the hand closes at the grasp position."""
+    robot = env.scene[robot_cfg.name]
+    obj: RigidObject = env.scene[object_cfg.name]
+    palm_id = robot_cfg.body_ids[0]
+    object_pos_p = quat_apply_inverse(
+        robot.data.body_quat_w[:, palm_id], obj.data.root_pos_w - robot.data.body_pos_w[:, palm_id]
+    )
+    desired = object_pos_p.new_tensor(desired_object_pos_p)
+    position_error = torch.linalg.vector_norm(object_pos_p - desired, dim=-1)
+    near_grasp = 1.0 - torch.tanh(position_error / std)
+    closing = (env.action_manager.action[:, -1] < 0.0).float()
+    arm_motion = env.action_manager.action[:, :-1].square().sum(dim=-1)
+    return near_grasp * closing * arm_motion
+
+
 class ActualLiftProgress(ManagerTermBase):
     """Contact-gated lift progress measured from each episode's lowest height."""
 

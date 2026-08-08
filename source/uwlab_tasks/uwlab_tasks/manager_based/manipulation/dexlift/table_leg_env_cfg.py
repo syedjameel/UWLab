@@ -195,6 +195,15 @@ class TableLegRewardsCfg(dexsuite.RewardsCfg):
             "palm_body": PALM_BODY,
         },
     )
+    arm_motion_while_closing = RewTerm(
+        func=mdp.arm_motion_near_grasp_position,
+        weight=-200.0,
+        params={
+            "desired_object_pos_p": DESIRED_OBJECT_POS_P,
+            "std": 0.05,
+            "robot_cfg": SceneEntityCfg("robot", body_names=[PALM_BODY]),
+        },
+    )
     palm_contact_penalty = RewTerm(
         func=mdp.unwanted_contact_force,
         weight=-2000.0,
