@@ -71,6 +71,13 @@ PREGRASP_ARM_JOINT_POS = {
     "wrist_2_joint": -2.06616116,
     "wrist_3_joint": 2.58425879,
 }
+# Only this opposed pair contacts at the validated pose.  Shaping all five
+# fingers lets PPO collect posture progress on irrelevant, non-contact digits.
+OPPOSED_GRASP_JOINT_POS = {
+    name: value
+    for name, value in DELTO_HAND_CLOSED_JOINT_POS.items()
+    if name.startswith(("rj_dg_1_", "rj_dg_2_"))
+}
 FULL_OBJECT_POSE_RANGE = {
     "x": (-0.08, 0.08),
     "y": (-0.12, 0.12),
@@ -218,7 +225,7 @@ class TableLegRewardsCfg(dexsuite.RewardsCfg):
         params={
             "desired_object_pos_p": DESIRED_OBJECT_POS_P,
             "desired_object_quat_p": DESIRED_OBJECT_QUAT_P,
-            "target_joint_pos": DELTO_HAND_CLOSED_JOINT_POS,
+            "target_joint_pos": OPPOSED_GRASP_JOINT_POS,
             # Do not teach closure while the palm is still in its approach
             # phase.  At the reset distance this score is effectively zero.
             "position_std": 0.04,
