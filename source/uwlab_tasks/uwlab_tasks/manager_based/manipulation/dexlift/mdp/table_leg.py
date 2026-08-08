@@ -88,18 +88,32 @@ def object_velocity_b(
     )
 
 
-def lift_progress(
-    env: ManagerBasedRLEnv,
-    start_height: float,
-    target_height: float,
-    thumb_contact_name: str | tuple[str, ...],
-    tip_contact_names: tuple[str, ...],
-    threshold: float,
-) -> torch.Tensor:
-    """Normalized lift progress, paid only while an opposing grasp is present."""
-    height = root_height_above_table(env)
-    progress = ((height - start_height) / (target_height - start_height)).clamp(0.0, 1.0)
-    return progress * contacts(env, threshold, thumb_contact_name, tip_contact_names).float()
+class ActualLiftProgress(ManagerTermBase):
+    """Contact-gated lift progress measured from each episode's lowest height."""
+
+    def __init__(self, cfg, env: ManagerBasedRLEnv):
+        super().__init__(cfg, env)
+        self._lowest_height = torch.full((env.num_envs,), torch.inf, device=env.device)
+
+    def reset(self, env_ids: Sequence[int] | torch.Tensor | None = None) -> None:
+        if env_ids is None:
+            self._lowest_height.fill_(torch.inf)
+        else:
+            self._lowest_height[env_ids] = torch.inf
+
+    def __call__(
+        self,
+        env: ManagerBasedRLEnv,
+        target_height: float,
+        thumb_contact_name: str | tuple[str, ...],
+        tip_contact_names: tuple[str, ...],
+        threshold: float,
+    ) -> torch.Tensor:
+        height = root_height_above_table(env)
+        self._lowest_height = torch.minimum(self._lowest_height, height)
+        distance_to_target = (target_height - self._lowest_height).clamp(min=1.0e-6)
+        progress = ((height - self._lowest_height) / distance_to_target).clamp(0.0, 1.0)
+        return progress * contacts(env, threshold, thumb_contact_name, tip_contact_names).float()
 
 
 def stable_grasp(

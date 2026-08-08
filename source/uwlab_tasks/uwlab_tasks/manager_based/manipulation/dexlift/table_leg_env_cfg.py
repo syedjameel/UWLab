@@ -42,9 +42,7 @@ TABLE_TOP_Z = TABLE_CENTER_Z + 0.5 * TABLE_THICKNESS
 # The palm resets around z=0.68 m.  Spawn the leg below every finger collider
 # but still airborne above the table, so the hand must descend before grasping.
 LEG_SPAWN_ROOT_Z = 0.42
-# Lift shaping starts near the table-supported root height, not at the airborne
-# reset height.  Tying this to LEG_SPAWN_ROOT_Z would reward the initial fall.
-START_HEIGHT = 0.05
+# Lift shaping measures progress from the episode's observed minimum height.
 SUCCESS_HEIGHT = 0.31
 CONTACT_THRESHOLD = 0.05
 FULL_OBJECT_POSE_RANGE = {
@@ -202,7 +200,7 @@ class TableLegRewardsCfg(dexsuite.RewardsCfg):
     )
     object_upward_motion = RewTerm(
         func=mdp.object_upward_velocity_bonus,
-        weight=5.0,
+        weight=20.0,
         params={
             "std": 0.15,
             "threshold": CONTACT_THRESHOLD,
@@ -211,10 +209,9 @@ class TableLegRewardsCfg(dexsuite.RewardsCfg):
         },
     )
     lift_progress = RewTerm(
-        func=mdp.lift_progress,
-        weight=40.0,
+        func=mdp.ActualLiftProgress,
+        weight=80.0,
         params={
-            "start_height": START_HEIGHT,
             "target_height": SUCCESS_HEIGHT,
             "threshold": CONTACT_THRESHOLD,
             "thumb_contact_name": THUMB_CONTACT_NAMES,
