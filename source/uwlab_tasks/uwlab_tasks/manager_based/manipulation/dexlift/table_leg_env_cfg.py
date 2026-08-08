@@ -106,9 +106,9 @@ NON_FINGER_HAND_CONTACT_NAMES = (PALM_BODY, "rl_dg_base", "rl_dg_palm")
 
 @configclass
 class TableLegJointPositionActionCfg:
-    """Relative arm motion plus default-centered position control for every finger joint."""
+    """Default-centered position control for the arm and every finger joint."""
 
-    arm_action = mdp.RelativeJointPositionActionCfg(
+    arm_action = mdp.JointPositionActionCfg(
         asset_name="robot",
         joint_names=ARM_JOINT_NAMES,
         scale={
@@ -121,6 +121,7 @@ class TableLegJointPositionActionCfg:
             "wrist_2_joint": 0.10,
             "wrist_3_joint": 0.10,
         },
+        use_default_offset=True,
     )
     # Absolute default-centered targets make a zero action actively hold the
     # open posture while the arm accelerates.  The collision-validated close
