@@ -453,6 +453,7 @@ class GraspPostureProgressReward(ManagerTermBase):
         action_scale = action_term._scale[:, self._action_ids]
         action_offset = action_term._offset[:, self._action_ids]
         self._target_action = (target_position - action_offset[:1]) / action_scale[:1]
+        self._target_action_norm_sq = self._target_action.square().sum(dim=-1).clamp(min=1.0e-6)
 
         desired_quat = self.cfg.params.get("desired_object_quat_p")
         self._desired_object_quat_p = torch.tensor(
@@ -465,7 +466,6 @@ class GraspPostureProgressReward(ManagerTermBase):
         desired_object_pos_p: tuple[float, float, float],
         target_joint_pos: dict[str, float],
         action_term_name: str,
-        action_std: float,
         action_prior_weight: float,
         position_std: float,
         orientation_std: float,
@@ -498,10 +498,10 @@ class GraspPostureProgressReward(ManagerTermBase):
             self._travel_magnitude * moving
         ).sum(dim=-1).clamp(min=1.0e-6)
         posture_score = 0.5 * (posture_progress + 1.0)
-        action_error = torch.sqrt(
-            (self._action_term.raw_actions[:, self._action_ids] - self._target_action).square().mean(dim=-1)
-        )
-        action_score = 1.0 - torch.tanh(action_error / action_std)
+        action_progress = (
+            self._action_term.raw_actions[:, self._action_ids] * self._target_action
+        ).sum(dim=-1) / self._target_action_norm_sq
+        action_score = 0.5 * (action_progress.clamp(-1.0, 1.0) + 1.0)
         closure_score = (1.0 - action_prior_weight) * posture_score + action_prior_weight * action_score
 
         palm_pos_w = robot.data.body_pos_w[:, self._palm_body_id]
