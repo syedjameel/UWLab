@@ -73,7 +73,7 @@ class TableLegRelJointPosActionCfg:
             "wrist_1_joint": 0.10,
             "wrist_2_joint": 0.10,
             "wrist_3_joint": 0.10,
-            HAND_JOINT_REGEX: 0.03,
+            HAND_JOINT_REGEX: 0.04,
         },
     )
 
@@ -134,14 +134,14 @@ class TableLegRewardsCfg(dexsuite.RewardsCfg):
         weight=-3000.0,
         params={"term_keys": ["object_out_of_bound", "dropped"]},
     )
-    any_finger_contact = RewTerm(
-        func=mdp.any_contact,
-        weight=5.0,
-        params={"threshold": CONTACT_THRESHOLD, "contact_names": FINGER_CONTACT_NAMES},
+    finger_contacts = RewTerm(
+        func=mdp.finger_contact_count,
+        weight=15.0,
+        params={"threshold": CONTACT_THRESHOLD, "contact_groups": FINGER_CONTACT_GROUPS},
     )
     opposition_contact = RewTerm(
         func=mdp.contacts,
-        weight=30.0,
+        weight=60.0,
         params={
             "threshold": CONTACT_THRESHOLD,
             "thumb_contact_name": THUMB_CONTACT_NAMES,
@@ -272,8 +272,8 @@ class TableLegCurriculumCfg(DexsuiteCurriculumCfg):
         params={
             "event_term_name": "reset_object",
             "full_pose_range": FULL_OBJECT_POSE_RANGE,
-            "warmup_steps": 640,
-            "ramp_steps": 10240,
+            "warmup_steps": 3200,
+            "ramp_steps": 9600,
         },
     )
 

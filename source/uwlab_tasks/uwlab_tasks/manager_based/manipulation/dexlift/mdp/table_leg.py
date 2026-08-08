@@ -41,6 +41,15 @@ def logical_finger_contacts(
     )
 
 
+def finger_contact_count(
+    env: ManagerBasedRLEnv,
+    contact_groups: tuple[tuple[str, ...], ...],
+    threshold: float,
+) -> torch.Tensor:
+    """Number of distinct fingers touching the leg, independent of the contacted phalanx."""
+    return logical_finger_contacts(env, contact_groups, threshold).float().sum(dim=-1)
+
+
 def max_finger_contact_force(
     env: ManagerBasedRLEnv,
     contact_names: tuple[str, ...],
