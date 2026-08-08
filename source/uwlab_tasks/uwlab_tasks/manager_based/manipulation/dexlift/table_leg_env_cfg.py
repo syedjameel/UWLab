@@ -273,7 +273,7 @@ class TableLegRewardsCfg(dexsuite.RewardsCfg):
     )
     postgrasp_lift_action = RewTerm(
         func=mdp.PostgraspArmActionReward,
-        weight=4000.0,
+        weight=20000.0,
         params={
             "target_joint_pos": LIFT_ARM_JOINT_POS,
             "action_term_name": "arm_action",
