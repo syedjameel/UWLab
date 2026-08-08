@@ -140,7 +140,7 @@ class TableLegRewardsCfg(dexsuite.RewardsCfg):
             # The URDF root is at the thread/body junction.  Shift 70 mm along
             # the body so the finger cage targets the leg's graspable centre,
             # rather than closing around the yellow threaded tip.
-            "desired_object_pos_p": (0.0586, 0.1441, 0.1669),
+            "desired_object_pos_p": (0.0586, 0.1441, 0.1300),
             "std": 0.15,
             "robot_cfg": SceneEntityCfg("robot", body_names=[PALM_BODY]),
         },
@@ -149,7 +149,7 @@ class TableLegRewardsCfg(dexsuite.RewardsCfg):
         func=mdp.close_gripper_at_grasp_frame,
         weight=5.0,
         params={
-            "desired_object_pos_p": (0.0586, 0.1441, 0.1669),
+            "desired_object_pos_p": (0.0586, 0.1441, 0.1300),
             "std": 0.05,
             "robot_cfg": SceneEntityCfg("robot", body_names=[PALM_BODY]),
         },
