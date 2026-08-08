@@ -284,7 +284,9 @@ class TableLegCurriculumCfg(DexsuiteCurriculumCfg):
         params={
             "event_term_name": "reset_object",
             "full_pose_range": FULL_OBJECT_POSE_RANGE,
-            "warmup_steps": 3200,
+            # First master grasping under full gravity, then widen the airborne
+            # pose distribution instead of applying both shifts at once.
+            "warmup_steps": 8000,
             "ramp_steps": 9600,
         },
     )
