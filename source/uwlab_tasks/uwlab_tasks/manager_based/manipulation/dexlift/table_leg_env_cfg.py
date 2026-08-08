@@ -32,14 +32,15 @@ from isaaclab_tasks.manager_based.manipulation.dexsuite import dexsuite_env_cfg 
 
 
 ASSET_ROOT = f"{UWLAB_LOCAL_ASSETS_DIR}/Props/FurnitureBench/SquareTableOneLeg"
-WORKSPACE_X = 0.55
+TABLE_CENTER_X = 0.55
+WORKSPACE_X = 0.75
 WORKSPACE_Y = 0.10
 TABLE_CENTER_Z = 0.235
 TABLE_THICKNESS = 0.04
 TABLE_TOP_Z = TABLE_CENTER_Z + 0.5 * TABLE_THICKNESS
-LEG_SPAWN_ROOT_Z = 0.42
+LEG_SPAWN_ROOT_Z = 0.51
 START_HEIGHT = LEG_SPAWN_ROOT_Z - TABLE_TOP_Z
-SUCCESS_HEIGHT = 0.22
+SUCCESS_HEIGHT = 0.31
 CONTACT_THRESHOLD = 0.05
 FULL_OBJECT_POSE_RANGE = {
     "x": (-0.08, 0.08),
@@ -114,7 +115,7 @@ def _table_cfg() -> RigidObjectCfg:
             collision_props=sim_utils.CollisionPropertiesCfg(contact_offset=0.002, rest_offset=0.0),
             visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.45, 0.34, 0.24)),
         ),
-        init_state=RigidObjectCfg.InitialStateCfg(pos=(WORKSPACE_X, 0.0, TABLE_CENTER_Z)),
+        init_state=RigidObjectCfg.InitialStateCfg(pos=(TABLE_CENTER_X, 0.0, TABLE_CENTER_Z)),
     )
 
 
@@ -371,7 +372,7 @@ class TableLegGraspLiftEnvCfg(UR10eDeltoMixinCfg, dexsuite.DexsuiteLiftEnvCfg):
 
         self.commands.object_pose.ranges.pos_x = (WORKSPACE_X, WORKSPACE_X)
         self.commands.object_pose.ranges.pos_y = (WORKSPACE_Y, WORKSPACE_Y)
-        self.commands.object_pose.ranges.pos_z = (0.50, 0.50)
+        self.commands.object_pose.ranges.pos_z = (0.59, 0.59)
         self.commands.object_pose.ranges.roll = (0.0, 0.0)
         self.commands.object_pose.ranges.pitch = (0.0, 0.0)
         self.commands.object_pose.ranges.yaw = (0.0, 0.0)
