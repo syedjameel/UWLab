@@ -135,7 +135,7 @@ class TableLegRewardsCfg(dexsuite.RewardsCfg):
     )
     grasp_position = RewTerm(
         func=mdp.GraspPoseReward,
-        weight=12.0,
+        weight=50.0,
         params={
             # The URDF root is at the thread/body junction.  A collider sweep
             # places the cage 30 mm into the square body, where all five digits
@@ -143,24 +143,13 @@ class TableLegRewardsCfg(dexsuite.RewardsCfg):
             "desired_object_pos_p": (0.0586, 0.0900, 0.1700),
             "position_std": 0.15,
             "orientation_std": 1.5,
-            "score_mode": "position",
-            "palm_body": PALM_BODY,
-        },
-    )
-    grasp_orientation = RewTerm(
-        func=mdp.GraspPoseReward,
-        weight=50.0,
-        params={
-            "desired_object_pos_p": (0.0586, 0.0900, 0.1700),
-            "position_std": 0.15,
-            "orientation_std": 1.5,
-            "score_mode": "orientation",
+            "position_only": True,
             "palm_body": PALM_BODY,
         },
     )
     grasp_pose = RewTerm(
         func=mdp.GraspPoseReward,
-        weight=30.0,
+        weight=100.0,
         params={
             "desired_object_pos_p": (0.0586, 0.0900, 0.1700),
             "position_std": 0.15,
@@ -170,11 +159,11 @@ class TableLegRewardsCfg(dexsuite.RewardsCfg):
     )
     close_at_grasp_pose = RewTerm(
         func=mdp.GraspPoseReward,
-        weight=15.0,
+        weight=25.0,
         params={
             "desired_object_pos_p": (0.0586, 0.0900, 0.1700),
-            "position_std": 0.05,
-            "orientation_std": 0.5,
+            "position_std": 0.10,
+            "orientation_std": 1.0,
             "close_only": True,
             "palm_body": PALM_BODY,
         },
