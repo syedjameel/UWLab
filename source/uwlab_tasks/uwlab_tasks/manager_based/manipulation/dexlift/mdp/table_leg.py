@@ -53,11 +53,12 @@ def root_height_above_table(
     env: ManagerBasedRLEnv,
     object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
     table_cfg: SceneEntityCfg = SceneEntityCfg("table"),
+    table_top_offset: float = 0.02,
 ) -> torch.Tensor:
-    """Object-root height relative to the receptive table's canonical root."""
+    """Object-root clearance above the static support table's top surface."""
     obj: RigidObject = env.scene[object_cfg.name]
     table: RigidObject = env.scene[table_cfg.name]
-    return obj.data.root_pos_w[:, 2] - table.data.root_pos_w[:, 2]
+    return obj.data.root_pos_w[:, 2] - (table.data.root_pos_w[:, 2] + table_top_offset)
 
 
 def object_velocity_b(

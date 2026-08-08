@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="utf-8"?>
+<robot name="square_table_leg4_200mm_sdf_hybrid_matchedmass">
+  <link name="base_link">
+    <inertial>
+      <!-- 200 mm long-body derivative at the source leg's measured density. -->
+      <mass value="0.0573543915"/>
+      <origin xyz="0.062452768 -0.000004239 0.000000634" rpy="0 0 0"/>
+      <inertia
+        ixx="7.87658586e-06" ixy="-2.22345998e-08" ixz="4.15344120e-09"
+        iyy="1.81694388e-04" iyz="9.28001110e-10" izz="1.81694604e-04"/>
+    </inertial>
+  </link>
+
+  <material name="thread"><color rgba="0.95 0.55 0.10 1.0"/></material>
+  <material name="body"><color rgba="0.50 0.50 0.50 1.0"/></material>
+
+  <link name="thread_link">
+    <visual>
+      <geometry><mesh filename="square_table_leg4_200mm_thread.obj" scale="1 1 1"/></geometry>
+      <material name="thread"/>
+    </visual>
+    <collision>
+      <geometry><mesh filename="square_table_leg4_200mm_thread.obj" scale="1 1 1"/></geometry>
+      <sdf resolution="256"/>
+    </collision>
+  </link>
+  <joint name="base_to_thread" type="fixed">
+    <parent link="base_link"/>
+    <child link="thread_link"/>
+  </joint>
+
+  <link name="body_link">
+    <visual>
+      <geometry><mesh filename="square_table_leg4_200mm_body.obj" scale="1 1 1"/></geometry>
+      <material name="body"/>
+    </visual>
+    <collision><geometry><mesh filename="body_coacd/decomp_0.obj" scale="1 1 1"/></geometry></collision>
+    <collision><geometry><mesh filename="body_coacd/decomp_1.obj" scale="1 1 1"/></geometry></collision>
+    <collision><geometry><mesh filename="body_coacd/decomp_2.obj" scale="1 1 1"/></geometry></collision>
+    <collision><geometry><mesh filename="body_coacd/decomp_3.obj" scale="1 1 1"/></geometry></collision>
+    <collision><geometry><mesh filename="body_coacd/decomp_4.obj" scale="1 1 1"/></geometry></collision>
+    <collision><geometry><mesh filename="body_coacd/decomp_5.obj" scale="1 1 1"/></geometry></collision>
+    <collision><geometry><mesh filename="body_coacd/decomp_6.obj" scale="1 1 1"/></geometry></collision>
+    <collision><geometry><mesh filename="body_coacd/decomp_7.obj" scale="1 1 1"/></geometry></collision>
+    <collision><geometry><mesh filename="body_coacd/decomp_8.obj" scale="1 1 1"/></geometry></collision>
+    <collision><geometry><mesh filename="body_coacd/decomp_9.obj" scale="1 1 1"/></geometry></collision>
+    <collision><geometry><mesh filename="body_coacd/decomp_10.obj" scale="1 1 1"/></geometry></collision>
+    <collision><geometry><mesh filename="body_coacd/decomp_11.obj" scale="1 1 1"/></geometry></collision>
+  </link>
+  <joint name="base_to_body" type="fixed">
+    <parent link="base_link"/>
+    <child link="body_link"/>
+  </joint>
+</robot>

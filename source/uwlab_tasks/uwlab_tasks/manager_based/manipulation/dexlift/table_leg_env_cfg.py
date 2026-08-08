@@ -15,6 +15,7 @@ from isaaclab.managers import SceneEntityCfg
 from isaaclab.managers import TerminationTermCfg as DoneTerm
 from isaaclab.sensors import ContactSensorCfg
 from isaaclab.utils import configclass
+from isaaclab_tasks.manager_based.manipulation.dexsuite.adr_curriculum import CurriculumCfg as DexsuiteCurriculumCfg
 
 from uwlab_assets import UWLAB_LOCAL_ASSETS_DIR
 
@@ -30,28 +31,22 @@ from isaaclab_tasks.manager_based.manipulation.dexsuite import dexsuite_env_cfg 
 
 
 ASSET_ROOT = f"{UWLAB_LOCAL_ASSETS_DIR}/Props/FurnitureBench/SquareTableOneLeg"
-WORKSPACE_X = 0.691177
-WORKSPACE_Y = -0.002180
-TABLE_ROOT_Z = 0.019625
-LEG_REST_ROOT_Z = 0.024344
-START_HEIGHT = LEG_REST_ROOT_Z - TABLE_ROOT_Z
-SUCCESS_HEIGHT = 0.075
+WORKSPACE_X = 0.55
+WORKSPACE_Y = 0.10
+TABLE_CENTER_Z = 0.235
+TABLE_THICKNESS = 0.04
+TABLE_TOP_Z = TABLE_CENTER_Z + 0.5 * TABLE_THICKNESS
+LEG_SPAWN_ROOT_Z = 0.42
+START_HEIGHT = LEG_SPAWN_ROOT_Z - TABLE_TOP_Z
+SUCCESS_HEIGHT = 0.22
 CONTACT_THRESHOLD = 0.05
 FULL_OBJECT_POSE_RANGE = {
-    "x": (-0.012, 0.012),
-    "y": (-0.012, 0.012),
-    "z": (0.0, 0.0),
-    "roll": (0.0, 0.0),
-    "pitch": (0.0, 0.0),
-    "yaw": (-0.15, 0.15),
-}
-PREGRASP_ARM_JOINT_POS = {
-    "shoulder_pan_joint": -0.633149,
-    "shoulder_lift_joint": -1.127246,
-    "elbow_joint": 1.973520,
-    "wrist_1_joint": -1.198642,
-    "wrist_2_joint": -0.663219,
-    "wrist_3_joint": -2.350061,
+    "x": (-0.08, 0.08),
+    "y": (-0.12, 0.12),
+    "z": (0.0, 0.03),
+    "roll": (-0.35, 0.35),
+    "pitch": (-0.35, 0.35),
+    "yaw": (-3.14159, 3.14159),
 }
 FINGER_CONTACT_NAMES = tuple(
     f"rl_dg_{finger}_{link}" for finger in range(1, 6) for link in ("1", "2", "3", "4", "tip")
@@ -87,7 +82,7 @@ def _leg_cfg() -> RigidObjectCfg:
     return RigidObjectCfg(
         prim_path="{ENV_REGEX_NS}/Object",
         spawn=sim_utils.UrdfFileCfg(
-            asset_path=f"{ASSET_ROOT}/leg/square_table_leg4_matchedmass_sdf_hybrid.urdf",
+            asset_path=f"{ASSET_ROOT}/leg_200mm/square_table_leg4_200mm_matchedmass_sdf_hybrid.urdf",
             fix_base=False,
             joint_drive=None,
             merge_fixed_joints=True,
@@ -102,8 +97,8 @@ def _leg_cfg() -> RigidObjectCfg:
             ),
         ),
         init_state=RigidObjectCfg.InitialStateCfg(
-            pos=(WORKSPACE_X, WORKSPACE_Y, LEG_REST_ROOT_Z),
-            rot=(0.733814, 0.0, 0.0, 0.679350),
+            pos=(WORKSPACE_X, WORKSPACE_Y, LEG_SPAWN_ROOT_Z),
+            rot=(0.707107, 0.0, 0.0, 0.707107),
         ),
     )
 
@@ -111,17 +106,14 @@ def _leg_cfg() -> RigidObjectCfg:
 def _table_cfg() -> RigidObjectCfg:
     return RigidObjectCfg(
         prim_path="/World/envs/env_.*/table",
-        spawn=sim_utils.UrdfFileCfg(
-            asset_path=f"{ASSET_ROOT}/table/one_leg_sdf_hybrid.urdf",
-            fix_base=False,
-            joint_drive=None,
-            merge_fixed_joints=True,
-            collider_type="convex_decomposition",
-            articulation_props=sim_utils.ArticulationRootPropertiesCfg(articulation_enabled=False),
+        spawn=sim_utils.CuboidCfg(
+            size=(0.8, 1.0, TABLE_THICKNESS),
             activate_contact_sensors=True,
             rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
+            collision_props=sim_utils.CollisionPropertiesCfg(contact_offset=0.002, rest_offset=0.0),
+            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.45, 0.34, 0.24)),
         ),
-        init_state=RigidObjectCfg.InitialStateCfg(pos=(WORKSPACE_X, WORKSPACE_Y, TABLE_ROOT_Z)),
+        init_state=RigidObjectCfg.InitialStateCfg(pos=(WORKSPACE_X, 0.0, TABLE_CENTER_Z)),
     )
 
 
@@ -237,9 +229,8 @@ class TableLegEventCfg(UR10eDeltoEventCfg):
         func=mdp.reset_joints_by_offset,
         mode="reset",
         params={
-            # Match Play2Perfect evaluation: the arm/hand always starts from
-            # the calibrated pre-grasp pose; robustness comes from object-pose
-            # variation rather than perturbing every robot joint independently.
+            # Keep the standard DexSuite approach pose deterministic; robustness
+            # comes from the airborne object's pose variation.
             "position_range": [0.0, 0.0],
             "velocity_range": [0.0, 0.0],
             "asset_cfg": SceneEntityCfg("robot"),
@@ -267,16 +258,20 @@ class TableLegEventCfg(UR10eDeltoEventCfg):
 
 
 @configclass
-class TableLegPoseCurriculumCfg:
-    """Training-only continuation from the centered grasp to full reset variation."""
+class TableLegCurriculumCfg(DexsuiteCurriculumCfg):
+    """DexSuite gravity ADR plus a smooth ramp to the full airborne reset distribution."""
+
+    # Point-cloud perception is intentionally absent from this state-only task.
+    object_obs_unoise_min_adr = None
+    object_obs_unoise_max_adr = None
 
     object_pose_range = CurrTerm(
         func=mdp.object_pose_reset_curriculum,
         params={
             "event_term_name": "reset_object",
             "full_pose_range": FULL_OBJECT_POSE_RANGE,
-            "warmup_steps": 320,
-            "ramp_steps": 5120,
+            "warmup_steps": 640,
+            "ramp_steps": 10240,
         },
     )
 
@@ -299,9 +294,6 @@ class TableLegGraspLiftEnvCfg(UR10eDeltoMixinCfg, dexsuite.DexsuiteLiftEnvCfg):
 
         self.scene.object = _leg_cfg()
         self.scene.table = _table_cfg()
-        joint_pos = dict(self.scene.robot.init_state.joint_pos)
-        joint_pos.update(PREGRASP_ARM_JOINT_POS)
-        self.scene.robot.init_state = self.scene.robot.init_state.replace(joint_pos=joint_pos)
         self.scene.robot.actuators["arm"] = self.scene.robot.actuators["arm"].replace(stiffness=1600.0, damping=80.0)
         self.scene.num_envs = 2048
         self.scene.env_spacing = 2.0
@@ -315,7 +307,6 @@ class TableLegGraspLiftEnvCfg(UR10eDeltoMixinCfg, dexsuite.DexsuiteLiftEnvCfg):
         # Disable generic object scaling/mass ADR: this task uses one exact measured asset.
         self.events.randomize_object_scale = None
         self.events.object_scale_mass = None
-        self.events.variable_gravity = None
         # Establish the nominal FurnitureBench policy at the deterministic center
         # of the calibrated dynamics ranges.  Keep reset-pose variation; a later
         # sim-to-real finetune can widen these ranges again.
@@ -338,6 +329,16 @@ class TableLegGraspLiftEnvCfg(UR10eDeltoMixinCfg, dexsuite.DexsuiteLiftEnvCfg):
             "x": [0.0, 0.0], "y": [0.0, 0.0], "z": [0.0, 0.0], "yaw": [0.0, 0.0]
         }
 
+        if task_curriculum is None:
+            # Evaluation/play always runs at full gravity. Training starts at zero
+            # and lets the inherited DexSuite gravity ADR promote it toward this value.
+            self.events.variable_gravity.params["gravity_distribution_params"] = (
+                (0.0, 0.0, -9.81),
+                (0.0, 0.0, -9.81),
+            )
+        else:
+            task_curriculum.adr.params.update({"pos_tol": 0.04, "rot_tol": None, "promotion_only": True})
+
         # Generic fingertip sensors target the old primitive root. Replace them with one
         # sensor per phalange: PhysX filtered-contact views require one source body per
         # sensor, and this also makes missing intermediate/distal collision reporting visible.
@@ -353,7 +354,7 @@ class TableLegGraspLiftEnvCfg(UR10eDeltoMixinCfg, dexsuite.DexsuiteLiftEnvCfg):
                 ),
             )
         self.scene.table_s = ContactSensorCfg(
-            prim_path="{ENV_REGEX_NS}/table/receptive",
+            prim_path="{ENV_REGEX_NS}/table",
             filter_prim_paths_expr=["{ENV_REGEX_NS}/Object/base_link"],
         )
 
@@ -367,7 +368,7 @@ class TableLegGraspLiftEnvCfg(UR10eDeltoMixinCfg, dexsuite.DexsuiteLiftEnvCfg):
 
         self.commands.object_pose.ranges.pos_x = (WORKSPACE_X, WORKSPACE_X)
         self.commands.object_pose.ranges.pos_y = (WORKSPACE_Y, WORKSPACE_Y)
-        self.commands.object_pose.ranges.pos_z = (0.15, 0.15)
+        self.commands.object_pose.ranges.pos_z = (0.50, 0.50)
         self.commands.object_pose.ranges.roll = (0.0, 0.0)
         self.commands.object_pose.ranges.pitch = (0.0, 0.0)
         self.commands.object_pose.ranges.yaw = (0.0, 0.0)
@@ -378,14 +379,14 @@ class TableLegGraspLiftEnvCfg(UR10eDeltoMixinCfg, dexsuite.DexsuiteLiftEnvCfg):
         }
         self.episode_length_s = 8.0
         self.viewer.eye = (1.35, -0.8, 0.75)
-        self.viewer.lookat = (WORKSPACE_X, WORKSPACE_Y, 0.12)
+        self.viewer.lookat = (WORKSPACE_X, WORKSPACE_Y, 0.36)
 
 
 @configclass
 class TableLegGraspLiftCurriculumEnvCfg(TableLegGraspLiftEnvCfg):
     """Training variant; evaluation always uses the full-range base environment."""
 
-    curriculum: TableLegPoseCurriculumCfg = TableLegPoseCurriculumCfg()
+    curriculum: TableLegCurriculumCfg = TableLegCurriculumCfg()
 
 
 @configclass
