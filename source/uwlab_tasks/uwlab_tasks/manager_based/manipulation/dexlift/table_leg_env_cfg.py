@@ -200,7 +200,7 @@ class TableLegRewardsCfg(dexsuite.RewardsCfg):
     )
     object_upward_motion = RewTerm(
         func=mdp.object_upward_velocity_bonus,
-        weight=30.0,
+        weight=150.0,
         params={
             "std": 0.15,
             "threshold": CONTACT_THRESHOLD,
@@ -210,7 +210,7 @@ class TableLegRewardsCfg(dexsuite.RewardsCfg):
     )
     lift_progress = RewTerm(
         func=mdp.ActualLiftProgress,
-        weight=100.0,
+        weight=300.0,
         params={
             "target_height": SUCCESS_HEIGHT,
             "threshold": CONTACT_THRESHOLD,
