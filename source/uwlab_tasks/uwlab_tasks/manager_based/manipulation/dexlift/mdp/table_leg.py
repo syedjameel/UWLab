@@ -485,6 +485,7 @@ class GraspPostureProgressReward(ManagerTermBase):
         posture_progress = (bounded_travel * moving).sum(dim=-1) / (
             self._travel_magnitude * moving
         ).sum(dim=-1).clamp(min=1.0e-6)
+        posture_score = 0.5 * (posture_progress + 1.0)
 
         palm_pos_w = robot.data.body_pos_w[:, self._palm_body_id]
         palm_quat_w = robot.data.body_quat_w[:, self._palm_body_id]
@@ -496,7 +497,7 @@ class GraspPostureProgressReward(ManagerTermBase):
         object_quat_p = quat_mul(quat_conjugate(palm_quat_w), object_asset.data.root_quat_w)
         orientation_error = quat_error_magnitude(object_quat_p, self._desired_object_quat_p)
         orientation_score = 1.0 - torch.tanh(orientation_error / orientation_std)
-        score = posture_progress * position_score * orientation_score
+        score = posture_score * position_score * orientation_score
         if unwanted_contact_names:
             valid_contact = max_finger_contact_force(env, unwanted_contact_names) <= max_unwanted_contact_force
             score = score * valid_contact.float()
