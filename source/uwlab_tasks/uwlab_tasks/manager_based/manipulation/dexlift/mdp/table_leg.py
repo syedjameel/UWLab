@@ -186,6 +186,29 @@ def object_pose_reset_curriculum(
     return progress
 
 
+def gravity_reset_curriculum(
+    env: ManagerBasedRLEnv,
+    env_ids: Sequence[int] | torch.Tensor,
+    event_term_name: str,
+    warmup_steps: int,
+    ramp_steps: int,
+    final_gravity: float = -9.81,
+) -> float:
+    """Ramp reset gravity from zero to Earth gravity on a fixed training schedule."""
+    del env_ids
+    if ramp_steps <= 0:
+        raise ValueError("ramp_steps must be positive")
+    progress = min(max((int(env.common_step_counter) - warmup_steps) / ramp_steps, 0.0), 1.0)
+    gravity = float(final_gravity) * progress
+    term_cfg = env.event_manager.get_term_cfg(event_term_name)
+    term_cfg.params["gravity_distribution_params"] = (
+        (0.0, 0.0, gravity),
+        (0.0, 0.0, gravity),
+    )
+    env.event_manager.set_term_cfg(event_term_name, term_cfg)
+    return progress
+
+
 class SustainedLiftSuccess(ManagerTermBase):
     """True only after a multi-finger, contact-held lift persists for a fixed window."""
 

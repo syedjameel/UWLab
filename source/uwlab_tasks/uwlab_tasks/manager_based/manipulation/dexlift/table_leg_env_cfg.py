@@ -269,6 +269,16 @@ class TableLegCurriculumCfg(DexsuiteCurriculumCfg):
     object_obs_unoise_min_adr = None
     object_obs_unoise_max_adr = None
 
+    gravity_adr = CurrTerm(
+        func=mdp.gravity_reset_curriculum,
+        params={
+            "event_term_name": "variable_gravity",
+            "warmup_steps": 1600,
+            "ramp_steps": 6400,
+            "final_gravity": -9.81,
+        },
+    )
+
     object_pose_range = CurrTerm(
         func=mdp.object_pose_reset_curriculum,
         params={
