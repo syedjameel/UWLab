@@ -145,7 +145,7 @@ class TableLegRewardsCfg(dexsuite.RewardsCfg):
     grasp_frame_alignment = RewTerm(
         func=mdp.GraspFrameAlignment,
         weight=5.0,
-        params={"std": 0.5, "palm_body": PALM_BODY},
+        params={"std": 1.5, "palm_body": PALM_BODY},
     )
     opposition_contact = RewTerm(
         func=mdp.contacts,
@@ -227,6 +227,11 @@ class TableLegTerminationsCfg(dexsuite.TerminationsCfg):
             "minimum_contact_groups": 2,
             "contact_threshold": CONTACT_THRESHOLD,
             "max_object_speed": 0.5,
+            "minimum_lift": 0.08,
+            "max_palm_distance": 0.30,
+            "max_relative_speed": 0.20,
+            "minimum_episode_steps": 60,
+            "palm_body": PALM_BODY,
         },
     )
     dropped = DoneTerm(func=mdp.object_dropped, params={"minimum_height": -0.04})

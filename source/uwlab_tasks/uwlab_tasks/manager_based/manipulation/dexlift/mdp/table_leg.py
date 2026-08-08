@@ -303,17 +303,26 @@ def adaptive_object_pose_curriculum(
 
 
 class SustainedLiftSuccess(ManagerTermBase):
-    """True only after a multi-finger, contact-held lift persists for a fixed window."""
+    """True only after the hand carries a multi-finger grasp through a real lift."""
 
     def __init__(self, cfg, env: ManagerBasedRLEnv):
         super().__init__(cfg, env)
         self._counter = torch.zeros(env.num_envs, device=env.device, dtype=torch.long)
+        self._lowest_height = torch.full((env.num_envs,), torch.inf, device=env.device)
+        robot = env.scene[self.cfg.params.get("robot_name", "robot")]
+        palm_body = self.cfg.params.get("palm_body", "rl_dg_mount")
+        palm_ids, _ = robot.find_bodies(palm_body)
+        if len(palm_ids) != 1:
+            raise ValueError(f"Expected one palm body matching {palm_body!r}, found {palm_ids}")
+        self._palm_body_id = palm_ids[0]
 
     def reset(self, env_ids: Sequence[int] | torch.Tensor | None = None) -> None:
         if env_ids is None:
             self._counter.zero_()
+            self._lowest_height.fill_(torch.inf)
         else:
             self._counter[env_ids] = 0
+            self._lowest_height[env_ids] = torch.inf
 
     def __call__(
         self,
@@ -324,15 +333,33 @@ class SustainedLiftSuccess(ManagerTermBase):
         minimum_contact_groups: int,
         contact_threshold: float,
         max_object_speed: float,
+        minimum_lift: float,
+        max_palm_distance: float,
+        max_relative_speed: float,
+        minimum_episode_steps: int,
+        palm_body: str = "rl_dg_mount",
+        robot_name: str = "robot",
         object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
     ) -> torch.Tensor:
+        del palm_body
         obj: RigidObject = env.scene[object_cfg.name]
+        robot = env.scene[robot_name]
+        height = root_height_above_table(env)
+        self._lowest_height = torch.minimum(self._lowest_height, height)
         speed = torch.linalg.vector_norm(obj.data.root_lin_vel_w, dim=-1)
+        palm_pos = robot.data.body_pos_w[:, self._palm_body_id]
+        palm_velocity = robot.data.body_lin_vel_w[:, self._palm_body_id]
+        palm_distance = torch.linalg.vector_norm(obj.data.root_pos_w - palm_pos, dim=-1)
+        relative_speed = torch.linalg.vector_norm(obj.data.root_lin_vel_w - palm_velocity, dim=-1)
         contact_count = logical_finger_contacts(env, contact_groups, contact_threshold).sum(dim=-1)
         valid = (
-            (root_height_above_table(env) >= minimum_height)
+            (height >= minimum_height)
+            & ((height - self._lowest_height) >= minimum_lift)
             & (speed <= max_object_speed)
+            & (palm_distance <= max_palm_distance)
+            & (relative_speed <= max_relative_speed)
             & (contact_count >= minimum_contact_groups)
+            & (env.episode_length_buf >= minimum_episode_steps)
         )
         self._counter = torch.where(valid, self._counter + 1, torch.zeros_like(self._counter))
         return self._counter >= hold_steps
