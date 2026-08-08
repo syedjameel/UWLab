@@ -243,6 +243,8 @@ class GraspPoseReward(ManagerTermBase):
         desired_object_quat_p: tuple[float, float, float, float] | None = None,
         position_only: bool = False,
         close_only: bool = False,
+        unwanted_contact_names: tuple[str, ...] | None = None,
+        max_unwanted_contact_force: float = 0.05,
         robot_name: str = "robot",
         object_name: str = "object",
         palm_body: str = "rl_dg_mount",
@@ -264,6 +266,9 @@ class GraspPoseReward(ManagerTermBase):
         score = position_score if position_only else position_score * orientation_score
         if close_only:
             score = score * (env.action_manager.action[:, -1] < 0.0).float()
+        if unwanted_contact_names:
+            valid_contact = max_finger_contact_force(env, unwanted_contact_names) <= max_unwanted_contact_force
+            score = score * valid_contact.float()
         return score
 
 

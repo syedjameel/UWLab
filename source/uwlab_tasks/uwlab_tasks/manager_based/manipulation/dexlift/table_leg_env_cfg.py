@@ -145,6 +145,7 @@ class TableLegRewardsCfg(dexsuite.RewardsCfg):
             "position_std": 0.15,
             "orientation_std": 1.5,
             "position_only": True,
+            "unwanted_contact_names": NON_FINGER_HAND_CONTACT_NAMES,
             "palm_body": PALM_BODY,
         },
     )
@@ -156,6 +157,7 @@ class TableLegRewardsCfg(dexsuite.RewardsCfg):
             "desired_object_quat_p": DESIRED_OBJECT_QUAT_P,
             "position_std": 0.20,
             "orientation_std": 1.0,
+            "unwanted_contact_names": NON_FINGER_HAND_CONTACT_NAMES,
             "palm_body": PALM_BODY,
         },
     )
@@ -167,6 +169,7 @@ class TableLegRewardsCfg(dexsuite.RewardsCfg):
             "desired_object_quat_p": DESIRED_OBJECT_QUAT_P,
             "position_std": 0.05,
             "orientation_std": 0.5,
+            "unwanted_contact_names": NON_FINGER_HAND_CONTACT_NAMES,
             "palm_body": PALM_BODY,
         },
     )
@@ -180,6 +183,7 @@ class TableLegRewardsCfg(dexsuite.RewardsCfg):
             "orientation_std": 1.0,
             "position_only": True,
             "close_only": True,
+            "unwanted_contact_names": NON_FINGER_HAND_CONTACT_NAMES,
             "palm_body": PALM_BODY,
         },
     )
@@ -192,12 +196,13 @@ class TableLegRewardsCfg(dexsuite.RewardsCfg):
             "position_std": 0.05,
             "orientation_std": 0.5,
             "close_only": True,
+            "unwanted_contact_names": NON_FINGER_HAND_CONTACT_NAMES,
             "palm_body": PALM_BODY,
         },
     )
     arm_motion_while_closing = RewTerm(
         func=mdp.arm_motion_near_grasp_position,
-        weight=-200.0,
+        weight=-20.0,
         params={
             "desired_object_pos_p": DESIRED_OBJECT_POS_P,
             "std": 0.05,
