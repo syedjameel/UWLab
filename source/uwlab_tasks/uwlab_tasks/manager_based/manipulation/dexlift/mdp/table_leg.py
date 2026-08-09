@@ -47,6 +47,47 @@ def logical_finger_contacts(
     )
 
 
+def geometric_opposed_contacts(
+    env: ManagerBasedRLEnv,
+    threshold: float,
+    thumb_contact_names: tuple[str, ...],
+    tip_contact_names: tuple[str, ...],
+    max_pair_cosine: float = -0.1,
+    unwanted_contact_names: tuple[str, ...] | None = None,
+    max_unwanted_contact_force: float = 0.05,
+    robot_name: str = "robot",
+    object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+) -> torch.Tensor:
+    """Require contacted thumb/tip phalanges to lie on opposite object sides.
+
+    A pair of non-zero contact sensors alone is not opposition: two fingers can
+    press the top of a table-supported part and satisfy that boolean while being
+    unable to lift it.  Phalange centers are a stable proxy for contact points;
+    their object-centered directions must form an obtuse angle here.
+    """
+    robot = env.scene[robot_name]
+    obj: RigidObject = env.scene[object_cfg.name]
+    thumb_ids, _ = robot.find_bodies(list(thumb_contact_names), preserve_order=True)
+    tip_ids, _ = robot.find_bodies(list(tip_contact_names), preserve_order=True)
+    thumb_active = _sensor_force_magnitudes(env, thumb_contact_names) > threshold
+    tip_active = _sensor_force_magnitudes(env, tip_contact_names) > threshold
+    thumb_direction = torch.nn.functional.normalize(
+        robot.data.body_pos_w[:, thumb_ids] - obj.data.root_pos_w.unsqueeze(1), dim=-1
+    )
+    tip_direction = torch.nn.functional.normalize(
+        robot.data.body_pos_w[:, tip_ids] - obj.data.root_pos_w.unsqueeze(1), dim=-1
+    )
+    pair_cosine = torch.einsum("eti,esi->ets", thumb_direction, tip_direction)
+    opposed = (
+        thumb_active.unsqueeze(-1)
+        & tip_active.unsqueeze(-2)
+        & (pair_cosine <= max_pair_cosine)
+    ).any(dim=(-2, -1))
+    if unwanted_contact_names:
+        opposed &= max_finger_contact_force(env, unwanted_contact_names) <= max_unwanted_contact_force
+    return opposed
+
+
 def finger_contact_count(
     env: ManagerBasedRLEnv,
     contact_groups: tuple[tuple[str, ...], ...],
@@ -144,6 +185,7 @@ class PostgraspArmActionReward(ManagerTermBase):
         threshold: float,
         unwanted_contact_names: tuple[str, ...] | None = None,
         max_unwanted_contact_force: float = 0.05,
+        max_pair_cosine: float = -0.1,
         robot_name: str = "robot",
     ) -> torch.Tensor:
         del target_joint_pos, action_term_name, robot_name
@@ -152,11 +194,12 @@ class PostgraspArmActionReward(ManagerTermBase):
         # controlled arm changes while retaining a smooth gradient at zero.
         rms_error = torch.sqrt((action - self._target_action).square().mean(dim=-1))
         score = 1.0 - torch.tanh(rms_error / max(std, 1.0e-6))
-        opposed = contacts(
+        opposed = geometric_opposed_contacts(
             env,
             threshold,
             thumb_contact_name,
             tip_contact_names,
+            max_pair_cosine,
             unwanted_contact_names,
             max_unwanted_contact_force,
         )
@@ -251,17 +294,22 @@ def target_position_tracking(
     env: ManagerBasedRLEnv,
     command_name: str,
     std: float,
-    contact_groups: tuple[tuple[str, ...], ...],
-    minimum_contact_groups: int,
+    thumb_contact_names: tuple[str, ...],
+    tip_contact_names: tuple[str, ...],
     contact_threshold: float,
     unwanted_contact_names: tuple[str, ...],
     max_unwanted_contact_force: float = 0.05,
+    max_pair_cosine: float = -0.1,
 ) -> torch.Tensor:
-    """Reward commanded-position tracking only for a finger-supported object."""
-    contact_count = logical_finger_contacts(env, contact_groups, contact_threshold).sum(dim=-1)
-    unwanted_force = max_finger_contact_force(env, unwanted_contact_names)
-    valid_grasp = (contact_count >= minimum_contact_groups) & (
-        unwanted_force <= max_unwanted_contact_force
+    """Reward target tracking only while opposing phalanges support the object."""
+    valid_grasp = geometric_opposed_contacts(
+        env,
+        contact_threshold,
+        thumb_contact_names,
+        tip_contact_names,
+        max_pair_cosine,
+        unwanted_contact_names,
+        max_unwanted_contact_force,
     )
     error = target_position_error(env, command_name)
     return (1.0 - torch.tanh(error / std)) * valid_grasp.float()
@@ -289,16 +337,18 @@ class ActualLiftProgress(ManagerTermBase):
         threshold: float,
         unwanted_contact_names: tuple[str, ...] | None = None,
         max_unwanted_contact_force: float = 0.05,
+        max_pair_cosine: float = -0.1,
     ) -> torch.Tensor:
         height = root_height_above_table(env)
         self._lowest_height = torch.minimum(self._lowest_height, height)
         distance_to_target = (target_height - self._lowest_height).clamp(min=1.0e-6)
         progress = ((height - self._lowest_height) / distance_to_target).clamp(0.0, 1.0)
-        return progress * contacts(
+        return progress * geometric_opposed_contacts(
             env,
             threshold,
             thumb_contact_name,
             tip_contact_names,
+            max_pair_cosine,
             unwanted_contact_names,
             max_unwanted_contact_force,
         ).float()
@@ -313,16 +363,18 @@ def stable_grasp(
     object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
     unwanted_contact_names: tuple[str, ...] | None = None,
     max_unwanted_contact_force: float = 0.05,
+    max_pair_cosine: float = -0.1,
 ) -> torch.Tensor:
     """Opposition contact discounted when the leg is moving violently."""
     obj: RigidObject = env.scene[object_cfg.name]
     speed = torch.linalg.vector_norm(obj.data.root_lin_vel_w, dim=-1)
     calm = (1.0 - (speed / max_object_speed).clamp(0.0, 1.0))
-    return calm * contacts(
+    return calm * geometric_opposed_contacts(
         env,
         threshold,
         thumb_contact_name,
         tip_contact_names,
+        max_pair_cosine,
         unwanted_contact_names,
         max_unwanted_contact_force,
     ).float()
@@ -338,16 +390,18 @@ def upward_velocity_until_height(
     object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
     unwanted_contact_names: tuple[str, ...] | None = None,
     max_unwanted_contact_force: float = 0.05,
+    max_pair_cosine: float = -0.1,
 ) -> torch.Tensor:
     """Reward upward motion only until the held leg reaches the lift target."""
     obj: RigidObject = env.scene[object_cfg.name]
     below_target = root_height_above_table(env, object_cfg=object_cfg) < target_height
     reward = torch.tanh(obj.data.root_lin_vel_w[:, 2] / max(std, 1.0e-6))
-    return reward * below_target.float() * contacts(
+    return reward * below_target.float() * geometric_opposed_contacts(
         env,
         threshold,
         thumb_contact_name,
         tip_contact_names,
+        max_pair_cosine,
         unwanted_contact_names,
         max_unwanted_contact_force,
     ).float()
@@ -365,6 +419,7 @@ def held_lift_stability(
     object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
     unwanted_contact_names: tuple[str, ...] | None = None,
     max_unwanted_contact_force: float = 0.05,
+    max_pair_cosine: float = -0.1,
 ) -> torch.Tensor:
     """Reward a calm finger-only hold after reaching the lift target."""
     obj: RigidObject = env.scene[object_cfg.name]
@@ -378,11 +433,12 @@ def held_lift_stability(
         1.0 - torch.tanh(relative_speed / max(relative_speed_std, 1.0e-6))
     )
     above_target = root_height_above_table(env, object_cfg=object_cfg) >= minimum_height
-    return calm * above_target.float() * contacts(
+    return calm * above_target.float() * geometric_opposed_contacts(
         env,
         threshold,
         thumb_contact_name,
         tip_contact_names,
+        max_pair_cosine,
         unwanted_contact_names,
         max_unwanted_contact_force,
     ).float()
@@ -719,6 +775,9 @@ class SustainedLiftSuccess(ManagerTermBase):
         super().__init__(cfg, env)
         self._counter = torch.zeros(env.num_envs, device=env.device, dtype=torch.long)
         self._lowest_height = torch.full((env.num_envs,), torch.inf, device=env.device)
+        self._first_contact_step = torch.full(
+            (env.num_envs,), -1, device=env.device, dtype=torch.long
+        )
         robot = env.scene[self.cfg.params.get("robot_name", "robot")]
         palm_body = self.cfg.params.get("palm_body", "rl_dg_mount")
         palm_ids, _ = robot.find_bodies(palm_body)
@@ -734,9 +793,11 @@ class SustainedLiftSuccess(ManagerTermBase):
         if env_ids is None:
             self._counter.zero_()
             self._lowest_height.fill_(torch.inf)
+            self._first_contact_step.fill_(-1)
         else:
             self._counter[env_ids] = 0
             self._lowest_height[env_ids] = torch.inf
+            self._first_contact_step[env_ids] = -1
 
     def __call__(
         self,
@@ -760,6 +821,8 @@ class SustainedLiftSuccess(ManagerTermBase):
         max_palm_distance: float,
         max_relative_speed: float,
         minimum_episode_steps: int,
+        minimum_first_contact_step: int,
+        max_opposition_pair_cosine: float,
         palm_body: str = "rl_dg_mount",
         robot_name: str = "robot",
         object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
@@ -776,13 +839,21 @@ class SustainedLiftSuccess(ManagerTermBase):
         relative_speed = torch.linalg.vector_norm(obj.data.root_lin_vel_w - palm_velocity, dim=-1)
         position_error = target_position_error(env, command_name, robot_name, object_cfg)
         contact_count = logical_finger_contacts(env, contact_groups, contact_threshold).sum(dim=-1)
-        opposed_contact = contacts(
+        opposed_contact = geometric_opposed_contacts(
             env,
             contact_threshold,
             thumb_contact_names,
             tip_contact_names,
+            max_opposition_pair_cosine,
             unwanted_contact_names,
             max_unwanted_contact_force,
+        )
+        any_hand_contact = (contact_count > 0) | (
+            max_finger_contact_force(env, unwanted_contact_names) > contact_threshold
+        )
+        first_contact = any_hand_contact & (self._first_contact_step < 0)
+        self._first_contact_step = torch.where(
+            first_contact, env.episode_length_buf, self._first_contact_step
         )
         del finger_joint_groups
         articulated_count = torch.stack(
@@ -811,6 +882,7 @@ class SustainedLiftSuccess(ManagerTermBase):
             & (articulated_count >= minimum_articulated_fingers)
             & (unwanted_force <= max_unwanted_contact_force)
             & (env.episode_length_buf >= minimum_episode_steps)
+            & (self._first_contact_step >= minimum_first_contact_step)
         )
         self._counter = torch.where(valid, self._counter + 1, torch.zeros_like(self._counter))
         return self._counter >= hold_steps

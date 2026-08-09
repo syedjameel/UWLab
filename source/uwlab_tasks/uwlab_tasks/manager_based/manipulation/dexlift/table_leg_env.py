@@ -39,14 +39,26 @@ class TableLegGraspLiftEnv(ManagerBasedRLEnv):
         speed = torch.linalg.vector_norm(self.scene["object"].data.root_lin_vel_w, dim=-1)
         max_force = mdp.max_finger_contact_force(self, FINGER_CONTACT_NAMES)
         unwanted_force = mdp.max_finger_contact_force(self, NON_FINGER_HAND_CONTACT_NAMES)
-        opposed_contact = mdp.contacts(
+        opposed_contact = mdp.geometric_opposed_contacts(
             self,
             CONTACT_THRESHOLD,
             THUMB_CONTACT_NAMES,
             TIP_CONTACT_NAMES,
+            -0.1,
             NON_FINGER_HAND_CONTACT_NAMES,
             CONTACT_THRESHOLD,
         )
+        if not hasattr(self, "_table_leg_first_contact_step"):
+            self._table_leg_first_contact_step = torch.full(
+                (self.num_envs,), -1, dtype=torch.long, device=self.device
+            )
+        reset = self.episode_length_buf == 0
+        self._table_leg_first_contact_step[reset] = -1
+        any_hand_contact = (contacts > 0) | (unwanted_force > CONTACT_THRESHOLD)
+        new_contact = any_hand_contact & (self._table_leg_first_contact_step < 0)
+        self._table_leg_first_contact_step[new_contact] = self.episode_length_buf[new_contact]
+        observed_contact = self._table_leg_first_contact_step >= 0
+        ordered_contact = self._table_leg_first_contact_step >= 30
         valid = (
             (target_error <= TARGET_POSITION_TOLERANCE)
             & (contacts >= 2)
@@ -71,6 +83,12 @@ class TableLegGraspLiftEnv(ManagerBasedRLEnv):
                 "Metrics/table_leg/mean_object_speed_mps": speed.mean(),
                 "Metrics/table_leg/mean_max_contact_force_n": max_force.clamp(max=100.0).mean(),
                 "Metrics/table_leg/mean_nonfinger_force_n": unwanted_force.clamp(max=100.0).mean(),
+                "Metrics/table_leg/reset_overlap_fraction": (
+                    any_hand_contact & (self.episode_length_buf <= 1)
+                ).float().mean(),
+                "Metrics/table_leg/ordered_first_contact_fraction": (
+                    ordered_contact & observed_contact
+                ).float().sum() / observed_contact.float().sum().clamp(min=1.0),
             }
         )
         return result

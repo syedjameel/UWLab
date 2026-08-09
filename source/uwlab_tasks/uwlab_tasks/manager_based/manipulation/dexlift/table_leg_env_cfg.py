@@ -18,7 +18,6 @@ from isaaclab.utils import configclass
 from isaaclab_tasks.manager_based.manipulation.dexsuite.adr_curriculum import CurriculumCfg as DexsuiteCurriculumCfg
 
 from uwlab_assets import UWLAB_LOCAL_ASSETS_DIR
-from uwlab_assets.robots.ur10e_delto.actions import DELTO_HAND_CLOSED_JOINT_POS
 from . import mdp
 from .dexlift_ur10e_delto_env_cfg import (
     ALL_TIP_NAMES,
@@ -39,8 +38,7 @@ WORKSPACE_Y = 0.10
 TABLE_CENTER_Z = 0.235
 TABLE_THICKNESS = 0.04
 TABLE_TOP_Z = TABLE_CENTER_Z + 0.5 * TABLE_THICKNESS
-# The palm resets above this airborne leg pose.  Its exact position places the
-# free body in the dynamically validated open-hand grasp frame below.
+# The leg starts airborne and falls freely onto the table before acquisition.
 LEG_SPAWN_POS = (0.75855923, 0.07825003, 0.40887862)
 # The horizontal 30 mm leg rests with its root 15 mm above the tabletop. Success
 # is an 80 mm physical lift from that support pose; the termination independently
@@ -54,40 +52,31 @@ MINIMUM_ARTICULATED_FINGERS = 2
 MINIMUM_JOINT_DISPLACEMENT = 0.10
 MAX_SUCCESS_OBJECT_SPEED = 0.15
 MAX_SUCCESS_RELATIVE_SPEED = 0.15
-# A dynamic free-body search found that fingers 1 and 2 close into opposed
-# contact in 99.4% of environments with 6 mm object drift and no unwanted
-# mount/base/palm contact.
-DESIRED_OBJECT_POS_P = (0.0425, 0.0450, 0.1600)
+# Palm-relative approach pose above the table-supported leg.  This is 40 mm
+# outside the legacy in-hand pose, so closing cannot be rewarded at reset.
+DESIRED_OBJECT_POS_P = (0.05240934, 0.05549224, 0.19730574)
 # Post-reset object orientation in the nominal palm frame (w, x, y, z).
 DESIRED_OBJECT_QUAT_P = (-0.06698579, -0.93301314, -0.24999975, 0.25000033)
-# Collision-free open-hand pose found by batched IK.  The airborne leg is not
-# touching or supported by the hand at reset; putting it directly in the
-# validated grasp frame lets the zero-gravity stage teach closure first.  The
-# later object-pose curriculum then adds translation and rotation robustness.
-PREGRASP_ARM_JOINT_POS = {
-    "shoulder_pan_joint": -0.02977037,
-    "shoulder_lift_joint": -1.47081721,
-    "elbow_joint": 1.66042864,
-    "wrist_1_joint": -1.75756347,
-    "wrist_2_joint": -2.04733872,
-    "wrist_3_joint": 2.56176877,
+# Collision-checked reset pose.  The open palm is 275 mm from the airborne leg
+# root and remains clear while the leg falls; the policy must move the arm about
+# 200 mm along the approach path before first finger contact is possible.
+RESET_ARM_JOINT_POS = {
+    "shoulder_pan_joint": 0.00853227,
+    "shoulder_lift_joint": -1.50744617,
+    "elbow_joint": 1.52167749,
+    "wrist_1_joint": -1.56242502,
+    "wrist_2_joint": -2.04685116,
+    "wrist_3_joint": 2.60486460,
 }
 # Damped-least-squares IK solution that preserves the validated grasp
 # orientation while carrying the nominal leg root to TARGET_OBJECT_POS_B.
 LIFT_ARM_JOINT_POS = {
-    "shoulder_pan_joint": -0.00057236,
-    "shoulder_lift_joint": -1.46712756,
-    "elbow_joint": 1.22789574,
-    "wrist_1_joint": -1.31365275,
-    "wrist_2_joint": -2.04703569,
-    "wrist_3_joint": 2.59462404,
-}
-# Only this opposed pair contacts at the validated pose.  Shaping all five
-# fingers lets PPO collect posture progress on irrelevant, non-contact digits.
-OPPOSED_GRASP_JOINT_POS = {
-    name: value
-    for name, value in DELTO_HAND_CLOSED_JOINT_POS.items()
-    if name.startswith(("rj_dg_1_", "rj_dg_2_"))
+    "shoulder_pan_joint": 0.00585685,
+    "shoulder_lift_joint": -1.45117021,
+    "elbow_joint": 1.13719332,
+    "wrist_1_joint": -1.23557413,
+    "wrist_2_joint": -2.04691458,
+    "wrist_3_joint": 2.60182071,
 }
 FULL_OBJECT_POSE_RANGE = {
     # Local robustness around the collision-validated airborne acquisition.
@@ -192,18 +181,10 @@ def _table_cfg() -> RigidObjectCfg:
 class TableLegRewardsCfg(dexsuite.RewardsCfg):
     action_l2 = RewTerm(func=mdp.action_l2_clamped, weight=-0.001)
     action_rate_l2 = RewTerm(func=mdp.action_rate_l2_clamped, weight=-0.003)
-    pregrasp_arm_motion = RewTerm(
-        func=mdp.PregraspArmActionPenalty,
-        weight=-5000.0,
-        params={
-            "arm_action_dim": len(ARM_JOINT_NAMES),
-            "memory_steps": 20,
-            "threshold": CONTACT_THRESHOLD,
-            "thumb_contact_name": THUMB_CONTACT_NAMES,
-            "tip_contact_names": TIP_CONTACT_NAMES,
-            "unwanted_contact_names": NON_FINGER_HAND_CONTACT_NAMES,
-        },
-    )
+    # The former term penalized every arm action before contact and therefore
+    # explicitly trained the invalid reset-in-hand closure.  The pose terms
+    # below now supply the approach gradient.
+    pregrasp_arm_motion = None
     fingers_to_object = RewTerm(
         func=mdp.object_ee_distance,
         weight=8.0,
@@ -247,31 +228,18 @@ class TableLegRewardsCfg(dexsuite.RewardsCfg):
             "palm_body": PALM_BODY,
         },
     )
-    grasp_posture_progress = RewTerm(
-        func=mdp.GraspPostureProgressReward,
-        weight=20000.0,
-        params={
-            "desired_object_pos_p": DESIRED_OBJECT_POS_P,
-            "desired_object_quat_p": DESIRED_OBJECT_QUAT_P,
-            "target_joint_pos": OPPOSED_GRASP_JOINT_POS,
-            "action_term_name": "hand_action",
-            "action_prior_weight": 0.75,
-            # Do not teach closure while the palm is still in its approach
-            # phase.  At the reset distance this score is effectively zero.
-            "position_std": 0.04,
-            "orientation_std": 0.75,
-            "unwanted_contact_names": NON_FINGER_HAND_CONTACT_NAMES,
-            "palm_body": PALM_BODY,
-        },
-    )
+    # The legacy posture prior came from the invalid reset-in-hand experiment.
+    # It dominated the objective even when the selected fingers pressed the
+    # same side of the leg, so it is not a valid grasp demonstration.
+    grasp_posture_progress = None
     position_tracking = RewTerm(
         func=mdp.target_position_tracking,
         weight=1000.0,
         params={
             "command_name": "object_pose",
             "std": 0.10,
-            "contact_groups": FINGER_CONTACT_GROUPS,
-            "minimum_contact_groups": 2,
+            "thumb_contact_names": THUMB_CONTACT_NAMES,
+            "tip_contact_names": TIP_CONTACT_NAMES,
             "contact_threshold": CONTACT_THRESHOLD,
             "unwanted_contact_names": NON_FINGER_HAND_CONTACT_NAMES,
         },
@@ -287,6 +255,7 @@ class TableLegRewardsCfg(dexsuite.RewardsCfg):
             "threshold": CONTACT_THRESHOLD,
             "thumb_contact_name": THUMB_CONTACT_NAMES,
             "tip_contact_names": TIP_CONTACT_NAMES,
+            "max_pair_cosine": -0.1,
             "unwanted_contact_names": NON_FINGER_HAND_CONTACT_NAMES,
         },
     )
@@ -312,12 +281,13 @@ class TableLegRewardsCfg(dexsuite.RewardsCfg):
         },
     )
     opposition_contact = RewTerm(
-        func=mdp.contacts,
+        func=mdp.geometric_opposed_contacts,
         weight=150.0,
         params={
             "threshold": CONTACT_THRESHOLD,
-            "thumb_contact_name": THUMB_CONTACT_NAMES,
+            "thumb_contact_names": THUMB_CONTACT_NAMES,
             "tip_contact_names": TIP_CONTACT_NAMES,
+            "max_pair_cosine": -0.1,
             "unwanted_contact_names": NON_FINGER_HAND_CONTACT_NAMES,
         },
     )
@@ -328,6 +298,7 @@ class TableLegRewardsCfg(dexsuite.RewardsCfg):
             "threshold": CONTACT_THRESHOLD,
             "thumb_contact_name": THUMB_CONTACT_NAMES,
             "tip_contact_names": TIP_CONTACT_NAMES,
+            "max_pair_cosine": -0.1,
             "max_object_speed": 0.5,
             "unwanted_contact_names": NON_FINGER_HAND_CONTACT_NAMES,
         },
@@ -341,6 +312,7 @@ class TableLegRewardsCfg(dexsuite.RewardsCfg):
             "threshold": CONTACT_THRESHOLD,
             "thumb_contact_name": THUMB_CONTACT_NAMES,
             "tip_contact_names": TIP_CONTACT_NAMES,
+            "max_pair_cosine": -0.1,
             "unwanted_contact_names": NON_FINGER_HAND_CONTACT_NAMES,
         },
     )
@@ -354,6 +326,7 @@ class TableLegRewardsCfg(dexsuite.RewardsCfg):
             "threshold": CONTACT_THRESHOLD,
             "thumb_contact_name": THUMB_CONTACT_NAMES,
             "tip_contact_names": TIP_CONTACT_NAMES,
+            "max_pair_cosine": -0.1,
             "robot_cfg": SceneEntityCfg("robot", body_names=[PALM_BODY]),
             "unwanted_contact_names": NON_FINGER_HAND_CONTACT_NAMES,
         },
@@ -366,6 +339,7 @@ class TableLegRewardsCfg(dexsuite.RewardsCfg):
             "threshold": CONTACT_THRESHOLD,
             "thumb_contact_name": THUMB_CONTACT_NAMES,
             "tip_contact_names": TIP_CONTACT_NAMES,
+            "max_pair_cosine": -0.1,
             "unwanted_contact_names": NON_FINGER_HAND_CONTACT_NAMES,
         },
     )
@@ -421,7 +395,9 @@ class TableLegTerminationsCfg(dexsuite.TerminationsCfg):
             "minimum_lift": MINIMUM_LIFT,
             "max_palm_distance": 0.30,
             "max_relative_speed": MAX_SUCCESS_RELATIVE_SPEED,
-            "minimum_episode_steps": 60,
+            "minimum_episode_steps": 180,
+            "minimum_first_contact_step": 30,
+            "max_opposition_pair_cosine": -0.1,
             "palm_body": PALM_BODY,
         },
     )
@@ -465,7 +441,7 @@ class TableLegEventCfg(UR10eDeltoEventCfg):
 
 @configclass
 class TableLegCurriculumCfg(DexsuiteCurriculumCfg):
-    """Success-adaptive gravity followed by airborne pose randomization."""
+    """Success-adaptive airborne pose randomization at full gravity."""
 
     adr = CurrTerm(
         func=mdp.SuccessDifficultyScheduler,
@@ -485,16 +461,9 @@ class TableLegCurriculumCfg(DexsuiteCurriculumCfg):
     object_obs_unoise_min_adr = None
     object_obs_unoise_max_adr = None
 
-    gravity_adr = CurrTerm(
-        func=mdp.adaptive_gravity_curriculum,
-        params={
-            "event_term_name": "variable_gravity",
-            "difficulty_term": "adr",
-            "stage_start": 0.0,
-            "stage_end": 10.0,
-            "final_gravity": -9.81,
-        },
-    )
+    # Zero-gravity resets leave the leg hovering in the closing envelope and
+    # recreate the invalid spawn-in-hand behavior.  Keep physical gravity fixed.
+    gravity_adr = None
 
     object_pose_range = CurrTerm(
         func=mdp.adaptive_object_pose_curriculum,
@@ -527,20 +496,19 @@ class TableLegGraspLiftEnvCfg(UR10eDeltoMixinCfg, dexsuite.DexsuiteLiftEnvCfg):
 
         self.scene.object = _leg_cfg()
         self.scene.table = _table_cfg()
-        self.scene.robot.init_state.joint_pos.update(PREGRASP_ARM_JOINT_POS)
+        self.scene.robot.init_state.joint_pos.update(RESET_ARM_JOINT_POS)
         self.scene.robot.actuators["arm"] = self.scene.robot.actuators["arm"].replace(stiffness=1600.0, damping=80.0)
         hand_actuator = self.scene.robot.actuators["hand"]
         # Preserve the identified per-joint gain and effort-limit shapes, but add
         # enough conservative servo authority to hold posture through arm motion.
         # Critical damping scales with sqrt(stiffness), hence 4x Kp and 2x Kd.
-        # Cap closure near hardware speed so first contact does not eject the
-        # zero-gravity leg before the opposing finger can arrive.
+        # Keep every phalanx responsive enough for articulated acquisition.
         self.scene.robot.actuators["hand"] = hand_actuator.replace(
             stiffness={name: 4.0 * value for name, value in hand_actuator.stiffness.items()},
             damping={name: 2.0 * value for name, value in hand_actuator.damping.items()},
             effort_limit_sim={name: 3.0 * value for name, value in hand_actuator.effort_limit_sim.items()},
             velocity_limit_sim={
-                name: min(value, 1.0) for name, value in hand_actuator.velocity_limit_sim.items()
+                name: min(value, 3.0) for name, value in hand_actuator.velocity_limit_sim.items()
             },
         )
         self.scene.robot.spawn.articulation_props = self.scene.robot.spawn.articulation_props.replace(
@@ -561,7 +529,11 @@ class TableLegGraspLiftEnvCfg(UR10eDeltoMixinCfg, dexsuite.DexsuiteLiftEnvCfg):
         # Establish the nominal FurnitureBench policy at the deterministic center
         # of the calibrated dynamics ranges.  Keep reset-pose variation; a later
         # sim-to-real finetune can widen these ranges again.
-        self.events.randomize_arm_sysid.params["scale_range"] = (1.0, 1.0)
+        # The identified torque-friction model creates a 9-12 mrad deadband in
+        # this position-controlled task and can pin the arm at reset.  Retain
+        # deterministic position servos here; torque-control tasks still use
+        # the sysid model through their own configurations.
+        self.events.randomize_arm_sysid.params["scale_range"] = (0.0, 0.0)
         self.events.randomize_arm_sysid.params["delay_range"] = (0, 0)
         for material_event in (self.events.robot_physics_material, self.events.object_physics_material):
             material_event.params["static_friction_range"] = [0.75, 0.75]
@@ -580,13 +552,12 @@ class TableLegGraspLiftEnvCfg(UR10eDeltoMixinCfg, dexsuite.DexsuiteLiftEnvCfg):
             "x": [0.0, 0.0], "y": [0.0, 0.0], "z": [0.0, 0.0], "yaw": [0.0, 0.0]
         }
 
-        if task_curriculum is None:
-            # Evaluation/play always runs at full gravity. Training starts at zero
-            # and lets the inherited DexSuite gravity ADR promote it toward this value.
-            self.events.variable_gravity.params["gravity_distribution_params"] = (
-                (0.0, 0.0, -9.81),
-                (0.0, 0.0, -9.81),
-            )
+        # Gravity is never disabled: the leg visibly falls to the support table
+        # before the hand approaches in training, evaluation, and playback.
+        self.events.variable_gravity.params["gravity_distribution_params"] = (
+            (0.0, 0.0, -9.81),
+            (0.0, 0.0, -9.81),
+        )
 
         # Generic fingertip sensors target the old primitive root. Replace them with one
         # sensor per phalange: PhysX filtered-contact views require one source body per
@@ -637,7 +608,7 @@ class TableLegGraspLiftEnvCfg(UR10eDeltoMixinCfg, dexsuite.DexsuiteLiftEnvCfg):
         }
         # The airborne leg needs time to fall, be acquired, lift 80 mm, and remain
         # stable for the held-success window.
-        self.episode_length_s = 12.0
+        self.episode_length_s = 18.0
         self.viewer.eye = (1.35, -0.8, 0.75)
         self.viewer.lookat = (WORKSPACE_X, WORKSPACE_Y, 0.36)
 
