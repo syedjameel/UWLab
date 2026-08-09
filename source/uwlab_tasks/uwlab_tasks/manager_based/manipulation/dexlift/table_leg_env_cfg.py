@@ -33,14 +33,16 @@ from isaaclab_tasks.manager_based.manipulation.dexsuite import dexsuite_env_cfg 
 
 
 ASSET_ROOT = f"{UWLAB_LOCAL_ASSETS_DIR}/Props/FurnitureBench/SquareTableOneLeg"
-TABLE_CENTER_X = 0.55
-WORKSPACE_X = 0.75
-WORKSPACE_Y = 0.10
+# Put the near table edge at x=0.45 m, leaving the UR a little more operating
+# room than the measured OmniReset work surface's x=0.35 m near edge.
+TABLE_CENTER_X = 0.85
+WORKSPACE_X = 0.98
+WORKSPACE_Y = 0.12
 TABLE_CENTER_Z = 0.235
 TABLE_THICKNESS = 0.04
 TABLE_TOP_Z = TABLE_CENTER_Z + 0.5 * TABLE_THICKNESS
 # The leg starts airborne and falls freely onto the table before acquisition.
-LEG_SPAWN_POS = (0.75855923, 0.07825003, 0.40887862)
+LEG_SPAWN_POS = (1.00035097, 0.12072423, 0.40887862)
 # The horizontal 30 mm leg rests with its root 15 mm above the tabletop. Success
 # is an 80 mm physical lift from that support pose; the termination independently
 # measures the same minimum displacement from each episode's observed low point.
@@ -56,30 +58,30 @@ MAX_SUCCESS_RELATIVE_SPEED = 0.15
 # Palm-relative pose reached only after the leg has fallen to the table and the
 # open hand has approached it. Smooth replay establishes opposed phalange
 # contact from this pose without palm, base, or mount contact.
-DESIRED_OBJECT_POS_P = (0.0425, 0.0450, 0.1600)
+DESIRED_OBJECT_POS_P = (0.06681, 0.06487, 0.16058)
 # Post-reset object orientation in the nominal palm frame (w, x, y, z).
-DESIRED_OBJECT_QUAT_P = (-0.06698579, -0.93301314, -0.24999975, 0.25000033)
-# Collision-checked reset pose.  The open palm is 275 mm from the airborne leg
-# root and remains clear while the leg falls; the policy must move the arm about
-# 200 mm along the approach path before first finger contact is possible.
+DESIRED_OBJECT_QUAT_P = (-0.05087, -0.71751, -0.00219, 0.69469)
+# Collision-checked reset pose. The open palm is 407 mm from the airborne leg
+# root and remains clear while the leg falls; the policy must lower the palm
+# about 456 mm before first finger contact is possible.
 RESET_ARM_JOINT_POS = {
-    "shoulder_pan_joint": 0.00853227,
-    "shoulder_lift_joint": -1.50744617,
-    "elbow_joint": 1.52167749,
-    "wrist_1_joint": -1.56242502,
-    "wrist_2_joint": -2.04685116,
-    "wrist_3_joint": 2.60486460,
+    "shoulder_pan_joint": -0.15457708,
+    "shoulder_lift_joint": -1.32246149,
+    "elbow_joint": 1.09441864,
+    "wrist_1_joint": 0.30196786,
+    "wrist_2_joint": 1.40933454,
+    "wrist_3_joint": -1.66120136,
 }
 # Collision-checked table-supported approach endpoint. The open hand reaches
 # this only after the airborne leg has settled; closure then causes first
 # contact, rather than inheriting contact from reset.
 APPROACH_ARM_JOINT_POS = {
-    "shoulder_pan_joint": -0.02976058,
-    "shoulder_lift_joint": -1.40032554,
-    "elbow_joint": 1.83454049,
-    "wrist_1_joint": -2.00228524,
-    "wrist_2_joint": -2.04736400,
-    "wrist_3_joint": 2.56145167,
+    "shoulder_pan_joint": -0.15458396,
+    "shoulder_lift_joint": -1.19841504,
+    "elbow_joint": 1.75789106,
+    "wrist_1_joint": -0.48564836,
+    "wrist_2_joint": 1.40925562,
+    "wrist_3_joint": -1.66108799,
 }
 # Raw hand command found by smooth, full-gravity search and verified to sustain
 # geometrically opposed contact while the arm lifts. Converting through the
@@ -103,16 +105,15 @@ GRASP_HAND_JOINT_POS = {
     + (1.50 if name.endswith("_4") else 0.30) * action
     for name, action in GRASP_HAND_ACTION.items()
 }
-# The arm aims 70 mm above the nominal object target to compensate for the
-# measured compliant settling of this long part in the fingers. Smooth replay
-# carries the root 379 mm and triggers the strict 30-step success hold.
+# Smooth replay carries the root 372 mm from the table while preserving the
+# palm-down orientation and triggers the strict 30-step success hold.
 LIFT_ARM_JOINT_POS = {
-    "shoulder_pan_joint": -0.01056100,
-    "shoulder_lift_joint": -1.41938114,
-    "elbow_joint": 1.04191780,
-    "wrist_1_joint": -1.18039572,
-    "wrist_2_joint": -2.02479625,
-    "wrist_3_joint": 2.47181129,
+    "shoulder_pan_joint": -0.15457757,
+    "shoulder_lift_joint": -1.31123459,
+    "elbow_joint": 1.03634858,
+    "wrist_1_joint": 0.34880942,
+    "wrist_2_joint": 1.40933466,
+    "wrist_3_joint": -1.66120088,
 }
 FULL_OBJECT_POSE_RANGE = {
     # Local robustness around the collision-validated airborne acquisition.
@@ -150,15 +151,15 @@ class TableLegJointPositionActionCfg:
         asset_name="robot",
         joint_names=ARM_JOINT_NAMES,
         scale={
-            # Absolute zero still holds the validated reset pose.  These ranges
-            # make both the IK lift and the full +/-pi object-yaw curriculum
-            # reachable inside the policy's [-1, 1] action range.
-            "shoulder_pan_joint": 1.00,
-            "shoulder_lift_joint": 0.75,
-            "elbow_joint": 0.75,
-            "wrist_1_joint": 1.50,
-            "wrist_2_joint": 1.50,
-            "wrist_3_joint": 3.20,
+            # Absolute zero still holds the validated reset pose. Keep arm
+            # exploration conservative enough to refine contact instead of
+            # sweeping the hand past the leg in a single action update.
+            "shoulder_pan_joint": 0.50,
+            "shoulder_lift_joint": 0.375,
+            "elbow_joint": 0.375,
+            "wrist_1_joint": 0.75,
+            "wrist_2_joint": 0.75,
+            "wrist_3_joint": 1.60,
         },
         use_default_offset=True,
     )
@@ -193,7 +194,9 @@ def _leg_cfg() -> RigidObjectCfg:
         ),
         init_state=RigidObjectCfg.InitialStateCfg(
             pos=LEG_SPAWN_POS,
-            rot=(0.707107, 0.0, 0.0, 0.707107),
+            # Rotate the nominal leg with the requested +90-degree top-view
+            # hand yaw so the collision-validated grasp relationship is kept.
+            rot=(0.0, 0.0, 0.0, 1.0),
         ),
     )
 
@@ -661,13 +664,13 @@ class TableLegGraspLiftEnvCfg(UR10eDeltoMixinCfg, dexsuite.DexsuiteLiftEnvCfg):
         self.commands.object_pose.debug_vis = False
 
         self.terminations.object_out_of_bound.params["in_bound_range"] = {
-            "x": (0.2, 0.9), "y": (-0.45, 0.45), "z": (0.0, 1.0)
+            "x": (0.2, 1.15), "y": (-0.45, 0.45), "z": (0.0, 1.0)
         }
         # The airborne leg needs time to fall, be acquired, lift 80 mm, and remain
         # stable for the held-success window.
         self.episode_length_s = 18.0
-        self.viewer.eye = (1.35, -0.8, 0.75)
-        self.viewer.lookat = (WORKSPACE_X, WORKSPACE_Y, 0.36)
+        self.viewer.eye = (1.55, -0.75, 1.05)
+        self.viewer.lookat = (WORKSPACE_X, WORKSPACE_Y, 0.50)
 
 
 @configclass

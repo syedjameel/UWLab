@@ -20,9 +20,14 @@ cuboid support table.
 ## Task contract
 
 `DexLift-UR10eDelto-TableLeg-GraspLift-Curriculum-v0` starts the leg airborne and
-the open, palm-down hand 275 mm from its root. Gravity is −9.81 m/s² in training,
-evaluation, and playback, so the leg first falls about 139 mm onto the support
-table. The policy must then move the arm roughly 200 mm along the calibrated
+the open, palm-down hand 407 mm from the airborne leg root and well outside its
+closing envelope. The physical palm-face normal is within 6.2 degrees of vertical
+down. Its top-view yaw is rotated 90 degrees counterclockwise from the original
+reset; the nominal leg yaw rotates with it to retain the validated acquisition
+geometry. The table's near edge is 450 mm from the UR base, providing 100 mm more
+operating room than OmniReset's measured work surface. Gravity is −9.81 m/s² in
+training, evaluation, and playback, so the leg first falls about 139 mm onto the
+support table. The policy must then lower the palm roughly 456 mm along the calibrated
 approach path before finger contact is possible. Dense arm guidance is disabled
 for the first 45 control steps while the leg settles, and it stops at the first
 hand contact; the independently actuated fingers must then establish opposed
@@ -40,10 +45,10 @@ The policy has six absolute, default-centered UR10e joint-position actions and o
 continuous DELTO closure action. The latter interpolates all 20 hand joints between
 individually calibrated open and grasp postures, so the fingers remain articulated
 without requiring PPO to rediscover a fragile 20-dimensional synergy. Arm scales are
-1.00/0.75/0.75/1.50/1.50/3.20 rad. Zero arm action and a nonnegative hand action hold
+0.50/0.375/0.375/0.75/0.75/1.60 rad. Zero arm action and a nonnegative hand action hold
 the separated reset pose. All 25
 phalanges retain collision geometry and object-filtered contact sensors. The fixed
-object target is `(0.75, 0.10, 0.65)` m in the robot-root frame. Success requires, for
+object target is `(0.98, 0.12, 0.65)` m in the robot-root frame. Success requires, for
 30 consecutive control steps (0.5 s):
 
 - object-root position within 50 mm of the target and at least 80 mm of measured lift
@@ -56,8 +61,9 @@ object target is `(0.75, 0.10, 0.65)` m in the robot-root frame. Success require
 
 The first contact must also occur after at least 30 control steps, and success is
 not evaluated before step 180. The calibrated ordered replay first contacts at
-step 227, sustains three-finger geometric opposition, carries the root 379 mm,
-and passes the same 30-step success termination used in training. Thus an initial
+step 343, sustains opposed multi-finger contact in 128/128 replicas, carries the
+root 372 mm, and passes the same 30-step success termination in 128/128 replicas.
+Thus an initial
 overlap, untouched spawn, rigid-hand push, table-supported leg, same-side finger
 press, ballistic launch, transient threshold crossing, or proximity-only motion
 cannot succeed.
