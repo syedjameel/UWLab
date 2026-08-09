@@ -18,6 +18,7 @@ from isaaclab.utils import configclass
 from isaaclab_tasks.manager_based.manipulation.dexsuite.adr_curriculum import CurriculumCfg as DexsuiteCurriculumCfg
 
 from uwlab_assets import UWLAB_LOCAL_ASSETS_DIR
+from uwlab_assets.robots.ur10e_delto.ur10e_delto import DELTO_HAND_DEFAULT_JOINT_POS
 from . import mdp
 from .dexlift_ur10e_delto_env_cfg import (
     ALL_TIP_NAMES,
@@ -52,9 +53,10 @@ MINIMUM_ARTICULATED_FINGERS = 2
 MINIMUM_JOINT_DISPLACEMENT = 0.10
 MAX_SUCCESS_OBJECT_SPEED = 0.15
 MAX_SUCCESS_RELATIVE_SPEED = 0.15
-# Palm-relative approach pose above the table-supported leg.  This is 40 mm
-# outside the legacy in-hand pose, so closing cannot be rewarded at reset.
-DESIRED_OBJECT_POS_P = (0.05240934, 0.05549224, 0.19730574)
+# Palm-relative pose reached only after the leg has fallen to the table and the
+# open hand has approached it. Smooth replay establishes opposed phalange
+# contact from this pose without palm, base, or mount contact.
+DESIRED_OBJECT_POS_P = (0.0425, 0.0450, 0.1600)
 # Post-reset object orientation in the nominal palm frame (w, x, y, z).
 DESIRED_OBJECT_QUAT_P = (-0.06698579, -0.93301314, -0.24999975, 0.25000033)
 # Collision-checked reset pose.  The open palm is 275 mm from the airborne leg
@@ -68,15 +70,49 @@ RESET_ARM_JOINT_POS = {
     "wrist_2_joint": -2.04685116,
     "wrist_3_joint": 2.60486460,
 }
-# Damped-least-squares IK solution that preserves the validated grasp
-# orientation while carrying the nominal leg root to TARGET_OBJECT_POS_B.
+# Collision-checked table-supported approach endpoint. The open hand reaches
+# this only after the airborne leg has settled; closure then causes first
+# contact, rather than inheriting contact from reset.
+APPROACH_ARM_JOINT_POS = {
+    "shoulder_pan_joint": -0.02976058,
+    "shoulder_lift_joint": -1.40032554,
+    "elbow_joint": 1.83454049,
+    "wrist_1_joint": -2.00228524,
+    "wrist_2_joint": -2.04736400,
+    "wrist_3_joint": 2.56145167,
+}
+# Raw hand command found by smooth, full-gravity search and verified to sustain
+# geometrically opposed contact while the arm lifts. Converting through the
+# task's default-centered action scales gives the target used by dense shaping.
+GRASP_HAND_ACTION = {
+    name: action
+    for name, action in zip(
+        (f"rj_dg_{finger}_{joint}" for finger in range(1, 6) for joint in range(1, 5)),
+        (
+            0.55970258, -0.67199451, 0.55635667, 0.28772396,
+            -0.76118267, 1.0, 0.70010597, 0.53012097,
+            -0.73653716, 0.21805033, -0.60193312, 0.78751171,
+            -0.16572736, -0.28463072, -0.89691585, 1.0,
+            0.54724765, 0.49227867, 0.45577177, 0.25340888,
+        ),
+        strict=True,
+    )
+}
+GRASP_HAND_JOINT_POS = {
+    name: DELTO_HAND_DEFAULT_JOINT_POS[name]
+    + (1.50 if name.endswith("_4") else 0.30) * action
+    for name, action in GRASP_HAND_ACTION.items()
+}
+# The arm aims 70 mm above the nominal object target to compensate for the
+# measured compliant settling of this long part in the fingers. Smooth replay
+# carries the root 356 mm and triggers the strict 30-step success hold.
 LIFT_ARM_JOINT_POS = {
-    "shoulder_pan_joint": 0.00585685,
-    "shoulder_lift_joint": -1.45117021,
-    "elbow_joint": 1.13719332,
-    "wrist_1_joint": -1.23557413,
-    "wrist_2_joint": -2.04691458,
-    "wrist_3_joint": 2.60182071,
+    "shoulder_pan_joint": -0.01056100,
+    "shoulder_lift_joint": -1.41938114,
+    "elbow_joint": 1.04191780,
+    "wrist_1_joint": -1.18039572,
+    "wrist_2_joint": -2.02479625,
+    "wrist_3_joint": 2.47181129,
 }
 FULL_OBJECT_POSE_RANGE = {
     # Local robustness around the collision-validated airborne acquisition.
@@ -185,6 +221,19 @@ class TableLegRewardsCfg(dexsuite.RewardsCfg):
     # explicitly trained the invalid reset-in-hand closure.  The pose terms
     # below now supply the approach gradient.
     pregrasp_arm_motion = None
+    approach_arm_action = RewTerm(
+        func=mdp.PrecontactArmActionReward,
+        weight=20000.0,
+        params={
+            "target_joint_pos": APPROACH_ARM_JOINT_POS,
+            "action_term_name": "arm_action",
+            "std": 0.20,
+            "minimum_episode_steps": 45,
+            "contact_groups": FINGER_CONTACT_GROUPS,
+            "threshold": CONTACT_THRESHOLD,
+            "unwanted_contact_names": NON_FINGER_HAND_CONTACT_NAMES,
+        },
+    )
     fingers_to_object = RewTerm(
         func=mdp.object_ee_distance,
         weight=8.0,
@@ -228,10 +277,21 @@ class TableLegRewardsCfg(dexsuite.RewardsCfg):
             "palm_body": PALM_BODY,
         },
     )
-    # The legacy posture prior came from the invalid reset-in-hand experiment.
-    # It dominated the objective even when the selected fingers pressed the
-    # same side of the leg, so it is not a valid grasp demonstration.
-    grasp_posture_progress = None
+    grasp_posture_progress = RewTerm(
+        func=mdp.GraspPostureProgressReward,
+        weight=20000.0,
+        params={
+            "desired_object_pos_p": DESIRED_OBJECT_POS_P,
+            "desired_object_quat_p": DESIRED_OBJECT_QUAT_P,
+            "target_joint_pos": GRASP_HAND_JOINT_POS,
+            "action_term_name": "hand_action",
+            "action_prior_weight": 0.8,
+            "position_std": 0.08,
+            "orientation_std": 0.75,
+            "unwanted_contact_names": NON_FINGER_HAND_CONTACT_NAMES,
+            "palm_body": PALM_BODY,
+        },
+    )
     position_tracking = RewTerm(
         func=mdp.target_position_tracking,
         weight=1000.0,

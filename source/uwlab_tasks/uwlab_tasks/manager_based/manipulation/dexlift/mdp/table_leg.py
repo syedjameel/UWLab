@@ -143,6 +143,55 @@ class PregraspArmActionPenalty(ManagerTermBase):
         return arm_action.square().sum(dim=-1) * (self._contact_memory == 0).float()
 
 
+class PrecontactArmActionReward(ManagerTermBase):
+    """Guide the open arm to a separated approach endpoint after the leg settles."""
+
+    def __init__(self, cfg, env: ManagerBasedRLEnv):
+        super().__init__(cfg, env)
+        robot = env.scene[self.cfg.params.get("robot_name", "robot")]
+        target_joint_pos = self.cfg.params["target_joint_pos"]
+        joint_ids, joint_names = robot.find_joints(list(target_joint_pos), preserve_order=True)
+        if len(joint_ids) != len(target_joint_pos):
+            raise ValueError(
+                f"Expected {len(target_joint_pos)} approach joints, found {len(joint_ids)}: {joint_names}"
+            )
+        action_term = env.action_manager.get_term(self.cfg.params["action_term_name"])
+        self._action_ids = [action_term._joint_names.index(name) for name in joint_names]
+        target_position = torch.tensor(
+            [target_joint_pos[name] for name in joint_names], device=env.device
+        ).unsqueeze(0)
+        self._target_action = (
+            target_position - action_term._offset[:1, self._action_ids]
+        ) / action_term._scale[:1, self._action_ids]
+        self._action_term = action_term
+
+    def __call__(
+        self,
+        env: ManagerBasedRLEnv,
+        target_joint_pos: dict[str, float],
+        action_term_name: str,
+        std: float,
+        minimum_episode_steps: int,
+        contact_groups: tuple[tuple[str, ...], ...],
+        threshold: float,
+        unwanted_contact_names: tuple[str, ...] | None = None,
+        max_unwanted_contact_force: float = 0.05,
+        robot_name: str = "robot",
+    ) -> torch.Tensor:
+        del target_joint_pos, action_term_name, robot_name
+        action = self._action_term.raw_actions[:, self._action_ids]
+        rms_error = torch.sqrt((action - self._target_action).square().mean(dim=-1))
+        score = 1.0 - torch.tanh(rms_error / max(std, 1.0e-6))
+        has_contact = logical_finger_contacts(env, contact_groups, threshold).any(dim=-1)
+        if unwanted_contact_names:
+            has_contact |= (
+                max_finger_contact_force(env, unwanted_contact_names)
+                > max_unwanted_contact_force
+            )
+        active = (env.episode_length_buf >= minimum_episode_steps) & ~has_contact
+        return score * active.float()
+
+
 class PostgraspArmActionReward(ManagerTermBase):
     """Guide a valid opposed grasp toward a reachable absolute lift pose."""
 

@@ -23,7 +23,10 @@ cuboid support table.
 the open, palm-down hand 275 mm from its root. Gravity is −9.81 m/s² in training,
 evaluation, and playback, so the leg first falls about 139 mm onto the support
 table. The policy must then move the arm roughly 200 mm along the calibrated
-approach path before finger contact is possible. A held-lift success promotes one
+approach path before finger contact is possible. Dense arm guidance is disabled
+for the first 45 control steps while the leg settles, and it stops at the first
+hand contact; the independently actuated fingers must then establish opposed
+contact before lift guidance activates. A held-lift success promotes one
 difficulty level and a failure demotes four, making 80% success the curriculum's
 interior fixed point. The curriculum widens reset translation and then orientation;
 it never disables gravity.
@@ -50,9 +53,12 @@ object target is `(0.75, 0.10, 0.65)` m in the robot-root frame. Success require
 - leg linear speed and palm-relative speed no greater than 0.15 m/s.
 
 The first contact must also occur after at least 30 control steps, and success is
-not evaluated before step 180. Thus an initial overlap, untouched spawn, rigid-hand
-push, table-supported leg, same-side finger press, ballistic launch, transient
-threshold crossing, or proximity-only motion cannot succeed.
+not evaluated before step 180. The calibrated ordered replay first contacts at
+step 232, sustains three-finger geometric opposition, carries the root 356 mm,
+and passes the same 30-step success termination used in training. Thus an initial
+overlap, untouched spawn, rigid-hand push, table-supported leg, same-side finger
+press, ballistic launch, transient threshold crossing, or proximity-only motion
+cannot succeed.
 
 ## Train and evaluate
 
