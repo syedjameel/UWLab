@@ -606,7 +606,7 @@ class GraspPostureProgressReward(ManagerTermBase):
     Independent hand control removes the old binary ``close`` action, so contact
     rewards alone are too sparse to teach which of the 20 joints should flex.
     This term supplies that missing dense bridge while leaving every finger
-    independently actuated.  It blends physical joint travel with a prior on
+    independently actuated. It blends physical joint travel with proximity to
     the collision-validated close command, gated by the palm-relative pose.
     """
 
@@ -643,7 +643,6 @@ class GraspPostureProgressReward(ManagerTermBase):
         action_scale = action_term._scale[:, self._action_ids]
         action_offset = action_term._offset[:, self._action_ids]
         self._target_action = (target_position - action_offset[:1]) / action_scale[:1]
-        self._target_action_norm_sq = self._target_action.square().sum(dim=-1).clamp(min=1.0e-6)
 
         desired_quat = self.cfg.params.get("desired_object_quat_p")
         self._desired_object_quat_p = torch.tensor(
@@ -657,6 +656,7 @@ class GraspPostureProgressReward(ManagerTermBase):
         target_joint_pos: dict[str, float],
         action_term_name: str,
         action_prior_weight: float,
+        action_std: float,
         position_std: float,
         orientation_std: float,
         desired_object_quat_p: tuple[float, float, float, float] | None = None,
@@ -688,10 +688,9 @@ class GraspPostureProgressReward(ManagerTermBase):
             self._travel_magnitude * moving
         ).sum(dim=-1).clamp(min=1.0e-6)
         posture_score = 0.5 * (posture_progress + 1.0)
-        action_progress = (
-            self._action_term.raw_actions[:, self._action_ids] * self._target_action
-        ).sum(dim=-1) / self._target_action_norm_sq
-        action_score = 0.5 * (action_progress.clamp(-1.0, 1.0) + 1.0)
+        action = self._action_term.raw_actions[:, self._action_ids]
+        action_rms_error = torch.sqrt((action - self._target_action).square().mean(dim=-1))
+        action_score = 1.0 - torch.tanh(action_rms_error / max(action_std, 1.0e-6))
         closure_score = (1.0 - action_prior_weight) * posture_score + action_prior_weight * action_score
 
         palm_pos_w = robot.data.body_pos_w[:, self._palm_body_id]
