@@ -54,7 +54,7 @@ object target is `(0.75, 0.10, 0.65)` m in the robot-root frame. Success require
 
 The first contact must also occur after at least 30 control steps, and success is
 not evaluated before step 180. The calibrated ordered replay first contacts at
-step 232, sustains three-finger geometric opposition, carries the root 356 mm,
+step 227, sustains three-finger geometric opposition, carries the root 379 mm,
 and passes the same 30-step success termination used in training. Thus an initial
 overlap, untouched spawn, rigid-hand push, table-supported leg, same-side finger
 press, ballistic launch, transient threshold crossing, or proximity-only motion

@@ -89,11 +89,11 @@ GRASP_HAND_ACTION = {
     for name, action in zip(
         (f"rj_dg_{finger}_{joint}" for finger in range(1, 6) for joint in range(1, 5)),
         (
-            0.55970258, -0.67199451, 0.55635667, 0.28772396,
-            -0.76118267, 1.0, 0.70010597, 0.53012097,
-            -0.73653716, 0.21805033, -0.60193312, 0.78751171,
-            -0.16572736, -0.28463072, -0.89691585, 1.0,
-            0.54724765, 0.49227867, 0.45577177, 0.25340888,
+            0.43454090, -0.14072552, 0.55655491, 0.33865815,
+            -0.83503151, -0.43959865, 1.0, 0.69505721,
+            -0.42886350, -0.65505075, 0.45063210, 0.61510897,
+            0.23848540, 0.93663901, -0.06144656, 0.08257288,
+            0.56994998, 0.23781885, -0.63208628, -0.08513815,
         ),
         strict=True,
     )
@@ -105,7 +105,7 @@ GRASP_HAND_JOINT_POS = {
 }
 # The arm aims 70 mm above the nominal object target to compensate for the
 # measured compliant settling of this long part in the fingers. Smooth replay
-# carries the root 356 mm and triggers the strict 30-step success hold.
+# carries the root 379 mm and triggers the strict 30-step success hold.
 LIFT_ARM_JOINT_POS = {
     "shoulder_pan_joint": -0.01056100,
     "shoulder_lift_joint": -1.41938114,
