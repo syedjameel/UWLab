@@ -144,7 +144,7 @@ NON_FINGER_HAND_CONTACT_NAMES = (PALM_BODY, "rl_dg_base", "rl_dg_palm")
 
 @configclass
 class TableLegJointPositionActionCfg:
-    """Default-centered position control for the arm and every finger joint."""
+    """Default-centered arm control plus a validated whole-hand position synergy."""
 
     arm_action = mdp.JointPositionActionCfg(
         asset_name="robot",
@@ -162,15 +162,14 @@ class TableLegJointPositionActionCfg:
         },
         use_default_offset=True,
     )
-    # Absolute default-centered targets make a zero action actively hold the
-    # open posture while the arm accelerates.  The collision-validated close
-    # posture needs 0.94-1.34 rad of distal travel, so retaining the uniform
-    # 0.30 scale would require implausible policy outputs of 3.15-4.46 there.
-    hand_action = mdp.JointPositionActionCfg(
+    # One scalar selects the open or collision-validated close posture. All 20
+    # joints remain actuated and move to their individually calibrated targets;
+    # the reduced policy action avoids rediscovering a fragile 20-D synergy.
+    hand_action = mdp.ContinuousSynergyJointPositionActionCfg(
         asset_name="robot",
         joint_names=[HAND_JOINT_REGEX],
-        scale={r"rj_dg_[1-5]_[1-3]": 0.30, r"rj_dg_[1-5]_4": 1.50},
-        use_default_offset=True,
+        open_command_expr=DELTO_HAND_DEFAULT_JOINT_POS,
+        close_command_expr=GRASP_HAND_JOINT_POS,
     )
 
 
@@ -278,15 +277,12 @@ class TableLegRewardsCfg(dexsuite.RewardsCfg):
         },
     )
     grasp_posture_progress = RewTerm(
-        func=mdp.GraspPostureProgressReward,
+        func=mdp.synergy_grasp_action,
         weight=20000.0,
         params={
             "desired_object_pos_p": DESIRED_OBJECT_POS_P,
             "desired_object_quat_p": DESIRED_OBJECT_QUAT_P,
-            "target_joint_pos": GRASP_HAND_JOINT_POS,
             "action_term_name": "hand_action",
-            "action_prior_weight": 0.95,
-            "action_std": 0.60,
             "position_std": 0.08,
             "orientation_std": 0.75,
             "unwanted_contact_names": NON_FINGER_HAND_CONTACT_NAMES,

@@ -14,5 +14,6 @@ hardcoded to the Kuka-Allegro fingertip sensor names.
 
 from isaaclab_tasks.manager_based.manipulation.dexsuite.mdp import *  # noqa: F401, F403
 
+from .actions import *  # noqa: F401, F403
 from .rewards import *  # noqa: F401, F403
 from .table_leg import *  # noqa: F401, F403

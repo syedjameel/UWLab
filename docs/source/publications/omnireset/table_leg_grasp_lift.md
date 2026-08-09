@@ -36,10 +36,12 @@ in z, and ±0.02 rad on each rotation axis. Larger search offsets remain out of
 scope, but spawning the leg inside an open or closed hand is explicitly outside
 the task contract.
 
-The policy has six absolute, default-centered UR10e joint-position actions and twenty
-independent, default-centered DELTO actions. Arm scales are 1.00/0.75/0.75/1.50/1.50/3.20
-rad; DELTO scales are 0.30 rad for joints 1–3 and 1.50 rad for distal joint 4. Zero
-action therefore holds the separated reset pose. All 25
+The policy has six absolute, default-centered UR10e joint-position actions and one
+continuous DELTO closure action. The latter interpolates all 20 hand joints between
+individually calibrated open and grasp postures, so the fingers remain articulated
+without requiring PPO to rediscover a fragile 20-dimensional synergy. Arm scales are
+1.00/0.75/0.75/1.50/1.50/3.20 rad. Zero arm action and a nonnegative hand action hold
+the separated reset pose. All 25
 phalanges retain collision geometry and object-filtered contact sensors. The fixed
 object target is `(0.75, 0.10, 0.65)` m in the robot-root frame. Success requires, for
 30 consecutive control steps (0.5 s):
