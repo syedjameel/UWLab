@@ -36,6 +36,11 @@ DexLift registers:
 
 The FurnitureBench table-leg task has a separate [grasp-and-lift guide](table_leg_grasp_lift.md).
 
+The reference-style direct port registers
+`UWLab-UR10eDelto-Grasp-Direct-v0` and
+`UWLab-UR10eDelto-TableLeg-Grasp-Direct-v0`. See the concise
+[direct-task guide](delto_reference_grasp.md) for its MDP and RL-Games commands.
+
 ## Run
 
 Set the package path once from the repository root:

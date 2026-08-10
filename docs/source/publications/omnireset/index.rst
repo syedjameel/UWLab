@@ -286,6 +286,7 @@ The full OmniReset pipeline from custom task creation to real-robot deployment:
 - :doc:`distillation` -- Evaluate pretrained RGB checkpoints, or collect demos and train your own ResNet18-MLP vision policy. Deploy on real robot.
 - :doc:`tesollo_delto` -- Run OmniReset or DexLift with the UR10e and Tesollo DELTO DG-5F hand.
 - :doc:`table_leg_grasp_lift` -- Train and evaluate the FurnitureBench table-leg grasp-and-lift task.
+- :doc:`delto_reference_grasp` -- Train the reference-style direct grasp task on primitives or the table leg.
 
 .. toctree::
    :maxdepth: 1
@@ -297,6 +298,7 @@ The full OmniReset pipeline from custom task creation to real-robot deployment:
    distillation
    tesollo_delto
    table_leg_grasp_lift
+   delto_reference_grasp
 
 ----
 

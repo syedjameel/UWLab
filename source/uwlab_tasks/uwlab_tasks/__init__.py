@@ -28,3 +28,8 @@ from isaaclab_tasks.utils import import_packages
 _BLACKLIST_PKGS = ["utils"]
 # Import all configs in this package
 import_packages(__name__, _BLACKLIST_PKGS)
+
+# ``direct`` is a namespace directory in the extension template and therefore
+# is not discovered recursively by ``pkgutil``. Register the production
+# Tesollo direct task explicitly without re-registering Isaac Lab examples.
+from .direct import delto_grasp  # noqa: F401, E402
