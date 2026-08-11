@@ -1,10 +1,14 @@
+# Copyright (c) 2024-2026, The UW Lab Project Developers. (https://github.com/uw-lab/UWLab/blob/main/CONTRIBUTORS.md).
+# All Rights Reserved.
+#
+# SPDX-License-Identifier: BSD-3-Clause
+
 """Thin DirectRLEnv wrapper for the Delto lifting task."""
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-
 import torch
+from collections.abc import Sequence
 
 from isaaclab.envs import DirectRLEnv
 
@@ -14,10 +18,11 @@ from .task import (
     apply_actions,
     build_observations,
     compute_observation_dim,
-    compute_state_dim,
     compute_rewards,
+    compute_state_dim,
     compute_terminations,
     process_actions,
+    record_episode_outcomes,
     reset_envs,
     setup_scene,
 )
@@ -30,9 +35,7 @@ class DeltoGraspEnv(DirectRLEnv):
 
     cfg: DeltoGraspEnvCfg
 
-    def __init__(
-        self, cfg: DeltoGraspEnvCfg, render_mode: str | None = None, **kwargs
-    ) -> None:
+    def __init__(self, cfg: DeltoGraspEnvCfg, render_mode: str | None = None, **kwargs) -> None:
         cfg.observation_space = compute_observation_dim(cfg)
         cfg.state_space = compute_state_dim(cfg)
         super().__init__(cfg, render_mode, **kwargs)
@@ -60,5 +63,9 @@ class DeltoGraspEnv(DirectRLEnv):
         if env_ids is None:
             env_ids = torch.arange(self.num_envs, device=self.device)
         env_ids = torch.as_tensor(env_ids, device=self.device, dtype=torch.long)
+        # Record terminal state before DirectRLEnv clears episode_length_buf.
+        completed_ids = env_ids[self.episode_length_buf[env_ids] > 0]
+        if completed_ids.numel() > 0:
+            record_episode_outcomes(self, completed_ids)
         super()._reset_idx(env_ids)
         reset_envs(self, env_ids)

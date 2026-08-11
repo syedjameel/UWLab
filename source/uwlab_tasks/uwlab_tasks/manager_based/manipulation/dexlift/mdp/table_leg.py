@@ -1,14 +1,15 @@
-# Copyright (c) 2024-2026, The UW Lab Project Developers.
+# Copyright (c) 2024-2026, The UW Lab Project Developers. (https://github.com/uw-lab/UWLab/blob/main/CONTRIBUTORS.md).
+# All Rights Reserved.
+#
 # SPDX-License-Identifier: BSD-3-Clause
 
 """Task terms for the FurnitureBench table-leg grasp and lift environment."""
 
 from __future__ import annotations
 
+import torch
 from collections.abc import Sequence
 from typing import TYPE_CHECKING
-
-import torch
 
 from isaaclab.assets import RigidObject
 from isaaclab.managers import ManagerTermBase, SceneEntityCfg
@@ -24,6 +25,11 @@ from .rewards import _sensor_force_magnitudes, contacts
 
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
+
+
+def episode_phase(env: ManagerBasedRLEnv) -> torch.Tensor:
+    """Normalized progress through the finite-horizon acquisition episode."""
+    return (env.episode_length_buf.float() / env.max_episode_length).unsqueeze(-1)
 
 
 def finger_contact_strengths(
@@ -78,11 +84,9 @@ def geometric_opposed_contacts(
         robot.data.body_pos_w[:, tip_ids] - obj.data.root_pos_w.unsqueeze(1), dim=-1
     )
     pair_cosine = torch.einsum("eti,esi->ets", thumb_direction, tip_direction)
-    opposed = (
-        thumb_active.unsqueeze(-1)
-        & tip_active.unsqueeze(-2)
-        & (pair_cosine <= max_pair_cosine)
-    ).any(dim=(-2, -1))
+    opposed = (thumb_active.unsqueeze(-1) & tip_active.unsqueeze(-2) & (pair_cosine <= max_pair_cosine)).any(
+        dim=(-2, -1)
+    )
     if unwanted_contact_names:
         opposed &= max_finger_contact_force(env, unwanted_contact_names) <= max_unwanted_contact_force
     return opposed
@@ -152,17 +156,13 @@ class PrecontactArmActionReward(ManagerTermBase):
         target_joint_pos = self.cfg.params["target_joint_pos"]
         joint_ids, joint_names = robot.find_joints(list(target_joint_pos), preserve_order=True)
         if len(joint_ids) != len(target_joint_pos):
-            raise ValueError(
-                f"Expected {len(target_joint_pos)} approach joints, found {len(joint_ids)}: {joint_names}"
-            )
+            raise ValueError(f"Expected {len(target_joint_pos)} approach joints, found {len(joint_ids)}: {joint_names}")
         action_term = env.action_manager.get_term(self.cfg.params["action_term_name"])
         self._action_ids = [action_term._joint_names.index(name) for name in joint_names]
-        target_position = torch.tensor(
-            [target_joint_pos[name] for name in joint_names], device=env.device
-        ).unsqueeze(0)
-        self._target_action = (
-            target_position - action_term._offset[:1, self._action_ids]
-        ) / action_term._scale[:1, self._action_ids]
+        target_position = torch.tensor([target_joint_pos[name] for name in joint_names], device=env.device).unsqueeze(0)
+        self._target_action = (target_position - action_term._offset[:1, self._action_ids]) / action_term._scale[
+            :1, self._action_ids
+        ]
         self._action_term = action_term
 
     def __call__(
@@ -184,10 +184,7 @@ class PrecontactArmActionReward(ManagerTermBase):
         score = 1.0 - torch.tanh(rms_error / max(std, 1.0e-6))
         has_contact = logical_finger_contacts(env, contact_groups, threshold).any(dim=-1)
         if unwanted_contact_names:
-            has_contact |= (
-                max_finger_contact_force(env, unwanted_contact_names)
-                > max_unwanted_contact_force
-            )
+            has_contact |= max_finger_contact_force(env, unwanted_contact_names) > max_unwanted_contact_force
         active = (env.episode_length_buf >= minimum_episode_steps) & ~has_contact
         return score * active.float()
 
@@ -201,14 +198,10 @@ class PostgraspArmActionReward(ManagerTermBase):
         target_joint_pos = self.cfg.params["target_joint_pos"]
         joint_ids, joint_names = robot.find_joints(list(target_joint_pos), preserve_order=True)
         if len(joint_ids) != len(target_joint_pos):
-            raise ValueError(
-                f"Expected {len(target_joint_pos)} lift joints, found {len(joint_ids)}: {joint_names}"
-            )
+            raise ValueError(f"Expected {len(target_joint_pos)} lift joints, found {len(joint_ids)}: {joint_names}")
         action_term = env.action_manager.get_term(self.cfg.params["action_term_name"])
         action_ids = [action_term._joint_names.index(name) for name in joint_names]
-        target_position = torch.tensor(
-            [target_joint_pos[name] for name in joint_names], device=env.device
-        ).unsqueeze(0)
+        target_position = torch.tensor([target_joint_pos[name] for name in joint_names], device=env.device).unsqueeze(0)
         action_scale = action_term._scale[:, action_ids]
         action_offset = action_term._offset[:, action_ids]
         self._action_term = action_term
@@ -317,9 +310,7 @@ def target_position_error(
     robot = env.scene[robot_name]
     obj: RigidObject = env.scene[object_cfg.name]
     command = env.command_manager.get_command(command_name)
-    target_pos_w, _ = combine_frame_transforms(
-        robot.data.root_pos_w, robot.data.root_quat_w, command[:, :3]
-    )
+    target_pos_w, _ = combine_frame_transforms(robot.data.root_pos_w, robot.data.root_quat_w, command[:, :3])
     return torch.linalg.vector_norm(obj.data.root_pos_w - target_pos_w, dim=-1)
 
 
@@ -392,15 +383,18 @@ class ActualLiftProgress(ManagerTermBase):
         self._lowest_height = torch.minimum(self._lowest_height, height)
         distance_to_target = (target_height - self._lowest_height).clamp(min=1.0e-6)
         progress = ((height - self._lowest_height) / distance_to_target).clamp(0.0, 1.0)
-        return progress * geometric_opposed_contacts(
-            env,
-            threshold,
-            thumb_contact_name,
-            tip_contact_names,
-            max_pair_cosine,
-            unwanted_contact_names,
-            max_unwanted_contact_force,
-        ).float()
+        return (
+            progress
+            * geometric_opposed_contacts(
+                env,
+                threshold,
+                thumb_contact_name,
+                tip_contact_names,
+                max_pair_cosine,
+                unwanted_contact_names,
+                max_unwanted_contact_force,
+            ).float()
+        )
 
 
 def stable_grasp(
@@ -417,16 +411,19 @@ def stable_grasp(
     """Opposition contact discounted when the leg is moving violently."""
     obj: RigidObject = env.scene[object_cfg.name]
     speed = torch.linalg.vector_norm(obj.data.root_lin_vel_w, dim=-1)
-    calm = (1.0 - (speed / max_object_speed).clamp(0.0, 1.0))
-    return calm * geometric_opposed_contacts(
-        env,
-        threshold,
-        thumb_contact_name,
-        tip_contact_names,
-        max_pair_cosine,
-        unwanted_contact_names,
-        max_unwanted_contact_force,
-    ).float()
+    calm = 1.0 - (speed / max_object_speed).clamp(0.0, 1.0)
+    return (
+        calm
+        * geometric_opposed_contacts(
+            env,
+            threshold,
+            thumb_contact_name,
+            tip_contact_names,
+            max_pair_cosine,
+            unwanted_contact_names,
+            max_unwanted_contact_force,
+        ).float()
+    )
 
 
 def upward_velocity_until_height(
@@ -445,15 +442,19 @@ def upward_velocity_until_height(
     obj: RigidObject = env.scene[object_cfg.name]
     below_target = root_height_above_table(env, object_cfg=object_cfg) < target_height
     reward = torch.tanh(obj.data.root_lin_vel_w[:, 2] / max(std, 1.0e-6))
-    return reward * below_target.float() * geometric_opposed_contacts(
-        env,
-        threshold,
-        thumb_contact_name,
-        tip_contact_names,
-        max_pair_cosine,
-        unwanted_contact_names,
-        max_unwanted_contact_force,
-    ).float()
+    return (
+        reward
+        * below_target.float()
+        * geometric_opposed_contacts(
+            env,
+            threshold,
+            thumb_contact_name,
+            tip_contact_names,
+            max_pair_cosine,
+            unwanted_contact_names,
+            max_unwanted_contact_force,
+        ).float()
+    )
 
 
 def held_lift_stability(
@@ -475,22 +476,24 @@ def held_lift_stability(
     robot = env.scene[robot_cfg.name]
     palm_id = robot_cfg.body_ids[0]
     object_speed = torch.linalg.vector_norm(obj.data.root_lin_vel_w, dim=-1)
-    relative_speed = torch.linalg.vector_norm(
-        obj.data.root_lin_vel_w - robot.data.body_lin_vel_w[:, palm_id], dim=-1
-    )
+    relative_speed = torch.linalg.vector_norm(obj.data.root_lin_vel_w - robot.data.body_lin_vel_w[:, palm_id], dim=-1)
     calm = (1.0 - torch.tanh(object_speed / max(linear_speed_std, 1.0e-6))) * (
         1.0 - torch.tanh(relative_speed / max(relative_speed_std, 1.0e-6))
     )
     above_target = root_height_above_table(env, object_cfg=object_cfg) >= minimum_height
-    return calm * above_target.float() * geometric_opposed_contacts(
-        env,
-        threshold,
-        thumb_contact_name,
-        tip_contact_names,
-        max_pair_cosine,
-        unwanted_contact_names,
-        max_unwanted_contact_force,
-    ).float()
+    return (
+        calm
+        * above_target.float()
+        * geometric_opposed_contacts(
+            env,
+            threshold,
+            thumb_contact_name,
+            tip_contact_names,
+            max_pair_cosine,
+            unwanted_contact_names,
+            max_unwanted_contact_force,
+        ).float()
+    )
 
 
 def excessive_object_speed(
@@ -561,9 +564,9 @@ class GraspPoseReward(ManagerTermBase):
         position_only = self.cfg.params.get("position_only", False)
         if desired_quat is None and not position_only:
             raise ValueError("desired_object_quat_p is required for a full grasp-pose reward")
-        self._desired_object_quat_p = torch.tensor(
-            desired_quat or (1.0, 0.0, 0.0, 0.0), device=env.device
-        ).repeat(env.num_envs, 1)
+        self._desired_object_quat_p = torch.tensor(desired_quat or (1.0, 0.0, 0.0, 0.0), device=env.device).repeat(
+            env.num_envs, 1
+        )
 
     def __call__(
         self,
@@ -620,9 +623,7 @@ def synergy_grasp_action(
     palm_pos_w = robot.data.body_pos_w[:, palm_ids[0]]
     palm_quat_w = robot.data.body_quat_w[:, palm_ids[0]]
     object_pos_p = quat_apply_inverse(palm_quat_w, object_asset.data.root_pos_w - palm_pos_w)
-    position_error = torch.linalg.vector_norm(
-        object_pos_p - object_pos_p.new_tensor(desired_object_pos_p), dim=-1
-    )
+    position_error = torch.linalg.vector_norm(object_pos_p - object_pos_p.new_tensor(desired_object_pos_p), dim=-1)
     object_quat_p = quat_mul(quat_conjugate(palm_quat_w), object_asset.data.root_quat_w)
     orientation_error = quat_error_magnitude(
         object_quat_p,
@@ -635,9 +636,7 @@ def synergy_grasp_action(
     close_score = (-env.action_manager.get_term(action_term_name).raw_actions[:, 0]).clamp(0.0, 1.0)
     score = close_score * pose_score
     if unwanted_contact_names:
-        score *= (
-            max_finger_contact_force(env, unwanted_contact_names) <= max_unwanted_contact_force
-        ).float()
+        score *= (max_finger_contact_force(env, unwanted_contact_names) <= max_unwanted_contact_force).float()
     return score
 
 
@@ -754,9 +753,7 @@ class SustainedLiftSuccess(ManagerTermBase):
         super().__init__(cfg, env)
         self._counter = torch.zeros(env.num_envs, device=env.device, dtype=torch.long)
         self._lowest_height = torch.full((env.num_envs,), torch.inf, device=env.device)
-        self._first_contact_step = torch.full(
-            (env.num_envs,), -1, device=env.device, dtype=torch.long
-        )
+        self._first_contact_step = torch.full((env.num_envs,), -1, device=env.device, dtype=torch.long)
         robot = env.scene[self.cfg.params.get("robot_name", "robot")]
         palm_body = self.cfg.params.get("palm_body", "rl_dg_mount")
         palm_ids, _ = robot.find_bodies(palm_body)
@@ -764,8 +761,7 @@ class SustainedLiftSuccess(ManagerTermBase):
             raise ValueError(f"Expected one palm body matching {palm_body!r}, found {palm_ids}")
         self._palm_body_id = palm_ids[0]
         self._finger_joint_ids = [
-            robot.find_joints(list(group), preserve_order=True)[0]
-            for group in self.cfg.params["finger_joint_groups"]
+            robot.find_joints(list(group), preserve_order=True)[0] for group in self.cfg.params["finger_joint_groups"]
         ]
 
     def reset(self, env_ids: Sequence[int] | torch.Tensor | None = None) -> None:
@@ -831,16 +827,11 @@ class SustainedLiftSuccess(ManagerTermBase):
             max_finger_contact_force(env, unwanted_contact_names) > contact_threshold
         )
         first_contact = any_hand_contact & (self._first_contact_step < 0)
-        self._first_contact_step = torch.where(
-            first_contact, env.episode_length_buf, self._first_contact_step
-        )
+        self._first_contact_step = torch.where(first_contact, env.episode_length_buf, self._first_contact_step)
         del finger_joint_groups
         articulated_count = torch.stack(
             [
-                (
-                    robot.data.joint_pos[:, joint_ids]
-                    - robot.data.default_joint_pos[:, joint_ids]
-                )
+                (robot.data.joint_pos[:, joint_ids] - robot.data.default_joint_pos[:, joint_ids])
                 .clamp(min=0.0)
                 .amax(dim=-1)
                 >= minimum_joint_displacement

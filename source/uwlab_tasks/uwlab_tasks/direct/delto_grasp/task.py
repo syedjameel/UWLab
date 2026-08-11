@@ -1,3 +1,8 @@
+# Copyright (c) 2024-2026, The UW Lab Project Developers. (https://github.com/uw-lab/UWLab/blob/main/CONTRIBUTORS.md).
+# All Rights Reserved.
+#
+# SPDX-License-Identifier: BSD-3-Clause
+
 # Copyright (c) 2026, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
 # All rights reserved.
 #
@@ -7,9 +12,8 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
 import torch
+from typing import TYPE_CHECKING
 
 import isaaclab.sim as sim_utils
 from isaaclab.assets import Articulation, RigidObject
@@ -17,9 +21,22 @@ from isaaclab.sensors import ContactSensor
 from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
 from isaaclab.utils.math import quat_apply
 
-from uwlab_tasks.manager_based.manipulation.omnireset.mdp.utils import (
-    sample_object_point_cloud,
+from uwlab_tasks.manager_based.manipulation.omnireset.mdp.utils import sample_object_point_cloud
+
+_OUTCOME_NAMES = (
+    "success",
+    "out_of_bounds",
+    "timeout_no_contact",
+    "timeout_contact_no_lift",
+    "timeout_lift_no_grasp",
+    "timeout_grasp_not_held",
 )
+_SUCCESS_OUTCOME = 0
+_OUT_OF_BOUNDS_OUTCOME = 1
+_TIMEOUT_NO_CONTACT_OUTCOME = 2
+_TIMEOUT_CONTACT_NO_LIFT_OUTCOME = 3
+_TIMEOUT_LIFT_NO_GRASP_OUTCOME = 4
+_TIMEOUT_GRASP_NOT_HELD_OUTCOME = 5
 
 if TYPE_CHECKING:
     from .delto_grasp_env import DeltoGraspEnv
@@ -35,9 +52,7 @@ def compute_observation_dim(cfg: DeltoEnvCfg) -> int | tuple[int, int]:
     force_dim = len(cfg.sensors.fingertip_names)
     fingertip_position_dim = 3 * force_dim
     point_cloud_dim = 3 * cfg.sensors.point_cloud_size
-    single_observation_dim = (
-        joint_dim + force_dim + fingertip_position_dim + point_cloud_dim
-    )
+    single_observation_dim = joint_dim + force_dim + fingertip_position_dim + point_cloud_dim
     if cfg.observation.flatten_history:
         return single_observation_dim * cfg.observation.history_length
     return (cfg.observation.history_length, single_observation_dim)
@@ -133,12 +148,8 @@ def _spawn_objects(env: DeltoEnv) -> None:
     # heterogeneous primitive spawner.
     if cfg.asset.spawn is not None:
         env.object_shape_ids = torch.zeros(env.scene.num_envs, device=env.device)
-        env.object_half_heights = torch.full(
-            (env.scene.num_envs,), cfg.fixed_half_height, device=env.device
-        )
-        env.object_dimensions = torch.tensor(
-            cfg.fixed_dimensions, device=env.device
-        ).repeat(env.scene.num_envs, 1)
+        env.object_half_heights = torch.full((env.scene.num_envs,), cfg.fixed_half_height, device=env.device)
+        env.object_dimensions = torch.tensor(cfg.fixed_dimensions, device=env.device).repeat(env.scene.num_envs, 1)
         return
 
     if cfg.randomize_shape:
@@ -149,9 +160,7 @@ def _spawn_objects(env: DeltoEnv) -> None:
     if cfg.randomize_color:
         color_min = torch.tensor(cfg.color_min)
         color_max = torch.tensor(cfg.color_max)
-        colors = color_min + (color_max - color_min) * torch.rand(
-            (env.scene.num_envs, 3)
-        )
+        colors = color_min + (color_max - color_min) * torch.rand((env.scene.num_envs, 3))
     else:
         colors = torch.tensor(cfg.default_color).repeat(env.scene.num_envs, 1)
 
@@ -170,9 +179,7 @@ def _spawn_objects(env: DeltoEnv) -> None:
     # Spawn all heterogeneous objects through one regex operation.  This is
     # compatible with replicated physics in current Isaac Lab; editing env_0
     # and then manually creating every object duplicates inherited prims.
-    multi_spawn_cfg = sim_utils.MultiAssetSpawnerCfg(
-        assets_cfg=spawn_cfgs, random_choice=False
-    )
+    multi_spawn_cfg = sim_utils.MultiAssetSpawnerCfg(assets_cfg=spawn_cfgs, random_choice=False)
     multi_spawn_cfg.func("/World/envs/env_.*/Object", multi_spawn_cfg)
 
     env.object_shape_ids = torch.tensor(shape_ids, device=env.device)
@@ -191,52 +198,26 @@ def _make_object_spawn_cfg(cfg, shape_name: str, color: tuple[float, float, floa
         ),
         "mass_props": sim_utils.MassPropertiesCfg(mass=cfg.default_mass),
         "collision_props": sim_utils.CollisionPropertiesCfg(),
-        "visual_material": sim_utils.PreviewSurfaceCfg(
-            diffuse_color=color, metallic=0.1
-        ),
+        "visual_material": sim_utils.PreviewSurfaceCfg(diffuse_color=color, metallic=0.1),
     }
     if shape_name == "cuboid":
-        size = (
-            _sample_vector(cfg.cuboid_size_min, cfg.cuboid_size_max)
-            if cfg.randomize_size
-            else cfg.cuboid_size
-        )
+        size = _sample_vector(cfg.cuboid_size_min, cfg.cuboid_size_max) if cfg.randomize_size else cfg.cuboid_size
         return sim_utils.CuboidCfg(size=size, **common), 0.5 * size[2], size
     if shape_name == "sphere":
-        radius = (
-            _sample_scalar(cfg.sphere_radius_range)
-            if cfg.randomize_size
-            else cfg.sphere_radius
-        )
+        radius = _sample_scalar(cfg.sphere_radius_range) if cfg.randomize_size else cfg.sphere_radius
         dimensions = (2.0 * radius,) * 3
         return sim_utils.SphereCfg(radius=radius, **common), radius, dimensions
     if shape_name == "cylinder":
-        radius = (
-            _sample_scalar(cfg.cylinder_radius_range)
-            if cfg.randomize_size
-            else cfg.cylinder_radius
-        )
-        height = (
-            _sample_scalar(cfg.cylinder_height_range)
-            if cfg.randomize_size
-            else cfg.cylinder_height
-        )
+        radius = _sample_scalar(cfg.cylinder_radius_range) if cfg.randomize_size else cfg.cylinder_radius
+        height = _sample_scalar(cfg.cylinder_height_range) if cfg.randomize_size else cfg.cylinder_height
         return (
             sim_utils.CylinderCfg(radius=radius, height=height, axis="Z", **common),
             0.5 * height,
             (2.0 * radius, 2.0 * radius, height),
         )
     if shape_name == "capsule":
-        radius = (
-            _sample_scalar(cfg.capsule_radius_range)
-            if cfg.randomize_size
-            else cfg.capsule_radius
-        )
-        height = (
-            _sample_scalar(cfg.capsule_height_range)
-            if cfg.randomize_size
-            else cfg.capsule_height
-        )
+        radius = _sample_scalar(cfg.capsule_radius_range) if cfg.randomize_size else cfg.capsule_radius
+        height = _sample_scalar(cfg.capsule_height_range) if cfg.randomize_size else cfg.capsule_height
         return (
             sim_utils.CapsuleCfg(radius=radius, height=height, axis="Z", **common),
             radius + 0.5 * height,
@@ -253,9 +234,7 @@ def _sample_scalar(value_range: tuple[float, float]) -> float:
     return lower + (upper - lower) * torch.rand(()).item()
 
 
-def _sample_vector(
-    lower: tuple[float, float, float], upper: tuple[float, float, float]
-) -> tuple[float, float, float]:
+def _sample_vector(lower: tuple[float, float, float], upper: tuple[float, float, float]) -> tuple[float, float, float]:
     """Sample a three-dimensional vector uniformly component-wise."""
     lower_tensor = torch.tensor(lower)
     upper_tensor = torch.tensor(upper)
@@ -270,9 +249,7 @@ def allocate_buffers(env: DeltoEnv) -> None:
     env.env_origins = env.scene.env_origins
     env.hand_joint_ids, _ = env.hand.find_joints(env.cfg.robot.hand_joint_names)
     env.arm_joint_ids, _ = env.hand.find_joints(env.cfg.robot.arm_joint_names)
-    env.fingertip_body_ids = [
-        env.hand.body_names.index(name) for name in env.cfg.sensors.fingertip_names
-    ]
+    env.fingertip_body_ids = [env.hand.body_names.index(name) for name in env.cfg.sensors.fingertip_names]
 
     env.joint_pos = env.hand.data.joint_pos
     env.joint_vel = env.hand.data.joint_vel
@@ -293,23 +270,16 @@ def allocate_buffers(env: DeltoEnv) -> None:
     # PhysX rigid-body/material setters perform a full CPU tensor round-trip.
     # Give every environment one independently sampled parameter set, but do
     # not repeat that expensive operation on every episodic reset.
-    env.object_mass_initialized = torch.zeros(
-        env.num_envs, device=env.device, dtype=torch.bool
-    )
-    env.object_friction_initialized = torch.zeros(
-        env.num_envs, device=env.device, dtype=torch.bool
-    )
+    env.object_mass_initialized = torch.zeros(env.num_envs, device=env.device, dtype=torch.bool)
+    env.object_friction_initialized = torch.zeros(env.num_envs, device=env.device, dtype=torch.bool)
     env.curriculum_level = 0
-    env.curriculum_success_streak = 0
-    env.curriculum_last_update_step = -env.cfg.curriculum.level_cooldown_steps
+    env.curriculum_last_update_episode = 0
     env.object_external_force = torch.zeros((env.num_envs, 3), device=env.device)
 
     # Joint coordinate conventions and ordering come from the committed
     # OmniReset articulation, not from the reference repository's older USD.
     env.robot_start_position = env.hand.data.default_joint_pos[0].clone()
-    env.robot_start_position[env.arm_joint_ids] = torch.tensor(
-        env.cfg.robot.arm_start_pos, device=env.device
-    )
+    env.robot_start_position[env.arm_joint_ids] = torch.tensor(env.cfg.robot.arm_start_pos, device=env.device)
     env.robot_lower_limits = env.hand.data.soft_joint_pos_limits[0, :, 0].clone()
     env.robot_upper_limits = env.hand.data.soft_joint_pos_limits[0, :, 1].clone()
     env.action_scale = torch.tensor(env.cfg.action.scale, device=env.device).unsqueeze(0)
@@ -318,17 +288,24 @@ def allocate_buffers(env: DeltoEnv) -> None:
     env.raw_actions = torch.zeros(shape, device=env.device)
     env.raw_prev_actions = torch.zeros_like(env.raw_actions)
     env.target_pos = env.robot_start_position.repeat(env.num_envs, 1)
-    env.per_env_timeout = torch.full(
-        (env.num_envs,), env.max_episode_length, device=env.device, dtype=torch.long
-    )
-    env.success_hold_counter = torch.zeros(
-        (env.num_envs,), device=env.device, dtype=torch.long
-    )
+    env.per_env_timeout = torch.full((env.num_envs,), env.max_episode_length, device=env.device, dtype=torch.long)
+    env.success_hold_counter = torch.zeros((env.num_envs,), device=env.device, dtype=torch.long)
+    env.episode_had_contact = torch.zeros((env.num_envs,), device=env.device, dtype=torch.bool)
+    env.episode_had_lift = torch.zeros_like(env.episode_had_contact)
+    env.episode_had_step_success = torch.zeros_like(env.episode_had_contact)
+    env.episode_success = torch.zeros_like(env.episode_had_contact)
+
+    outcome_window_size = env.cfg.termination.outcome_window_size
+    if outcome_window_size < 1:
+        raise ValueError("TerminationCfg.outcome_window_size must be positive.")
+    env.episode_outcome_window = torch.full((outcome_window_size,), -1, device=env.device, dtype=torch.int8)
+    env.episode_outcome_window_position = 0
+    env.episode_outcome_window_count = 0
+    env.completed_episodes_total = 0
+    env.episode_outcome_totals = torch.zeros(len(_OUTCOME_NAMES), device=env.device, dtype=torch.long)
 
     single_obs_dim = (
-        env.cfg.action_space
-        + 4 * len(env.cfg.sensors.fingertip_names)
-        + 3 * env.cfg.sensors.point_cloud_size
+        env.cfg.action_space + 4 * len(env.cfg.sensors.fingertip_names) + 3 * env.cfg.sensors.point_cloud_size
     )
     env.observation_history = torch.zeros(
         (env.num_envs, env.cfg.observation.history_length, single_obs_dim),
@@ -352,13 +329,9 @@ def _create_material_buckets(env: DeltoEnv) -> torch.Tensor:
         dtype=torch.float32,
     )
     if (ranges[:, 0] < 0.0).any() or (ranges[:, 1] < ranges[:, 0]).any():
-        raise ValueError(
-            "Object material randomization ranges must be non-negative and ordered."
-        )
+        raise ValueError("Object material randomization ranges must be non-negative and ordered.")
 
-    buckets = ranges[:, 0] + (ranges[:, 1] - ranges[:, 0]) * torch.rand(
-        (cfg.friction_num_buckets, 3)
-    )
+    buckets = ranges[:, 0] + (ranges[:, 1] - ranges[:, 0]) * torch.rand((cfg.friction_num_buckets, 3))
     buckets[:, 1] = torch.minimum(buckets[:, 0], buckets[:, 1])
     return buckets
 
@@ -379,29 +352,18 @@ def _apply_curriculum_force(env: DeltoEnv) -> None:
     forces = torch.zeros((env.num_envs, 1, 3), device=env.device)
 
     if cfg.enabled and level_scale > 0.0:
-        table_top_height = (
-            env.cfg.object.table.init_state.pos[2]
-            + 0.5 * env.cfg.object.table.spawn.size[2]
-        )
+        table_top_height = env.cfg.object.table.init_state.pos[2] + 0.5 * env.cfg.object.table.spawn.size[2]
         object_height = (
-            env.object.data.body_com_pos_w[:, 0, 2]
-            - env.env_origins[:, 2]
-            - table_top_height
-            - env.object_half_heights
+            env.object.data.body_com_pos_w[:, 0, 2] - env.env_origins[:, 2] - table_top_height - env.object_half_heights
         )
         lifted = object_height > cfg.external_force_lift_height
         selected = lifted & (
-            torch.rand(env.num_envs, device=env.device)
-            < cfg.external_force_probability_max * level_scale
+            torch.rand(env.num_envs, device=env.device) < cfg.external_force_probability_max * level_scale
         )
 
         directions = torch.randn((env.num_envs, 3), device=env.device)
         directions /= directions.norm(dim=1, keepdim=True).clamp_min(1.0e-6)
-        magnitudes = (
-            cfg.external_force_max
-            * level_scale
-            * torch.rand((env.num_envs, 1), device=env.device)
-        )
+        magnitudes = cfg.external_force_max * level_scale * torch.rand((env.num_envs, 1), device=env.device)
         forces[:, 0] = directions * magnitudes * selected.unsqueeze(1)
 
     body_ids = torch.tensor([0], device=env.device, dtype=torch.int32)
@@ -437,9 +399,7 @@ def read_contacts(env: DeltoEnv) -> tuple[torch.Tensor, torch.Tensor, torch.Tens
 
     force_magnitudes = torch.stack(forces, dim=1)
     contact_flags = force_magnitudes > env.cfg.sensors.contact_threshold
-    fingertip_pos = (
-        env.hand.data.body_pos_w[:, env.fingertip_body_ids] - env.env_origins.unsqueeze(1)
-    )
+    fingertip_pos = env.hand.data.body_pos_w[:, env.fingertip_body_ids] - env.env_origins.unsqueeze(1)
     return force_magnitudes, contact_flags, fingertip_pos
 
 
@@ -461,9 +421,7 @@ def build_observations(env: DeltoEnv) -> dict[str, torch.Tensor]:
     )
 
     env.observation_history = torch.roll(env.observation_history, shifts=-1, dims=1)
-    env.critic_observation_history = torch.roll(
-        env.critic_observation_history, shifts=-1, dims=1
-    )
+    env.critic_observation_history = torch.roll(env.critic_observation_history, shifts=-1, dims=1)
     env.observation_history[:, -1] = noisy_observation
     env.critic_observation_history[:, -1] = clean_observation
     if env.cfg.observation.flatten_history:
@@ -474,9 +432,7 @@ def build_observations(env: DeltoEnv) -> dict[str, torch.Tensor]:
         critic_observation = env.critic_observation_history
     observations = {"policy": policy_observation}
     if env.cfg.observation.asymmetric_critic:
-        observations["critic"] = torch.cat(
-            (critic_observation, _build_privileged_state(env)), dim=1
-        )
+        observations["critic"] = torch.cat((critic_observation, _build_privileged_state(env)), dim=1)
     return observations
 
 
@@ -491,25 +447,13 @@ def _add_curriculum_observation_noise(
     cfg = env.cfg.curriculum
     level_scale = env.curriculum_level / max(cfg.max_level, 1)
     if not cfg.enabled or level_scale == 0.0:
-        return torch.cat(
-            (joint_pos, forces, fingertip_pos.flatten(1), points.flatten(1)), dim=1
-        )
+        return torch.cat((joint_pos, forces, fingertip_pos.flatten(1), points.flatten(1)), dim=1)
 
-    joint_pos = joint_pos + torch.randn_like(joint_pos) * (
-        cfg.joint_pos_noise_std_max * level_scale
-    )
-    forces = forces + torch.randn_like(forces) * (
-        cfg.contact_force_noise_std_max * level_scale
-    )
-    fingertip_pos = fingertip_pos + torch.randn_like(fingertip_pos) * (
-        cfg.spatial_noise_std_max * level_scale
-    )
-    points = points + torch.randn_like(points) * (
-        cfg.spatial_noise_std_max * level_scale
-    )
-    return torch.cat(
-        (joint_pos, forces, fingertip_pos.flatten(1), points.flatten(1)), dim=1
-    )
+    joint_pos = joint_pos + torch.randn_like(joint_pos) * (cfg.joint_pos_noise_std_max * level_scale)
+    forces = forces + torch.randn_like(forces) * (cfg.contact_force_noise_std_max * level_scale)
+    fingertip_pos = fingertip_pos + torch.randn_like(fingertip_pos) * (cfg.spatial_noise_std_max * level_scale)
+    points = points + torch.randn_like(points) * (cfg.spatial_noise_std_max * level_scale)
+    return torch.cat((joint_pos, forces, fingertip_pos.flatten(1), points.flatten(1)), dim=1)
 
 
 def _build_privileged_state(env: DeltoEnv) -> torch.Tensor:
@@ -521,12 +465,8 @@ def _build_privileged_state(env: DeltoEnv) -> torch.Tensor:
     shape = torch.nn.functional.one_hot(
         env.object_shape_ids.long(), num_classes=len(env.cfg.object.shape_names)
     ).float()
-    episode_progress = (
-        env.episode_length_buf.float() / env.max_episode_length
-    ).unsqueeze(1)
-    timeout_fraction = (
-        env.per_env_timeout.float() / env.max_episode_length
-    ).unsqueeze(1)
+    episode_progress = (env.episode_length_buf.float() / env.max_episode_length).unsqueeze(1)
+    timeout_fraction = (env.per_env_timeout.float() / env.max_episode_length).unsqueeze(1)
     curriculum_level = torch.full(
         (env.num_envs, 1),
         env.curriculum_level / max(env.cfg.curriculum.max_level, 1),
@@ -557,24 +497,19 @@ def compute_rewards(env: DeltoEnv) -> torch.Tensor:
     forces, contact_flags, fingertip_pos = read_contacts(env)
     object_pos = env.object.data.body_com_pos_w[:, 0, :3] - env.env_origins
     object_distance = (fingertip_pos - object_pos.unsqueeze(1)).norm(dim=2).amax(dim=1)
-    approach = cfg.approach_scale * (
-        1.0 - torch.tanh(object_distance / cfg.approach_distance_scale)
-    )
+    approach = cfg.approach_scale * (1.0 - torch.tanh(object_distance / cfg.approach_distance_scale))
 
     contact_count = contact_flags.sum(dim=1)
+    env.episode_had_contact |= contact_count > 0
     contact_reward = cfg.contact_scale * contact_count
-    table_top_height = (
-        env.cfg.object.table.init_state.pos[2]
-        + 0.5 * env.cfg.object.table.spawn.size[2]
-    )
+    table_top_height = env.cfg.object.table.init_state.pos[2] + 0.5 * env.cfg.object.table.spawn.size[2]
     initial_height = table_top_height + env.object_half_heights
     lifted_height = (object_pos[:, 2] - initial_height).clamp_min(0.0)
+    env.episode_had_lift |= object_pos[:, 2] >= cfg.success_height
     # A hard three-contact gate left PPO with no gradient between reaching and
     # a complete grasp.  Smoothly increase lift credit as more fingertips make
     # object-only contact; the success predicate below remains strictly gated.
-    contact_fraction = (
-        contact_count.float() / cfg.grasp_contact_min
-    ).clamp(max=1.0)
+    contact_fraction = (contact_count.float() / cfg.grasp_contact_min).clamp(max=1.0)
     lift_reward = (
         cfg.lift_scale
         * torch.tanh(lifted_height / cfg.lift_distance_scale)
@@ -582,34 +517,21 @@ def compute_rewards(env: DeltoEnv) -> torch.Tensor:
     )
 
     max_force = forces.amax(dim=1)
-    force_term = cfg.force_scale * torch.where(
-        max_force > cfg.force_threshold, -max_force, max_force
-    )
-    action_rate_penalty = -cfg.action_rate_scale * (
-        env.raw_prev_actions - env.raw_actions
-    ).square().sum(dim=1).clamp_max(1000.0)
-    action_penalty = (
-        -cfg.action_scale * env.raw_actions.square().sum(dim=1).clamp_max(1000.0)
-    )
+    force_term = cfg.force_scale * torch.where(max_force > cfg.force_threshold, -max_force, max_force)
+    action_rate_penalty = -cfg.action_rate_scale * (env.raw_prev_actions - env.raw_actions).square().sum(
+        dim=1
+    ).clamp_max(1000.0)
+    action_penalty = -cfg.action_scale * env.raw_actions.square().sum(dim=1).clamp_max(1000.0)
 
-    success = (object_pos[:, 2] >= cfg.success_height) & (
-        contact_count >= cfg.grasp_contact_min
-    )
+    success = (object_pos[:, 2] >= cfg.success_height) & (contact_count >= cfg.grasp_contact_min)
+    env.episode_had_step_success |= success
     env.success_hold_counter = torch.where(
         success, env.success_hold_counter + 1, torch.zeros_like(env.success_hold_counter)
     )
     held_success = env.success_hold_counter >= cfg.hold_steps
-    _update_curriculum(env, success)
+    env.episode_success |= held_success
     success_bonus = cfg.success_bonus * success.float()
-    reward = (
-        approach
-        + contact_reward
-        + lift_reward
-        + force_term
-        + action_rate_penalty
-        + action_penalty
-        + success_bonus
-    )
+    reward = approach + contact_reward + lift_reward + force_term + action_rate_penalty + action_penalty + success_bonus
 
     log = env.extras.setdefault("log", {})
     log["Reward/approach"] = approach.mean().item()
@@ -623,51 +545,102 @@ def compute_rewards(env: DeltoEnv) -> torch.Tensor:
     log["Metrics/contact_count_mean"] = contact_count.float().mean().item()
     log["Metrics/contact_force_mean"] = max_force.mean().item()
     log["Metrics/contact_force_p95"] = torch.quantile(max_force, 0.95).item()
-    log["Metrics/contact_force_over_threshold"] = (
-        max_force > cfg.force_threshold
-    ).float().mean().item()
+    log["Metrics/contact_force_over_threshold"] = (max_force > cfg.force_threshold).float().mean().item()
     log["Metrics/lifted_height_mean"] = lifted_height.mean().item()
-    log["Metrics/held_success_rate"] = held_success.float().mean().item()
+    log["Metrics/snapshot_success_rate"] = success.float().mean().item()
+    log["Metrics/snapshot_held_success_rate"] = held_success.float().mean().item()
+    log["Curriculum/level"] = env.curriculum_level
+    log["Curriculum/noise_scale"] = env.curriculum_level / max(env.cfg.curriculum.max_level, 1)
+    log["Curriculum/external_force_mean"] = env.object_external_force.norm(dim=1).mean().item()
     return reward
 
 
-def _update_curriculum(env: DeltoEnv, success: torch.Tensor) -> None:
-    """Advance curriculum after a sustained population-level success rate."""
+def _update_curriculum(env: DeltoEnv) -> None:
+    """Advance curriculum from a completed-episode success window."""
     cfg = env.cfg.curriculum
-    success_rate = success.float().mean().item()
-    if cfg.enabled and env.curriculum_level < cfg.max_level:
-        if success_rate >= cfg.success_rate_threshold:
-            env.curriculum_success_streak += 1
-        else:
-            env.curriculum_success_streak = 0
+    if not cfg.enabled or env.curriculum_level >= cfg.max_level:
+        return
+    if env.episode_outcome_window_count < cfg.min_completed_episodes:
+        return
+    episodes_since_update = env.completed_episodes_total - env.curriculum_last_update_episode
+    if episodes_since_update < cfg.level_cooldown_episodes:
+        return
 
-        step = env._sim_step_counter // env.cfg.decimation
-        cooldown_finished = (
-            step - env.curriculum_last_update_step >= cfg.level_cooldown_steps
-        )
-        if (
-            env.curriculum_success_streak >= cfg.success_consecutive_steps
-            and cooldown_finished
-        ):
-            env.curriculum_level += 1
-            env.curriculum_success_streak = 0
-            env.curriculum_last_update_step = step
-
-    log = env.extras.setdefault("log", {})
-    log["Metrics/success_rate"] = success_rate
-    log["Curriculum/level"] = env.curriculum_level
-    log["Curriculum/noise_scale"] = env.curriculum_level / max(cfg.max_level, 1)
-    log["Curriculum/external_force_mean"] = (
-        env.object_external_force.norm(dim=1).mean().item()
-    )
+    valid = env.episode_outcome_window[: env.episode_outcome_window_count]
+    success_rate = (valid == _SUCCESS_OUTCOME).float().mean().item()
+    if success_rate >= cfg.success_rate_threshold:
+        env.curriculum_level += 1
+        env.curriculum_last_update_episode = env.completed_episodes_total
 
 
-def compute_terminations(env: DeltoEnv) -> tuple[torch.Tensor, torch.Tensor]:
-    """Compute out-of-bounds termination and per-environment timeout."""
+def _object_out_of_bounds(env: DeltoEnv) -> torch.Tensor:
+    """Return the per-environment object workspace violation mask."""
     object_pos = env.object.data.body_com_pos_w[:, 0, :3] - env.env_origins
     lower = torch.tensor(env.cfg.termination.object_position_min, device=env.device)
     upper = torch.tensor(env.cfg.termination.object_position_max, device=env.device)
-    terminated = ((object_pos < lower) | (object_pos > upper)).any(dim=1)
+    return ((object_pos < lower) | (object_pos > upper)).any(dim=1)
+
+
+def record_episode_outcomes(env: DeltoEnv, env_ids: torch.Tensor) -> None:
+    """Log mutually exclusive outcomes for episodes that are about to reset."""
+    success = env.episode_success[env_ids]
+    out_of_bounds = _object_out_of_bounds(env)[env_ids] & ~success
+    no_contact = ~env.episode_had_contact[env_ids]
+    no_lift = ~env.episode_had_lift[env_ids]
+    no_step_success = ~env.episode_had_step_success[env_ids]
+
+    outcomes = torch.full(
+        (env_ids.numel(),),
+        _TIMEOUT_GRASP_NOT_HELD_OUTCOME,
+        device=env.device,
+        dtype=torch.long,
+    )
+    outcomes[no_step_success] = _TIMEOUT_LIFT_NO_GRASP_OUTCOME
+    outcomes[no_lift] = _TIMEOUT_CONTACT_NO_LIFT_OUTCOME
+    outcomes[no_contact] = _TIMEOUT_NO_CONTACT_OUTCOME
+    outcomes[out_of_bounds] = _OUT_OF_BOUNDS_OUTCOME
+    outcomes[success] = _SUCCESS_OUTCOME
+
+    batch_counts = torch.bincount(outcomes, minlength=len(_OUTCOME_NAMES))
+    env.episode_outcome_totals += batch_counts
+    env.completed_episodes_total += outcomes.numel()
+
+    window_size = env.episode_outcome_window.numel()
+    window_outcomes = outcomes[-window_size:]
+    indices = (
+        torch.arange(window_outcomes.numel(), device=env.device) + env.episode_outcome_window_position
+    ) % window_size
+    env.episode_outcome_window[indices] = window_outcomes.to(torch.int8)
+    env.episode_outcome_window_position = int(
+        (env.episode_outcome_window_position + window_outcomes.numel()) % window_size
+    )
+    env.episode_outcome_window_count = min(window_size, env.episode_outcome_window_count + window_outcomes.numel())
+
+    window = env.episode_outcome_window[: env.episode_outcome_window_count]
+    window_counts = torch.bincount(window.long(), minlength=len(_OUTCOME_NAMES))
+    batch_denominator = max(outcomes.numel(), 1)
+    window_denominator = max(env.episode_outcome_window_count, 1)
+    lifetime_denominator = max(env.completed_episodes_total, 1)
+    log = env.extras.setdefault("log", {})
+    log["Metrics/completed_episodes_batch"] = float(outcomes.numel())
+    log["Metrics/completed_episodes_lifetime"] = float(env.completed_episodes_total)
+    log["Metrics/episode_length_mean"] = env.episode_length_buf[env_ids].float().mean().item()
+    log["Metrics/episode_success_rate_batch"] = batch_counts[_SUCCESS_OUTCOME].item() / batch_denominator
+    log["Metrics/episode_success_rate_window"] = window_counts[_SUCCESS_OUTCOME].item() / window_denominator
+    log["Metrics/episode_success_rate_lifetime"] = (
+        env.episode_outcome_totals[_SUCCESS_OUTCOME].item() / lifetime_denominator
+    )
+    for outcome_id, name in enumerate(_OUTCOME_NAMES):
+        log[f"Terminations/{name}_rate_batch"] = batch_counts[outcome_id].item() / batch_denominator
+        log[f"Terminations/{name}_rate_window"] = window_counts[outcome_id].item() / window_denominator
+        log[f"Terminations/{name}_count_lifetime"] = float(env.episode_outcome_totals[outcome_id].item())
+
+    _update_curriculum(env)
+
+
+def compute_terminations(env: DeltoEnv) -> tuple[torch.Tensor, torch.Tensor]:
+    """Terminate successful holds and out-of-bounds failures."""
+    terminated = _object_out_of_bounds(env) | env.episode_success
     truncated = env.episode_length_buf >= env.per_env_timeout
     return terminated, truncated
 
@@ -676,9 +649,7 @@ def reset_envs(env: DeltoEnv, env_ids: torch.Tensor) -> None:
     """Reset robot, task buffers, and object poses for selected environments."""
     count = env_ids.numel()
     noise_deg = env.cfg.reset.joint_noise_deg
-    joint_noise = torch.randint(
-        -noise_deg, noise_deg + 1, (count, env.cfg.action_space), device=env.device
-    )
+    joint_noise = torch.randint(-noise_deg, noise_deg + 1, (count, env.cfg.action_space), device=env.device)
     joint_pos = env.robot_start_position + torch.deg2rad(joint_noise.float())
     joint_pos.clamp_(env.robot_lower_limits, env.robot_upper_limits)
     joint_vel = torch.zeros_like(joint_pos)
@@ -690,13 +661,15 @@ def reset_envs(env: DeltoEnv, env_ids: torch.Tensor) -> None:
     env.critic_observation_history[env_ids] = 0.0
     env.object_external_force[env_ids] = 0.0
     env.success_hold_counter[env_ids] = 0
+    env.episode_had_contact[env_ids] = False
+    env.episode_had_lift[env_ids] = False
+    env.episode_had_step_success[env_ids] = False
+    env.episode_success[env_ids] = False
 
     low_fraction, high_fraction = env.cfg.reset.timeout_fraction_range
     low = int(low_fraction * env.max_episode_length)
     high = int(high_fraction * env.max_episode_length)
-    env.per_env_timeout[env_ids] = torch.randint(
-        low, high + 1, (count,), device=env.device
-    )
+    env.per_env_timeout[env_ids] = torch.randint(low, high + 1, (count,), device=env.device)
 
     env.hand.write_joint_state_to_sim(joint_pos, joint_vel, None, env_ids)
     env.hand.set_joint_position_target(joint_pos, env_ids=env_ids)
@@ -719,9 +692,7 @@ def _randomize_object_mass(env: DeltoEnv, env_ids: torch.Tensor) -> None:
     if mass_min <= 0.0 or mass_max < mass_min:
         raise ValueError(f"Invalid ObjectCfg.mass_range: {cfg.mass_range}")
 
-    masses = mass_min + (mass_max - mass_min) * torch.rand(
-        (count, 1), device=env.device
-    )
+    masses = mass_min + (mass_max - mass_min) * torch.rand((count, 1), device=env.device)
     physics_env_ids = env_ids.to(device="cpu", dtype=torch.int32)
     all_masses = env.object.root_physx_view.get_masses()
     all_masses[physics_env_ids] = masses.to(device="cpu")
@@ -757,9 +728,7 @@ def _randomize_object_friction(env: DeltoEnv, env_ids: torch.Tensor) -> None:
 
     materials = env.object.root_physx_view.get_material_properties()
     materials[env_ids_cpu] = samples
-    env.object.root_physx_view.set_material_properties(
-        materials, env_ids_cpu.to(torch.int32)
-    )
+    env.object.root_physx_view.set_material_properties(materials, env_ids_cpu.to(torch.int32))
     env.object_material_properties[env_ids] = samples[:, 0].to(env.device)
     env.object_friction_initialized[env_ids] = True
 
@@ -770,10 +739,7 @@ def _reset_object(env: DeltoEnv, env_ids: torch.Tensor) -> None:
     root_state = env.object.data.default_root_state[env_ids].clone()
     xy_range = env.cfg.reset.object_xy_range
     root_state[:, :2] += 2.0 * xy_range * (torch.rand((count, 2), device=env.device) - 0.5)
-    table_top_height = (
-        env.cfg.object.table.init_state.pos[2]
-        + 0.5 * env.cfg.object.table.spawn.size[2]
-    )
+    table_top_height = env.cfg.object.table.init_state.pos[2] + 0.5 * env.cfg.object.table.spawn.size[2]
     root_state[:, 2] = (
         table_top_height
         + env.object_half_heights[env_ids]

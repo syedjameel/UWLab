@@ -1,4 +1,6 @@
-# Copyright (c) 2024-2026, The UW Lab Project Developers.
+# Copyright (c) 2024-2026, The UW Lab Project Developers. (https://github.com/uw-lab/UWLab/blob/main/CONTRIBUTORS.md).
+# All Rights Reserved.
+#
 # SPDX-License-Identifier: BSD-3-Clause
 
 """FurnitureBench table-leg grasp and lift with UR10e + Tesollo DELTO."""
@@ -15,10 +17,12 @@ from isaaclab.managers import SceneEntityCfg
 from isaaclab.managers import TerminationTermCfg as DoneTerm
 from isaaclab.sensors import ContactSensorCfg
 from isaaclab.utils import configclass
+from isaaclab_tasks.manager_based.manipulation.dexsuite import dexsuite_env_cfg as dexsuite
 from isaaclab_tasks.manager_based.manipulation.dexsuite.adr_curriculum import CurriculumCfg as DexsuiteCurriculumCfg
 
 from uwlab_assets import UWLAB_LOCAL_ASSETS_DIR
 from uwlab_assets.robots.ur10e_delto.ur10e_delto import DELTO_HAND_DEFAULT_JOINT_POS
+
 from . import mdp
 from .dexlift_ur10e_delto_env_cfg import (
     ALL_TIP_NAMES,
@@ -29,8 +33,6 @@ from .dexlift_ur10e_delto_env_cfg import (
     UR10eDeltoEventCfg,
     UR10eDeltoMixinCfg,
 )
-from isaaclab_tasks.manager_based.manipulation.dexsuite import dexsuite_env_cfg as dexsuite
-
 
 ASSET_ROOT = f"{UWLAB_LOCAL_ASSETS_DIR}/Props/FurnitureBench/SquareTableOneLeg"
 # Put the near table edge at x=0.45 m, leaving the UR a little more operating
@@ -91,18 +93,32 @@ GRASP_HAND_ACTION = {
     for name, action in zip(
         (f"rj_dg_{finger}_{joint}" for finger in range(1, 6) for joint in range(1, 5)),
         (
-            0.43454090, -0.14072552, 0.55655491, 0.33865815,
-            -0.83503151, -0.43959865, 1.0, 0.69505721,
-            -0.42886350, -0.65505075, 0.45063210, 0.61510897,
-            0.23848540, 0.93663901, -0.06144656, 0.08257288,
-            0.56994998, 0.23781885, -0.63208628, -0.08513815,
+            0.43454090,
+            -0.14072552,
+            0.55655491,
+            0.33865815,
+            -0.83503151,
+            -0.43959865,
+            1.0,
+            0.69505721,
+            -0.42886350,
+            -0.65505075,
+            0.45063210,
+            0.61510897,
+            0.23848540,
+            0.93663901,
+            -0.06144656,
+            0.08257288,
+            0.56994998,
+            0.23781885,
+            -0.63208628,
+            -0.08513815,
         ),
         strict=True,
     )
 }
 GRASP_HAND_JOINT_POS = {
-    name: DELTO_HAND_DEFAULT_JOINT_POS[name]
-    + (1.50 if name.endswith("_4") else 0.30) * action
+    name: DELTO_HAND_DEFAULT_JOINT_POS[name] + (1.50 if name.endswith("_4") else 0.30) * action
     for name, action in GRASP_HAND_ACTION.items()
 }
 # Smooth replay carries the root 372 mm from the table while preserving the
@@ -126,16 +142,11 @@ FULL_OBJECT_POSE_RANGE = {
     "pitch": (-0.02, 0.02),
     "yaw": (-0.02, 0.02),
 }
-FINGER_CONTACT_NAMES = tuple(
-    f"rl_dg_{finger}_{link}" for finger in range(1, 6) for link in ("1", "2", "3", "4", "tip")
-)
+FINGER_CONTACT_NAMES = tuple(f"rl_dg_{finger}_{link}" for finger in range(1, 6) for link in ("1", "2", "3", "4", "tip"))
 FINGER_CONTACT_GROUPS = tuple(
-    tuple(name for name in FINGER_CONTACT_NAMES if name.startswith(f"rl_dg_{finger}_"))
-    for finger in range(1, 6)
+    tuple(name for name in FINGER_CONTACT_NAMES if name.startswith(f"rl_dg_{finger}_")) for finger in range(1, 6)
 )
-FINGER_JOINT_GROUPS = tuple(
-    tuple(f"rj_dg_{finger}_{joint}" for joint in range(1, 5)) for finger in range(1, 6)
-)
+FINGER_JOINT_GROUPS = tuple(tuple(f"rj_dg_{finger}_{joint}" for joint in range(1, 5)) for finger in range(1, 6))
 THUMB_CONTACT_NAMES = tuple(name for name in FINGER_CONTACT_NAMES if name.startswith(("rl_dg_1_", "rl_dg_5_")))
 TIP_CONTACT_NAMES = tuple(
     name for name in FINGER_CONTACT_NAMES if name.startswith(("rl_dg_2_", "rl_dg_3_", "rl_dg_4_"))
@@ -182,7 +193,12 @@ def _leg_cfg() -> RigidObjectCfg:
             fix_base=False,
             joint_drive=None,
             merge_fixed_joints=True,
-            collider_type="convex_decomposition",
+            # The URDF already supplies twelve CoACD convex body pieces.  Asking
+            # the importer to decompose each piece again makes every launch run
+            # VHACD for minutes and multiplies contact patches at 4096 envs.
+            # A convex hull preserves each authored convex piece; only the small
+            # threaded cap is conservatively hulled, away from the grasp zone.
+            collider_type="convex_hull",
             articulation_props=sim_utils.ArticulationRootPropertiesCfg(articulation_enabled=False),
             activate_contact_sensors=True,
             rigid_props=sim_utils.RigidBodyPropertiesCfg(
@@ -559,21 +575,21 @@ class TableLegGraspLiftEnvCfg(UR10eDeltoMixinCfg, dexsuite.DexsuiteLiftEnvCfg):
         self.scene.robot.init_state.joint_pos.update(RESET_ARM_JOINT_POS)
         self.scene.robot.actuators["arm"] = self.scene.robot.actuators["arm"].replace(stiffness=1600.0, damping=80.0)
         hand_actuator = self.scene.robot.actuators["hand"]
-        # Preserve the identified per-joint gain and effort-limit shapes, but add
-        # enough conservative servo authority to hold posture through arm motion.
-        # Critical damping scales with sqrt(stiffness), hence 4x Kp and 2x Kd.
-        # Keep every phalanx responsive enough for articulated acquisition.
+        # Preserve the identified per-joint gain and effort-limit shapes.  The
+        # lightweight 57 g leg needs enough authority to maintain opposed
+        # contact throughout the long UR lift; measured forces settle near 3 N
+        # per contacted phalanx and peak around 18 N during closure.
         self.scene.robot.actuators["hand"] = hand_actuator.replace(
-            stiffness={name: 4.0 * value for name, value in hand_actuator.stiffness.items()},
-            damping={name: 2.0 * value for name, value in hand_actuator.damping.items()},
-            effort_limit_sim={name: 3.0 * value for name, value in hand_actuator.effort_limit_sim.items()},
-            velocity_limit_sim={
-                name: min(value, 3.0) for name, value in hand_actuator.velocity_limit_sim.items()
-            },
+            stiffness={name: 32.0 * value for name, value in hand_actuator.stiffness.items()},
+            damping={name: (32.0**0.5) * value for name, value in hand_actuator.damping.items()},
+            effort_limit_sim={name: 24.0 * value for name, value in hand_actuator.effort_limit_sim.items()},
+            velocity_limit_sim={name: min(value, 3.0) for name, value in hand_actuator.velocity_limit_sim.items()},
         )
         self.scene.robot.spawn.articulation_props = self.scene.robot.spawn.articulation_props.replace(
             solver_velocity_iteration_count=2
         )
+        # Production launches use two ranks, so this is 4096 environments
+        # globally while keeping each 4090's contact-rich scene at 2048.
         self.scene.num_envs = 2048
         self.scene.env_spacing = 2.0
         self.scene.replicate_physics = True
@@ -596,8 +612,8 @@ class TableLegGraspLiftEnvCfg(UR10eDeltoMixinCfg, dexsuite.DexsuiteLiftEnvCfg):
         self.events.randomize_arm_sysid.params["scale_range"] = (0.0, 0.0)
         self.events.randomize_arm_sysid.params["delay_range"] = (0, 0)
         for material_event in (self.events.robot_physics_material, self.events.object_physics_material):
-            material_event.params["static_friction_range"] = [0.75, 0.75]
-            material_event.params["dynamic_friction_range"] = [0.75, 0.75]
+            material_event.params["static_friction_range"] = [2.0, 2.0]
+            material_event.params["dynamic_friction_range"] = [2.0, 2.0]
         self.events.joint_stiffness_and_damping.params["stiffness_distribution_params"] = [1.0, 1.0]
         self.events.joint_stiffness_and_damping.params["damping_distribution_params"] = [1.0, 1.0]
         self.events.joint_friction.params["friction_distribution_params"] = [1.0, 1.0]
@@ -609,7 +625,10 @@ class TableLegGraspLiftEnvCfg(UR10eDeltoMixinCfg, dexsuite.DexsuiteLiftEnvCfg):
             params={"term_keys": ["object_out_of_bound", "dropped"]},
         )
         self.events.reset_table.params["pose_range"] = {
-            "x": [0.0, 0.0], "y": [0.0, 0.0], "z": [0.0, 0.0], "yaw": [0.0, 0.0]
+            "x": [0.0, 0.0],
+            "y": [0.0, 0.0],
+            "z": [0.0, 0.0],
+            "yaw": [0.0, 0.0],
         }
 
         # Gravity is never disabled: the leg visibly falls to the support table
@@ -619,29 +638,20 @@ class TableLegGraspLiftEnvCfg(UR10eDeltoMixinCfg, dexsuite.DexsuiteLiftEnvCfg):
             (0.0, 0.0, -9.81),
         )
 
-        # Generic fingertip sensors target the old primitive root. Replace them with one
-        # sensor per phalange: PhysX filtered-contact views require one source body per
-        # sensor, and this also makes missing intermediate/distal collision reporting visible.
+        # Generic fingertip sensors target the old primitive root. Replace them
+        # with one object-centric one-to-many view over every hand body. PhysX
+        # supports one source body against many filters; this reports the same
+        # equal-and-opposite per-phalanx forces while avoiding 28 replicated
+        # filtered-contact views per environment.
         for link_name in ALL_TIP_NAMES:
             setattr(self.scene, f"{link_name}_object_s", None)
-        for link_name in FINGER_CONTACT_NAMES:
-            setattr(
-                self.scene,
-                f"{link_name}_object_s",
-                ContactSensorCfg(
-                    prim_path=f"{{ENV_REGEX_NS}}/Robot/gripper/{link_name}",
-                    filter_prim_paths_expr=["{ENV_REGEX_NS}/Object/base_link"],
-                ),
-            )
-        for link_name in NON_FINGER_HAND_CONTACT_NAMES:
-            setattr(
-                self.scene,
-                f"{link_name}_object_s",
-                ContactSensorCfg(
-                    prim_path=f"{{ENV_REGEX_NS}}/Robot/gripper/{link_name}",
-                    filter_prim_paths_expr=["{ENV_REGEX_NS}/Object/base_link"],
-                ),
-            )
+        self.scene.object_hand_s = ContactSensorCfg(
+            prim_path="{ENV_REGEX_NS}/Object/base_link",
+            filter_prim_paths_expr=[
+                f"{{ENV_REGEX_NS}}/Robot/gripper/{link_name}"
+                for link_name in (*FINGER_CONTACT_NAMES, *NON_FINGER_HAND_CONTACT_NAMES)
+            ],
+        )
         self.scene.table_s = ContactSensorCfg(
             prim_path="{ENV_REGEX_NS}/table",
             filter_prim_paths_expr=["{ENV_REGEX_NS}/Object/base_link"],
@@ -649,6 +659,10 @@ class TableLegGraspLiftEnvCfg(UR10eDeltoMixinCfg, dexsuite.DexsuiteLiftEnvCfg):
 
         self.observations.policy.object_pos_b = ObsTerm(func=mdp.object_pos_b)
         self.observations.policy.object_velocity_b = ObsTerm(func=mdp.object_velocity_b, clip=(-3.0, 3.0))
+        # The airborne settle, approach, close, and lift targets are deliberately
+        # phase-gated.  Exposing finite-horizon progress makes that schedule
+        # Markov instead of forcing the actor to infer it from action history.
+        self.observations.policy.episode_phase = ObsTerm(func=mdp.episode_phase)
         self.observations.proprio.contact = ObsTerm(
             func=mdp.finger_contact_strengths,
             params={"contact_names": FINGER_CONTACT_NAMES, "clip": 5.0},
@@ -664,11 +678,13 @@ class TableLegGraspLiftEnvCfg(UR10eDeltoMixinCfg, dexsuite.DexsuiteLiftEnvCfg):
         self.commands.object_pose.debug_vis = False
 
         self.terminations.object_out_of_bound.params["in_bound_range"] = {
-            "x": (0.2, 1.15), "y": (-0.45, 0.45), "z": (0.0, 1.0)
+            "x": (0.2, 1.15),
+            "y": (-0.45, 0.45),
+            "z": (0.0, 1.0),
         }
         # The airborne leg needs time to fall, be acquired, lift 80 mm, and remain
         # stable for the held-success window.
-        self.episode_length_s = 18.0
+        self.episode_length_s = 24.0
         self.viewer.eye = (1.55, -0.75, 1.05)
         self.viewer.lookat = (WORKSPACE_X, WORKSPACE_Y, 0.50)
 

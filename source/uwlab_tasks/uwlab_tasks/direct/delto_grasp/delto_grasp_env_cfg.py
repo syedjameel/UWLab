@@ -1,3 +1,8 @@
+# Copyright (c) 2024-2026, The UW Lab Project Developers. (https://github.com/uw-lab/UWLab/blob/main/CONTRIBUTORS.md).
+# All Rights Reserved.
+#
+# SPDX-License-Identifier: BSD-3-Clause
+
 """Configuration for the Delto direct RL environment."""
 
 from __future__ import annotations
@@ -14,7 +19,6 @@ from isaaclab.utils.configclass import configclass
 
 from uwlab_assets import UWLAB_LOCAL_ASSETS_DIR
 from uwlab_assets.robots.ur10e_delto import IMPLICIT_UR10E_DELTO
-
 
 _OBJECT_PRIM_PATH_EXPR = "/World/envs/env_.*/Object"
 _HAND_JOINT_EXPR = r"rj_dg_[1-5]_[1-4]"
@@ -80,11 +84,26 @@ class RobotCfg:
         -1.66120136,
     )
     hand_joint_names: tuple[str, ...] = (
-        "rj_dg_1_1", "rj_dg_1_2", "rj_dg_1_3", "rj_dg_1_4",
-        "rj_dg_2_1", "rj_dg_2_2", "rj_dg_2_3", "rj_dg_2_4",
-        "rj_dg_3_1", "rj_dg_3_2", "rj_dg_3_3", "rj_dg_3_4",
-        "rj_dg_4_1", "rj_dg_4_2", "rj_dg_4_3", "rj_dg_4_4",
-        "rj_dg_5_1", "rj_dg_5_2", "rj_dg_5_3", "rj_dg_5_4",
+        "rj_dg_1_1",
+        "rj_dg_1_2",
+        "rj_dg_1_3",
+        "rj_dg_1_4",
+        "rj_dg_2_1",
+        "rj_dg_2_2",
+        "rj_dg_2_3",
+        "rj_dg_2_4",
+        "rj_dg_3_1",
+        "rj_dg_3_2",
+        "rj_dg_3_3",
+        "rj_dg_3_4",
+        "rj_dg_4_1",
+        "rj_dg_4_2",
+        "rj_dg_4_3",
+        "rj_dg_4_4",
+        "rj_dg_5_1",
+        "rj_dg_5_2",
+        "rj_dg_5_3",
+        "rj_dg_5_4",
     )
 
 
@@ -100,7 +119,8 @@ class ObjectCfg:
         init_state=RigidObjectCfg.InitialStateCfg(
             # Match the reference task's 25--30 cm lateral approach rather
             # than dropping an object through the initially open fingers.
-            pos=(1.10, -0.12, 0.35), rot=(1.0, 0.0, 0.0, 0.0)
+            pos=(1.10, -0.12, 0.35),
+            rot=(1.0, 0.0, 0.0, 0.0),
         ),
     )
 
@@ -145,14 +165,10 @@ class ObjectCfg:
         prim_path="/World/envs/env_.*/Table",
         spawn=sim_utils.CuboidCfg(
             size=(1.0, 1.0, 0.04),
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(
-                disable_gravity=True, kinematic_enabled=True
-            ),
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(disable_gravity=True, kinematic_enabled=True),
             mass_props=sim_utils.MassPropertiesCfg(mass=15.0),
             collision_props=sim_utils.CollisionPropertiesCfg(),
-            visual_material=sim_utils.PreviewSurfaceCfg(
-                diffuse_color=(0.1, 0.1, 0.1), metallic=0.1
-            ),
+            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.1, 0.1, 0.1), metallic=0.1),
         ),
         init_state=RigidObjectCfg.InitialStateCfg(pos=(0.85, 0.0, 0.235)),
     )
@@ -183,6 +199,8 @@ class SensorCfg:
         )
         for name in fingertip_names
     }
+
+
 @configclass
 class ActionCfg:
     """Incremental joint-position action parameters."""
@@ -235,10 +253,11 @@ class ResetCfg:
 
 @configclass
 class TerminationCfg:
-    """Object workspace limits [m]."""
+    """Object workspace limits and episode-outcome telemetry."""
 
     object_position_min: tuple[float, float, float] = (0.2, -0.8, 0.0)
     object_position_max: tuple[float, float, float] = (1.6, 0.8, 2.0)
+    outcome_window_size: int = 1024
 
 
 @configclass
@@ -246,9 +265,12 @@ class CurriculumCfg:
     """Success-driven observation-noise and disturbance curriculum."""
 
     enabled: bool = True
-    success_rate_threshold: float = 0.25
-    success_consecutive_steps: int = 10
-    level_cooldown_steps: int = 600
+    # Curriculum decisions use completed episodes, not correlated simulation
+    # frames.  This keeps difficulty fixed until a statistically meaningful
+    # window has actually solved the current level.
+    success_rate_threshold: float = 0.8
+    min_completed_episodes: int = 1024
+    level_cooldown_episodes: int = 1024
     max_level: int = 10
 
     joint_pos_noise_std_max: float = 0.02
@@ -277,9 +299,7 @@ class DeltoGraspEnvCfg(DirectRLEnvCfg):
     sim: SimulationCfg = SimulationCfg(
         dt=1.0 / 120.0,
         render_interval=decimation,
-        physics_material=RigidBodyMaterialCfg(
-            static_friction=1.0, dynamic_friction=1.0
-        ),
+        physics_material=RigidBodyMaterialCfg(static_friction=1.0, dynamic_friction=1.0),
         # The 39-body OmniReset articulation retains hand self-collisions and
         # needs the full collision stack even at the production 512 envs/GPU.
         physx=sim_utils.PhysxCfg(
@@ -287,9 +307,7 @@ class DeltoGraspEnvCfg(DirectRLEnvCfg):
             gpu_collision_stack_size=2**31,
         ),
     )
-    scene: InteractiveSceneCfg = InteractiveSceneCfg(
-        num_envs=32, env_spacing=3.0, replicate_physics=True
-    )
+    scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=32, env_spacing=3.0, replicate_physics=True)
 
     robot: RobotCfg = RobotCfg()
     object: ObjectCfg = ObjectCfg()
@@ -318,9 +336,7 @@ class TableLegObjectCfg(ObjectCfg):
             merge_fixed_joints=True,
             collider_type="convex_decomposition",
             activate_contact_sensors=True,
-            articulation_props=sim_utils.ArticulationRootPropertiesCfg(
-                articulation_enabled=False
-            ),
+            articulation_props=sim_utils.ArticulationRootPropertiesCfg(articulation_enabled=False),
             rigid_props=sim_utils.RigidBodyPropertiesCfg(
                 disable_gravity=False,
                 max_depenetration_velocity=1.0,
@@ -328,9 +344,7 @@ class TableLegObjectCfg(ObjectCfg):
                 solver_velocity_iteration_count=2,
             ),
         ),
-        init_state=RigidObjectCfg.InitialStateCfg(
-            pos=(1.10, -0.12, 0.35), rot=(1.0, 0.0, 0.0, 0.0)
-        ),
+        init_state=RigidObjectCfg.InitialStateCfg(pos=(1.10, -0.12, 0.35), rot=(1.0, 0.0, 0.0, 0.0)),
     )
     randomize_shape: bool = False
     shape_names: tuple[str, ...] = ("table_leg_200mm",)
@@ -365,9 +379,7 @@ class TableLegGraspEnvCfg(DeltoGraspEnvCfg):
         # The URDF importer places the sole rigid body below the Object Xform.
         # Contact filtering must address that rigid body, not its parent.
         for sensor in self.sensors.contacts.values():
-            sensor.filter_prim_paths_expr = [
-                "/World/envs/env_.*/Object/base_link"
-            ]
+            sensor.filter_prim_paths_expr = ["/World/envs/env_.*/Object/base_link"]
 
 
 __all__ = [

@@ -47,6 +47,24 @@ def _sensor_force_magnitudes(env: ManagerBasedRLEnv, contact_names: list[str] | 
     Returns:
         Tensor of shape ``(num_envs, len(contact_names))``.
     """
+    # The table-leg task uses one object-centric one-to-many sensor instead of
+    # one PhysX filtered-contact view per phalanx.  At 4096 environments the
+    # latter creates 28 replicated views and dominates both memory and contact
+    # patch capacity.  The force is equal-and-opposite, so reading it on the
+    # object retains the exact per-body contact magnitudes.
+    if "object_hand_s" in env.scene.sensors:
+        sensor: ContactSensor = env.scene.sensors["object_hand_s"]
+        if not hasattr(env, "_object_hand_contact_indices"):
+            env._object_hand_contact_indices = {
+                path.rsplit("/", 1)[-1]: index for index, path in enumerate(sensor.cfg.filter_prim_paths_expr)
+            }
+        try:
+            indices = [env._object_hand_contact_indices[name] for name in contact_names]
+        except KeyError as exc:
+            raise KeyError(f"No object-hand contact filter configured for {exc.args[0]!r}") from exc
+        force_w = sensor.data.force_matrix_w[:, 0, indices, :]
+        return torch.linalg.vector_norm(force_w, dim=-1)
+
     magnitudes = []
     for name in contact_names:
         sensor: ContactSensor = env.scene.sensors[f"{name}_object_s"]
@@ -259,11 +277,14 @@ def object_upward_velocity_bonus(
     object: RigidObject = env.scene[object_cfg.name]
     vel_z = object.data.root_lin_vel_w[:, 2]
     reward = torch.tanh(vel_z / max(std, 1.0e-6))
-    return reward * contacts(
-        env,
-        threshold,
-        thumb_contact_name,
-        tip_contact_names,
-        unwanted_contact_names,
-        max_unwanted_contact_force,
-    ).float()
+    return (
+        reward
+        * contacts(
+            env,
+            threshold,
+            thumb_contact_name,
+            tip_contact_names,
+            unwanted_contact_names,
+            max_unwanted_contact_force,
+        ).float()
+    )

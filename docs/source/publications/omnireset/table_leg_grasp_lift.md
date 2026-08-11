@@ -9,11 +9,12 @@ alignment, insertion, or screw motion.
 - Asset and MIT provenance: `source/uwlab_assets/uwlab_assets/local/Props/FurnitureBench/SquareTableOneLeg/`
 - Environment, curricula, rewards, and termination: `source/uwlab_tasks/uwlab_tasks/manager_based/manipulation/dexlift/`
 - PPO configuration: `dexlift/agents/rsl_rl_ppo_cfg.py`
+- From-scratch DAgger trainer: `scripts/reinforcement_learning/rsl_rl/train_table_leg_dagger.py`
 - Deterministic evaluator: `scripts/reinforcement_learning/rsl_rl/evaluate.py`
 
 The leg is a 200 mm long-body derivative of the Play2Perfect asset at commit
 `ff2fc62873f6c6cd93164123c8358e9ce2d65c9b`. It preserves the source thread and
-30 mm cross-section, uses convex-decomposition collision geometry, and has mass
+30 mm cross-section, uses the 12 authored CoACD convex collision pieces, and has mass
 57.35 g at the source leg's measured density. The only other task object is a static
 cuboid support table.
 
@@ -46,8 +47,10 @@ continuous DELTO closure action. The latter interpolates all 20 hand joints betw
 individually calibrated open and grasp postures, so the fingers remain articulated
 without requiring PPO to rediscover a fragile 20-dimensional synergy. Arm scales are
 0.50/0.375/0.375/0.75/0.75/1.60 rad. Zero arm action and a nonnegative hand action hold
-the separated reset pose. All 25
-phalanges retain collision geometry and object-filtered contact sensors. The fixed
+the separated reset pose. All 25 phalanges retain collision geometry. One
+object-centric filtered-contact view reports equal-and-opposite force separately for
+all 25 phalanges and the three non-finger hand bodies; this avoids replicating 28
+PhysX contact views per environment. The fixed
 object target is `(0.98, 0.12, 0.65)` m in the robot-root frame. Success requires, for
 30 consecutive control steps (0.5 s):
 
@@ -60,9 +63,10 @@ object target is `(0.98, 0.12, 0.65)` m in the robot-root frame. Success require
 - leg linear speed and palm-relative speed no greater than 0.15 m/s.
 
 The first contact must also occur after at least 30 control steps, and success is
-not evaluated before step 180. The calibrated ordered replay first contacts at
-step 343, sustains opposed multi-finger contact in 128/128 replicas, carries the
-root 372 mm, and passes the same 30-step success termination in 128/128 replicas.
+not evaluated before step 180. The calibrated physical expert first contacts after
+the leg settles, sustains opposed multi-finger contact, carries the root to the
+world-frame target, and passed the exact termination in 61/64 production-configuration
+replicas (95.31%).
 Thus an initial
 overlap, untouched spawn, rigid-hand push, table-supported leg, same-side finger
 press, ballistic launch, transient threshold crossing, or proximity-only motion
@@ -70,14 +74,25 @@ cannot succeed.
 
 ## Train and evaluate
 
-Run one independent seed per GPU; 256 environments fit with all phalange sensors:
+The accepted training path starts from random actor/critic weights. It first clones a
+physical expert, then uses DAgger collections whose expert fraction decays to zero,
+and finishes with low-learning-rate policy-only correction. On two 4090s, use 2,048
+environments per rank (4,096 globally):
 
 ```bash
-python scripts/reinforcement_learning/rsl_rl/train.py \
-  --task DexLift-UR10eDelto-TableLeg-GraspLift-Curriculum-v0 \
-  --num_envs 256 --max_iterations 600 --headless \
-  --logger wandb --log_project_name omnireset-table-leg-corrected
+torchrun --standalone --nproc_per_node=2 \
+  scripts/reinforcement_learning/rsl_rl/train_table_leg_dagger.py \
+  --distributed --headless --num_envs 2048 --seed 63101 \
+  --samples_per_step 128 --epochs 15 --dagger_cycles 6 --dagger_epochs 10 \
+  --refine_cycles 3 --refine_epochs 30 --refine_learning_rate 3e-5 \
+  --batch_size 8192 --learning_rate 3e-4 --eval_episodes 4096 \
+  --checkpoint /path/to/table_leg_dagger.pt
 ```
+
+W&B receives the expert, every assisted/autonomous DAgger collection, and final
+evaluation as mutually exclusive `success`, `dropped`, `object_out_of_bound`,
+`time_out`, and `other` rates. Checkpoint acceptance still comes from the separate
+deterministic evaluator below.
 
 Playback uses `DexLift-UR10eDelto-TableLeg-GraspLift-Play-v0`. Acceptance evaluation
 always uses the full-gravity, full-range base task:
@@ -85,7 +100,7 @@ always uses the full-gravity, full-range base task:
 ```bash
 python scripts/reinforcement_learning/rsl_rl/evaluate.py \
   --task DexLift-UR10eDelto-TableLeg-GraspLift-v0 \
-  --checkpoint /path/to/model.pt --episodes 1000 --num_envs 256 \
+  --checkpoint /path/to/model.pt --episodes 1024 --num_envs 1024 \
   --seed 42125 --headless --output /tmp/table-leg-eval.json
 ```
 
@@ -97,5 +112,14 @@ artifacts and are not committed.
 
 Checkpoints trained before the separated reset were invalidated: their reported
 success came from closing around a leg already inside the hand. A replacement is
-accepted only after at least 1,000 held-out full-gravity episodes meet the contract
-above with at least 80% success.
+accepted only after at least 1,024 held-out full-gravity episodes meet the contract
+above with at least 95% success.
+
+The accepted from-scratch run is
+[`dagger_scratch_global4096_s63101`](https://wandb.ai/i_domrachev-interactive-robotic-systems-lab-kaist/uwlab-delto-tableleg-repro-v2/runs/of5lgv0v).
+Its complete training-process evaluation passed 3,951/4,096 episodes (96.46%):
+3,951 successes, 143 timeouts, two out-of-bounds, and no drops. The independent
+full-range evaluation on seed 64001 passed 986/1,024 episodes (96.29%; Wilson 95%
+interval 94.95% to 97.28%), with 38 timeouts and no drops or out-of-bounds. The accepted
+checkpoint SHA-256 is
+`becb7bf22709ae7e444befeb7c250c82acbf7f4137963a2afe38e480cfb3a63e`.

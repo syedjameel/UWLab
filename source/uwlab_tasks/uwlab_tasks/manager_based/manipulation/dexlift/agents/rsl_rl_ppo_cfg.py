@@ -59,6 +59,11 @@ class TableLegGraspLiftPPORunnerCfg(DexLiftUR10eDeltoPPORunnerCfg):
         # level produces many high-energy launches. Keep enough exploration for
         # contact discovery while making successful grasp refinement dominant.
         self.policy.init_noise_std = 0.15
+        # The task observations are already bounded physical quantities.  Keep
+        # the actor representation identical between the from-scratch behavior
+        # cloning stage and subsequent PPO refinement.
+        self.policy.actor_obs_normalization = False
+        self.policy.critic_obs_normalization = False
         self.algorithm.entropy_coef = 0.001
         # Fine-tune contact-rich behavior conservatively: the generic 2e-4
         # setting erased valid grasps within a few dozen resumed iterations.
