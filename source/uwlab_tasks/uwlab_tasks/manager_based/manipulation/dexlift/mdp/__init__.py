@@ -30,3 +30,9 @@ from isaaclab_tasks.manager_based.manipulation.dexsuite.mdp import *  # noqa: F4
 # ``dexlift_ur5e_delto_env_cfg``.
 from .rewards import *  # noqa: F401, F403
 from .table_leg import *  # noqa: F401, F403
+
+# The goal / red-green task-state markers. This module SUBCLASSES the dexsuite pose command rather
+# than replacing it -- upstream already owns all three visualizers -- so the star-import above must
+# stay first: ``TaskStateVisPoseCommandCfg`` is a strict extension of the
+# ``ObjectUniformPoseCommandCfg`` it re-exports, not a shadow of it.
+from .task_state_vis import *  # noqa: F401, F403

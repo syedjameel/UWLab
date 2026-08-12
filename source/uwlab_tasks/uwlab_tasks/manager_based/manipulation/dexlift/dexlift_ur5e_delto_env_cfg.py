@@ -16,7 +16,7 @@ invariants it names hold here identically:
   the identified UR5e arm gains by anything from 0.5x to 2x. Both terms are narrowed to the hand
   joints here, and the arm instead gets OmniReset's ``randomize_arm_from_sysid_fixed``.
 
-Three things are decided HERE rather than inherited, and each has its reason written at the
+Four things are decided HERE rather than inherited, and each has its reason written at the
 constant or the line that implements it:
 
 * TIMING -- see :data:`CONTROL_RATE_NOTE`. This env inherits the dexsuite rate, not OmniReset's.
@@ -25,6 +25,10 @@ constant or the line that implements it:
   0.255 m and every height in the task moves with it. See :data:`WORKSPACE_Z_SHIFT`.
 * The abnormal-joint-velocity termination and its penalty are DELETED, because on this
   articulation the test cannot fire. See :func:`_drop_unreachable_abnormal_robot_cut`.
+* The GOAL and RED/GREEN TASK-STATE markers are rebound to this scene and to the scored success
+  predicate. dexsuite owns the markers; what it cannot know is that its indicator geometry was
+  cloned from a table this env then replaced. See :func:`_bind_task_state_visualization` and
+  :data:`STATUS_PAD_TOP_Z`.
 
 THE ACTION SPACE IS NOT DECIDED HERE. :class:`Ur5eDeltoMixinCfg` deliberately sets NO ``actions``
 field: it carries the robot, the scene, the sensors and the events, and one subclass per action-
@@ -218,6 +222,58 @@ training shows the goal command saturating unreached at high x AND high z, this 
 revisit, and ``commands.object_pose.ranges.pos_z`` is the thing to lower.
 """
 
+STATUS_PAD_BORDER = 0.08
+STATUS_PAD_THICKNESS = 0.012
+STATUS_PAD_TOP_Z = -0.006
+"""Geometry of the RED/GREEN TASK-STATE PAD -- the "is the object on target right now" indicator.
+
+Stock dexsuite makes its whole table the indicator by spawning the table ``visible=False`` and
+letting the success marker (a clone of the table's own spawn config, tinted) be the thing you see.
+That trick is not available here: this scene's table is a real, visible USD of the measured lab
+bench, and hiding it would cost the scene its rig.
+
+So the indicator is a SEPARATE slab, sized and placed so that it is legible without touching
+anything the task uses. It is the tabletop footprint (:data:`TABLE_TOP_X`, :data:`TABLE_TOP_Y_HALF`)
+grown by ``STATUS_PAD_BORDER`` in every horizontal direction, and it is tucked so its top face lies
+``STATUS_PAD_TOP_Z`` -- 6 mm BELOW the structural tabletop plane at z = 0, hence 10 mm below the
+work surface. The USD's own collider extents (probed with pxr) show the structural top slab
+occupying z in [-0.030, 0.000] across the FULL footprint, so a 12 mm pad centred at -0.012 spans
+[-0.018, -0.006] and is completely inside that slab wherever the two overlap.
+
+What that buys, and it is the whole reason for the offsets rather than simply laying a coloured mat
+on the table:
+
+* NOTHING IS OCCLUDED. The workspace, the mats, the mount plate and any object resting on them are
+  all above the pad and unobstructed.
+* NO Z-FIGHTING. The 6 mm gap to the structural top and the 10 mm gap to the mats are far larger
+  than any depth-buffer tolerance at this scale.
+* NOTHING CAN REST ON IT OR CLIP IT. The pad is under the tabletop; the only part you see is the
+  80 mm border protruding past the table edge on all four sides, which reads as a coloured frame
+  around the bench from the debug camera's ~18-degree elevation and from directly above.
+
+The pad is a marker, not a scene entity: no rigid body, no collider, no contact pair. See
+:mod:`.mdp.task_state_vis` for that argument and for the visibility/cost gating.
+"""
+
+STATUS_PAD_SIZE = (
+    (TABLE_TOP_X[1] - TABLE_TOP_X[0]) + 2 * STATUS_PAD_BORDER,
+    2 * (TABLE_TOP_Y_HALF + STATUS_PAD_BORDER),
+    STATUS_PAD_THICKNESS,
+)
+
+STATUS_PAD_OFFSET = (
+    0.5 * (TABLE_TOP_X[0] + TABLE_TOP_X[1]),
+    0.0,
+    STATUS_PAD_TOP_Z - 0.5 * STATUS_PAD_THICKNESS,
+)
+"""Pad centre RELATIVE TO THE TABLE'S ROOT, which is what the marker is drawn at.
+
+Not zero, and that is the point. The table's asset frame is the robot BASE frame, so its root sits
+at the base flange, 0.35 m behind the tabletop centre -- whereas dexsuite's cuboid table had its
+root at its own centre and upstream therefore draws the indicator at ``root_pos_w`` with no offset.
+Left uncorrected the pad would be centred on the robot base.
+"""
+
 DEXSUITE_TABLE_TOP_Z = 0.255
 """Where the INHERITED dexsuite cuboid table's top sits: centre 0.235 + half of its 0.04 thickness.
 
@@ -334,6 +390,54 @@ class Ur5eDeltoEventCfg(dexsuite.EventCfg):
             "scale_range": (0.8, 1.2),
             "delay_range": (0, 1),
         },
+    )
+
+
+def _bind_task_state_visualization(env_cfg) -> mdp.TaskStateVisPoseCommandCfg:
+    """Rebuild ``commands.object_pose`` so the goal and the red/green task state are both legible.
+
+    THE MARKERS THEMSELVES ARE UPSTREAM'S. Vendored dexsuite's ``ObjectUniformPoseCommand`` already
+    creates a goal-pose marker, a current-object-pose marker and a red/green success marker, and
+    already toggles the first two on ``debug_vis``. Nothing here re-implements any of that; see
+    :mod:`.mdp.task_state_vis` for exactly what is upstream and what is added.
+
+    What this function decides is the three things upstream cannot know:
+
+    * WHERE the state indicator goes -- :data:`STATUS_PAD_SIZE` and :data:`STATUS_PAD_OFFSET`,
+      derived from the measured table rather than from dexsuite's cuboid. Without this the pad is a
+      slab of the OLD table's dimensions centred on the robot base; upstream builds those prototypes
+      inside ``super().__post_init__()``, which ran before this env swapped the table in, and it
+      fails silently.
+    * WHICH PREDICATE colours it. Both tolerances are read out of ``curriculum.adr``, i.e. the
+      thresholded success the ADR scheduler promotes on (``pos_dist < pos_tol``, and ``rot_dist <
+      rot_tol`` when it has one). They are NOT restated. Upstream's marker instead hardcodes
+      0.05/0.5, which on the reorientation task disagrees with the scored rotation tolerance of
+      ``rot_std / 2`` = 0.25 -- a marker that goes green on runs the curriculum counts as failures.
+      Binding here means the two cannot drift.
+    * HOW BIG the goal ball is: the position tolerance itself, so "the object is inside the sphere"
+      is the success condition rather than a hint at it.
+
+    The tolerances are read AFTER ``super().__post_init__()``, which is where dexsuite sets
+    ``pos_tol = rewards.success.params["pos_std"] / 2`` and where the Lift subclass then drops
+    ``rot_tol`` to None. Reading them earlier would capture the un-derived defaults.
+    """
+    adr_params = env_cfg.curriculum.adr.params if env_cfg.curriculum is not None else {}
+    # The dexsuite base always sets pos_tol when a curriculum exists; the fallback is for a config
+    # that deliberately runs with curriculum=None, where upstream's own literal is the only datum.
+    pos_tol = adr_params.get("pos_tol") or 0.05
+    rot_tol = adr_params.get("rot_tol")
+    if not isinstance(pos_tol, (int, float)) or pos_tol <= 0.0:
+        raise ValueError(
+            f"curriculum.adr.params['pos_tol'] must be a positive distance; got {pos_tol!r}. The"
+            " task-state marker colours itself with the same threshold the ADR scheduler promotes"
+            " on, so an unusable value here would be an unusable success test there too."
+        )
+    return mdp.upgrade_pose_command_to_task_state_vis(
+        env_cfg.commands.object_pose,
+        success_pos_tol=float(pos_tol),
+        success_rot_tol=float(rot_tol) if rot_tol is not None else None,
+        status_pad_size=STATUS_PAD_SIZE,
+        status_vis_offset=STATUS_PAD_OFFSET,
     )
 
 
@@ -533,6 +637,12 @@ class Ur5eDeltoMixinCfg:
         # keep the debug camera looking at the workspace rather than away from it
         self.viewer.eye = (2.25, 0.0, 0.75)
         self.viewer.lookat = (WORKSPACE_X, 0.0, WORK_SURFACE_Z + 0.2)
+
+        # -- GOAL + TASK-STATE VISUALIZATION. Runs AFTER the table swap and after the workspace
+        # numbers above, because it measures the pad against them. See the function; the markers
+        # are drawn only when ``commands.object_pose.debug_vis`` is True, which the _PLAY configs
+        # set and the training configs leave False, so a headless training run pays nothing.
+        self.commands.object_pose = _bind_task_state_visualization(self)
 
         # -- contact sensors: one per fingertip, filtered to the object, plus the table.
         # These resolve PRIM PATHS, not body names. The hand is referenced under {ROOT}/gripper by
