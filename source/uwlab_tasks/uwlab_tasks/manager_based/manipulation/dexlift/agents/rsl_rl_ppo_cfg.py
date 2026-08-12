@@ -58,6 +58,19 @@ class DexLiftUR5eDeltoPPORunnerCfg(DexLiftUR10eDeltoPPORunnerCfg):
 
 
 @configclass
+class DexLiftUR5eDeltoRelJointPosPPORunnerCfg(DexLiftUR5eDeltoPPORunnerCfg):
+    """VARIANT 1 (DexSuite-style 26-DOF relative joint position) under its own experiment name.
+
+    Nothing about the algorithm is action-space specific, so this changes only where checkpoints
+    land -- and it has to. Both UR5e+DELTO action-space variants are 26-dimensional and share all
+    three observation groups, so a checkpoint of the other one would LOAD here without complaint
+    and mean something different. The directory is the only thing that separates them.
+    """
+
+    experiment_name = "dexlift_ur5e_delto_reljointpos"
+
+
+@configclass
 class TableLegGraspLiftPPORunnerCfg(DexLiftUR10eDeltoPPORunnerCfg):
     """State-based PPO for the fixed-geometry FurnitureBench leg task."""
 

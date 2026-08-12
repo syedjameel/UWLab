@@ -8,6 +8,9 @@
 These subclass the dexsuite base package vendored in IsaacLab and share their articulation -- and
 therefore the identified arm dynamics -- with the OmniReset environments. Two robots are
 registered: the UR10e+DELTO and the UR5e+DELTO.
+
+The UR5e+DELTO ids also name their ACTION-SPACE VARIANT, because more than one is being compared on
+that robot and every one of them is 26-dimensional. See the comment above its registrations.
 """
 
 import gymnasium as gym
@@ -20,7 +23,10 @@ _UR5E_ENV_CFG = f"{__name__}.dexlift_ur5e_delto_env_cfg"
 # hand) and the same three observation groups, so nothing in the runner is arm specific. Only
 # ``experiment_name`` differs, which is what Ur5e variant below overrides.
 _RSL_RL_CFG = f"{agents.__name__}.rsl_rl_ppo_cfg:DexLiftUR10eDeltoPPORunnerCfg"
-_UR5E_RSL_RL_CFG = f"{agents.__name__}.rsl_rl_ppo_cfg:DexLiftUR5eDeltoPPORunnerCfg"
+# One runner per UR5e ACTION-SPACE VARIANT, not one per robot: the variants are all 26-dimensional
+# over the same observation groups, so only a separate ``experiment_name`` keeps a checkpoint of
+# one from silently resuming another. ``DexLiftUR5eDeltoPPORunnerCfg`` is their shared base.
+_UR5E_RELJOINTPOS_RSL_RL_CFG = f"{agents.__name__}.rsl_rl_ppo_cfg:DexLiftUR5eDeltoRelJointPosPPORunnerCfg"
 _TABLE_LEG_RSL_RL_CFG = f"{agents.__name__}.rsl_rl_ppo_cfg:TableLegGraspLiftPPORunnerCfg"
 
 gym.register(
@@ -64,46 +70,55 @@ gym.register(
 )
 
 ##
-# UR5e + DELTO.
+# UR5e + DELTO. One family of ids PER ACTION-SPACE VARIANT.
 ##
+# The variant is named in the id -- ``RelJointPos`` here -- and there is deliberately NO bare
+# ``DexLift-UR5eDelto-Lift-v0`` next to it. A bare id would have to resolve to one variant, which
+# makes it a silent default: a command line written against it would keep running after a second
+# variant landed and would train whichever one the id happened to point at. Unregistered ids fail
+# loudly (gym raises ``NameNotFound`` and prints the close matches), so retiring the bare name
+# turns that into a typo you see immediately.
+#
+# VARIANT 1: DexSuite-style, all 26 DOF as relative joint-position commands at 0.1 rad per unit
+# action, relative to the MEASURED joint position. See ``dexlift_ur5e_delto_actions``.
 
 gym.register(
-    id="DexLift-UR5eDelto-Lift-v0",
+    id="DexLift-UR5eDelto-RelJointPos-Lift-v0",
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
     disable_env_checker=True,
     kwargs={
-        "env_cfg_entry_point": f"{_UR5E_ENV_CFG}:DexLiftUR5eDeltoLiftEnvCfg",
-        "rsl_rl_cfg_entry_point": _UR5E_RSL_RL_CFG,
+        "env_cfg_entry_point": f"{_UR5E_ENV_CFG}:DexLiftUR5eDeltoRelJointPosLiftEnvCfg",
+        "rsl_rl_cfg_entry_point": _UR5E_RELJOINTPOS_RSL_RL_CFG,
     },
 )
 
 gym.register(
-    id="DexLift-UR5eDelto-Lift-Play-v0",
+    id="DexLift-UR5eDelto-RelJointPos-Lift-Play-v0",
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
     disable_env_checker=True,
     kwargs={
-        "env_cfg_entry_point": f"{_UR5E_ENV_CFG}:DexLiftUR5eDeltoLiftEnvCfg_PLAY",
-        "rsl_rl_cfg_entry_point": _UR5E_RSL_RL_CFG,
+        "env_cfg_entry_point": f"{_UR5E_ENV_CFG}:DexLiftUR5eDeltoRelJointPosLiftEnvCfg_PLAY",
+        "rsl_rl_cfg_entry_point": _UR5E_RELJOINTPOS_RSL_RL_CFG,
     },
 )
 
 gym.register(
-    id="DexLift-UR5eDelto-Reorient-v0",
+    id="DexLift-UR5eDelto-RelJointPos-Reorient-v0",
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
     disable_env_checker=True,
     kwargs={
-        "env_cfg_entry_point": f"{_UR5E_ENV_CFG}:DexLiftUR5eDeltoReorientEnvCfg",
-        "rsl_rl_cfg_entry_point": _UR5E_RSL_RL_CFG,
+        "env_cfg_entry_point": f"{_UR5E_ENV_CFG}:DexLiftUR5eDeltoRelJointPosReorientEnvCfg",
+        "rsl_rl_cfg_entry_point": _UR5E_RELJOINTPOS_RSL_RL_CFG,
     },
 )
 
 gym.register(
-    id="DexLift-UR5eDelto-Reorient-Play-v0",
+    id="DexLift-UR5eDelto-RelJointPos-Reorient-Play-v0",
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
     disable_env_checker=True,
     kwargs={
-        "env_cfg_entry_point": f"{_UR5E_ENV_CFG}:DexLiftUR5eDeltoReorientEnvCfg_PLAY",
-        "rsl_rl_cfg_entry_point": _UR5E_RSL_RL_CFG,
+        "env_cfg_entry_point": f"{_UR5E_ENV_CFG}:DexLiftUR5eDeltoRelJointPosReorientEnvCfg_PLAY",
+        "rsl_rl_cfg_entry_point": _UR5E_RELJOINTPOS_RSL_RL_CFG,
     },
 )
 

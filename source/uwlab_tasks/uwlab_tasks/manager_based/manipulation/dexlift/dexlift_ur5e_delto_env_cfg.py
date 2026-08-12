@@ -25,6 +25,17 @@ constant or the line that implements it:
   0.255 m and every height in the task moves with it. See :data:`WORKSPACE_Z_SHIFT`.
 * The abnormal-joint-velocity termination is SCOPED TO THE ARM instead of being deleted. See
   :func:`_scope_abnormal_robot_to_arm`.
+
+THE ACTION SPACE IS NOT DECIDED HERE. :class:`Ur5eDeltoMixinCfg` deliberately sets NO ``actions``
+field: it carries the robot, the scene, the sensors and the events, and one subclass per action-
+space variant supplies the action group. :class:`Ur5eDeltoRelJointPosMixinCfg` below is variant 1,
+the DexSuite-style 26-DOF relative joint-position space, defined in
+:mod:`.dexlift_ur5e_delto_actions`.
+
+Forgetting that override is loud rather than quiet, and by construction: the base
+``dexsuite.ActionsCfg`` is an empty ``pass``, so an env that does not supply an action group has no
+action terms at all, and the full-actuation guard called from ``__post_init__`` reports every hand
+joint as having NO action term that names it.
 """
 
 from __future__ import annotations
@@ -65,24 +76,15 @@ from .dexlift_ur10e_delto_env_cfg import (
     UR10eDeltoRewardsCfg as DeltoHandRewardsCfg,
 )
 
+# ARM_JOINT_NAMES lives in the ACTIONS module, which is the one place that spends an action
+# dimension on each of the six; the sysid event and the arm-scoped instability termination below
+# read the same list rather than a second copy of it. Re-exported from here because that is where
+# readers of this task look for it.
+from .dexlift_ur5e_delto_actions import ARM_JOINT_NAMES, Ur5eDeltoRelJointPosActionCfg
+
 ##
 # Robot-specific names.
 ##
-
-ARM_JOINT_NAMES = [
-    "shoulder_pan_joint",
-    "shoulder_lift_joint",
-    "elbow_joint",
-    "wrist_1_joint",
-    "wrist_2_joint",
-    "wrist_3_joint",
-]
-"""The six UR5e joints whose dynamics are identified and shared with OmniReset.
-
-Same six names as the UR10e -- it is the UR joint naming convention, not a shared robot. The
-NUMBERS behind them (effort 150/150/150/28/28/28 N*m, velocity 1.5708 x3 then 3.1415 x3, and the
-``sysid`` block) come from the UR5e and are carried by the articulation config, not by this list.
-"""
 
 ARM_STIFFNESS = 800.0
 ARM_DAMPING = 40.0
@@ -227,29 +229,6 @@ def _omnireset_mount_plate_cfg() -> RigidObjectCfg:
 ##
 # MDP settings.
 ##
-
-
-@configclass
-class Ur5eDeltoRelJointPosActionCfg:
-    """Relative joint-position control over all 26 joints at 0.1 rad per unit action."""
-
-    action = mdp.RelativeJointPositionActionCfg(
-        asset_name="robot",
-        joint_names=[".*"],
-        # Spelled out rather than given as a scalar so that an unmatched joint is visible here: any
-        # joint missing from this dict would silently fall back to scale 1.0. The hand keys come
-        # from the asset's canonical tuple, which is also what the full-actuation guard reads to
-        # decide, without an articulation, that this term spends one action dimension per joint.
-        scale={
-            "shoulder_pan_joint": 0.1,
-            "shoulder_lift_joint": 0.1,
-            "elbow_joint": 0.1,
-            "wrist_1_joint": 0.1,
-            "wrist_2_joint": 0.1,
-            "wrist_3_joint": 0.1,
-            **{name: 0.1 for name in DELTO_HAND_JOINT_NAMES},
-        },
-    )
 
 
 @configclass
@@ -414,20 +393,26 @@ class Ur5eDeltoAdrCurriculumCfg(DexsuiteCurriculumCfg):
 
 @configclass
 class Ur5eDeltoMixinCfg:
-    """Everything the UR5e + DELTO changes about the base dexsuite task."""
+    """Everything the UR5e + DELTO changes about the base dexsuite task EXCEPT the action space.
+
+    There is deliberately no ``actions`` field here; see the module docstring. One subclass per
+    action-space variant supplies it, and the guard below is what makes a missing override fail.
+    """
 
     rewards: DeltoHandRewardsCfg = DeltoHandRewardsCfg()
-    actions: Ur5eDeltoRelJointPosActionCfg = Ur5eDeltoRelJointPosActionCfg()
     events: Ur5eDeltoEventCfg = Ur5eDeltoEventCfg()
     curriculum: Ur5eDeltoAdrCurriculumCfg = Ur5eDeltoAdrCurriculumCfg()
 
     def __post_init__(self: dexsuite.DexsuiteReorientEnvCfg):
         super().__post_init__()
 
-        # THE FULL-ACTUATION GUARD, at construction time. Every dexlift UR5e+DELTO env inherits
-        # this mixin, so this one line is the whole family's construction-time coverage. It raises
-        # from this frame; the ``check_hand_fully_actuated`` startup term in Ur5eDeltoEventCfg
-        # re-checks the same property against the resolved articulation.
+        # THE FULL-ACTUATION GUARD, at construction time. Every dexlift UR5e+DELTO env of every
+        # action-space variant inherits this mixin, so this one line is the whole family's
+        # construction-time coverage, and it stays correct as variants are added: it reads whatever
+        # ``self.actions`` the variant subclass supplied, including the empty
+        # ``dexsuite.ActionsCfg`` a variant that forgot to supply one would inherit. It raises from
+        # this frame; the ``check_hand_fully_actuated`` startup term in Ur5eDeltoEventCfg re-checks
+        # the same property against the resolved articulation.
         assert_action_cfg_fully_actuates(self.actions, DELTO_HAND_JOINT_NAMES, context=type(self).__name__)
 
         # -- TIMING: deliberately untouched. See CONTROL_RATE_NOTE for what that inherits.
@@ -528,20 +513,35 @@ class Ur5eDeltoMixinCfg:
 
 
 @configclass
-class DexLiftUR5eDeltoReorientEnvCfg(Ur5eDeltoMixinCfg, dexsuite.DexsuiteReorientEnvCfg):
+class Ur5eDeltoRelJointPosMixinCfg(Ur5eDeltoMixinCfg):
+    """VARIANT 1: the DexSuite-style 26-DOF relative joint-position action space.
+
+    The action group and every scale in it -- including the choice of 0.1 over the direct port's
+    0.05/0.01, and the reason that choice is not a matter of taste -- live in
+    :mod:`.dexlift_ur5e_delto_actions`. This class exists to bind it to the shared mixin, so that
+    a second variant is a sibling of this class rather than an edit to the environments.
+    """
+
+    actions: Ur5eDeltoRelJointPosActionCfg = Ur5eDeltoRelJointPosActionCfg()
+
+
+@configclass
+class DexLiftUR5eDeltoRelJointPosReorientEnvCfg(Ur5eDeltoRelJointPosMixinCfg, dexsuite.DexsuiteReorientEnvCfg):
     pass
 
 
 @configclass
-class DexLiftUR5eDeltoReorientEnvCfg_PLAY(Ur5eDeltoMixinCfg, dexsuite.DexsuiteReorientEnvCfg_PLAY):
+class DexLiftUR5eDeltoRelJointPosReorientEnvCfg_PLAY(
+    Ur5eDeltoRelJointPosMixinCfg, dexsuite.DexsuiteReorientEnvCfg_PLAY
+):
     pass
 
 
 @configclass
-class DexLiftUR5eDeltoLiftEnvCfg(Ur5eDeltoMixinCfg, dexsuite.DexsuiteLiftEnvCfg):
+class DexLiftUR5eDeltoRelJointPosLiftEnvCfg(Ur5eDeltoRelJointPosMixinCfg, dexsuite.DexsuiteLiftEnvCfg):
     pass
 
 
 @configclass
-class DexLiftUR5eDeltoLiftEnvCfg_PLAY(Ur5eDeltoMixinCfg, dexsuite.DexsuiteLiftEnvCfg_PLAY):
+class DexLiftUR5eDeltoRelJointPosLiftEnvCfg_PLAY(Ur5eDeltoRelJointPosMixinCfg, dexsuite.DexsuiteLiftEnvCfg_PLAY):
     pass
