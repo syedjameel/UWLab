@@ -674,6 +674,45 @@ def _assert_root_pin_is_a_pin(env_cfg) -> None:
                 )
 
 
+def _assert_gravity_is_on_and_fixed(env_cfg) -> None:
+    """Fail construction unless gravity is real AND nothing ramps it.
+
+    Two edits in different files have to agree, and the failure mode of them disagreeing is silent:
+    ``curriculum.gravity_adr`` is the ramp, ``events.variable_gravity`` holds the value it ramps,
+    and dexsuite ships that value at zero. Null the curriculum without writing the event and the
+    result is not "full gravity" but "no gravity, permanently" -- the same logs, the same stalled
+    ADR, and a config that reads as though it had been fixed.
+
+    This is the check that ties them together, so neither half can be edited alone. Both halves
+    carry the measurement that motivated them; see ``Ur5eDeltoAdrCurriculumCfg.gravity_adr``.
+    """
+    term = getattr(env_cfg.events, "variable_gravity", None)
+    if term is None:
+        raise ValueError(
+            "events.variable_gravity is missing. It is the term that SETS gravity each reset"
+            " (operation 'abs'), so without it gravity is whatever the last episode left behind."
+        )
+    lo, hi = term.params["gravity_distribution_params"]
+    if tuple(lo) != (0.0, 0.0, -9.81) or tuple(hi) != (0.0, 0.0, -9.81):
+        raise ValueError(
+            f"events.variable_gravity gravity_distribution_params = {(tuple(lo), tuple(hi))}, not"
+            " full gravity. dexsuite's default is ((0,0,0), (0,0,0)) and its gravity_adr curriculum"
+            " ramps it up with difficulty; this task nulls that ramp (see"
+            " Ur5eDeltoAdrCurriculumCfg.gravity_adr) because the ramp cannot start -- contact at"
+            " zero gravity bats the object out of bounds, so nothing succeeds, so difficulty never"
+            " leaves 0, so gravity never turns on. Measured in run kkbmdt36: adr exactly 0.0 from"
+            " iteration 22, peak gravity -0.004 m/s^2, object_out_of_bound 0.519. Nulling the ramp"
+            " WITHOUT writing this parameter freezes gravity off instead of turning it on."
+        )
+    curriculum = getattr(env_cfg, "curriculum", None)
+    if curriculum is not None and getattr(curriculum, "gravity_adr", None) is not None:
+        raise ValueError(
+            "curriculum.gravity_adr is live while events.variable_gravity is pinned at full"
+            " gravity. The curriculum term would overwrite the pinned value from difficulty 0 on"
+            " the first reset, i.e. back to zero gravity. Set gravity_adr = None, or drop the pin."
+        )
+
+
 ##
 # ADR curriculum: the upstream noise-width bug.
 ##
@@ -742,6 +781,31 @@ class Ur5eDeltoAdrCurriculumCfg(DexsuiteCurriculumCfg):
             "modify_params": {"initial_value": 0.0, "final_value": 0.01, "difficulty_term_str": "adr"},
         },
     )
+
+    gravity_adr = None
+    """Gravity is FULL from the first step, not curriculum-ramped. MEASURED, not preferred.
+
+    Upstream ramps gravity from ``(0, 0, 0)`` to ``(0, 0, -9.81)`` with ADR difficulty, so at
+    difficulty 0 there is literally no gravity. That is fine while the hand never reaches the
+    object and fatal the moment it does, which is exactly the order the two defects were fixed in:
+
+    * Before ``c535b2f`` the arm faced away from the workspace, nothing was ever touched, and the
+      object hung motionless (120 steps of zero action, object z 0.29591 -> 0.29591).
+    * After it, run ``kkbmdt36`` made contact from iteration 0 -- and every touch then batted the
+      object away with nothing to bring it back. ``position_error`` climbed 0.40 -> 1.20 m,
+      ``Episode_Termination/object_out_of_bound`` climbed 0.003 -> **0.519**, and ``Curriculum/adr``
+      peaked at 3.6e-4 by iteration 7 and sat at **exactly 0.0** from iteration 22 on. Peak gravity
+      over the whole run was -0.004 m/s^2: it never turned on.
+
+    The scheduler cannot climb out of that on its own -- no settling means no success, no success
+    means the failure decrement pins difficulty at zero, and zero difficulty means no gravity. The
+    curriculum is its own floor. ``table_leg_env_cfg.py:561`` nulls this term for the same reason
+    ("Zero-gravity resets leave the leg hovering"); that config reached its result with it nulled.
+
+    Every OTHER ADR term is kept. This is not a retreat from domain randomization -- gravity is the
+    one dimension whose difficulty-0 value is not "easy" but "physically degenerate", because the
+    task is defined as bringing a FALLING object to a goal.
+    """
 
     def __post_init__(self):
         # Construction-time, so a future edit that reintroduces the collapse cannot reach training.
@@ -983,6 +1047,19 @@ class Ur5eDeltoMixinCfg:
         #     STATUS_PAD_OFFSET), so the pad itself would slide +-50 mm under the robot each episode.
         # Nulled, not narrowed: there is no axis along which this rig's table may move on its own.
         self.events.reset_table = None
+
+        # -- gravity: full from the first step. TWO EDITS, AND EITHER ALONE IS WORSE THAN NEITHER.
+        # ``curriculum.gravity_adr`` (nulled there, with the measurements) is only the RAMP; the
+        # quantity it ramps is this event's parameter, and dexsuite ships that parameter at
+        # ((0,0,0), (0,0,0)) -- zero. So nulling the curriculum term on its own does not restore
+        # gravity, it FREEZES it off permanently, which is the exact failure being fixed and would
+        # look identical in the logs. ``table_leg_env_cfg.py`` makes both edits (:561 and :662-665);
+        # only the first is famous.
+        self.events.variable_gravity.params["gravity_distribution_params"] = (
+            (0.0, 0.0, -9.81),
+            (0.0, 0.0, -9.81),
+        )
+        _assert_gravity_is_on_and_fixed(self)
 
         # -- terminations: drop the abnormal-velocity cut and its penalty. See the function.
         _drop_unreachable_abnormal_robot_cut(self)
