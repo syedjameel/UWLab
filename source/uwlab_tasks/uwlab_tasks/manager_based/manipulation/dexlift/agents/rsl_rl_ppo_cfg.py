@@ -46,6 +46,18 @@ class DexLiftUR10eDeltoPPORunnerCfg(RslRlOnPolicyRunnerCfg):
 
 
 @configclass
+class DexLiftUR5eDeltoPPORunnerCfg(DexLiftUR10eDeltoPPORunnerCfg):
+    """Same runner for the UR5e+DELTO, under its own experiment name.
+
+    Nothing about the algorithm is arm specific: both robots present 26 actions (6 arm + 20 hand)
+    and the same three observation groups. Only the checkpoint directory differs, and it has to --
+    the two robots are not interchangeable and a checkpoint from one must never resume the other.
+    """
+
+    experiment_name = "dexlift_ur5e_delto"
+
+
+@configclass
 class TableLegGraspLiftPPORunnerCfg(DexLiftUR10eDeltoPPORunnerCfg):
     """State-based PPO for the fixed-geometry FurnitureBench leg task."""
 

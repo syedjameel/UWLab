@@ -22,3 +22,4 @@ from isaaclab_tasks.manager_based.manipulation.dexsuite.mdp import *  # noqa: F4
 # any of them. Deleting the class is what makes the ban structural instead of a convention.
 from .rewards import *  # noqa: F401, F403
 from .table_leg import *  # noqa: F401, F403
+from .terminations import *  # noqa: F401, F403

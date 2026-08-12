@@ -134,6 +134,16 @@ _DELTO_HAND_ACTUATOR = ImplicitActuatorCfg(
     friction={r"rj_dg_[1-5]_[1-4]": 0.01},
 )
 
+DELTO_HAND_ACTUATOR = _DELTO_HAND_ACTUATOR
+"""Public name for the hand actuator above, shared by every robot that mounts this hand.
+
+The gains are identified per HAND joint and say nothing about the arm, so the UR5e+DELTO graft
+(:mod:`uwlab_assets.robots.ur5e_delto`) imports this very object instead of copying the twenty
+stiffness values into a second file. It is the same instance the three configurations below use,
+which is already the convention here -- ``IMPLICIT_UR10E_DELTO``, ``EXPLICIT_UR10E_DELTO`` and
+``DELTO_HAND`` all share it.
+"""
+
 UR10E_DELTO_ARTICULATION = ArticulationCfg(
     spawn=sim_utils.UsdFileCfg(
         usd_path=f"{UWLAB_LOCAL_ASSETS_DIR}/Robots/Ur10eDelto/ur10e_delto.usd",
