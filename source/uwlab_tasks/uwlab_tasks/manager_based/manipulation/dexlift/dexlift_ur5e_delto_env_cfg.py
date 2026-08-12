@@ -212,21 +212,26 @@ subtlety and then drew the wrong conclusion: measured, it is ``base_link`` ITSEL
 rotated one relative to the prim the config poses.)
 """
 
-WORK_SURFACE_Z = 0.004
-"""Height of the OmniReset UR5e work surface in the robot's own root frame.
+WORK_SURFACE_Z = 0.0
+"""Height of the work surface in the robot's own root frame: the STRUCTURAL tabletop plane.
 
-MEASURED, not inferred. The asset frame of ``custom_lab_table.usd`` IS the robot base frame --
-origin at the base flange centre, z = 0 at the flange plane (the structural tabletop the base bolts
-to), +x toward the workspace -- and the table therefore spawns AT the robot's default root rather
-than at an offset. Two 4 mm mats lie ON that structural top, so the surface an object actually rests
-on is 4 mm higher; ``table_dims.yaml`` states it directly ("their top = the WORK SURFACE at +0.004")
-and the generated USD's world bbox confirms it. Probed per prim, in the asset's own frame:
-``visuals/mat_black`` and ``visuals/mat_green`` occupy z [0.0000, 0.0040] on top of
-``visuals/table_frame``, whose slab face is z = 0.0000 and whose legs reach z = -0.6760.
+Was 0.004 while this scene spawned ``custom_lab_table.usd``, whose two 4 mm mats lay ON the
+structural top so that an object rested 4 mm above the flange plane (``table_dims.yaml``: "their top
+= the WORK SURFACE at +0.004", confirmed against the generated USD's per-prim bbox --
+``visuals/mat_black``/``mat_green`` at z [0.0000, 0.0040] over ``visuals/table_frame`` whose slab
+face is z = 0.0000).
 
-THIS REPLACES -0.013, which was inferred from the pat_vention-era plate and is wrong by 17 mm. Every
-other height in this module derives from this constant through :data:`WORKSPACE_Z_SHIFT`, with the
-one deviation named at the out-of-bounds z floor.
+THE MATS WENT WITH THE MESH. The table is now a single collision box (see :func:`_lab_table_cfg`),
+so the surface an object rests on IS the structural top and this constant is 0.0 rather than 0.004.
+The 4 mm is not lost anywhere -- every height in this module derives from this constant through
+:data:`WORKSPACE_Z_SHIFT`, so spawn, goal and out-of-bounds all descend by the same 4 mm together
+and the geometry stays self-consistent.
+
+That 4 mm is ALSO why the box top is at 0.0 rather than at 0.004: the robot's base occupies z >= 0
+on this asset, and a slab whose top face were +0.004 would intersect the base by exactly the depth
+the real rig's mat cutout exists to provide. The box has no cutout, so the surface is flush instead.
+
+(An older revision had -0.013, inferred from the pat_vention-era plate and wrong by 17 mm.)
 """
 
 GROUND_Z = -0.676
@@ -315,14 +320,15 @@ bench, and hiding it would cost the scene its rig.
 So the indicator is a SEPARATE slab, sized and placed so that it is legible without touching
 anything the task uses. It is the tabletop footprint (:data:`TABLE_TOP_X`, :data:`TABLE_TOP_Y_HALF`)
 grown by ``STATUS_PAD_BORDER`` in every horizontal direction, and it is tucked so its top face lies
-``STATUS_PAD_TOP_Z`` -- 6 mm BELOW the structural tabletop plane at z = 0, hence 10 mm below the
-work surface. What has to hide the pad is the VISIBLE mesh, so that is the prim measured:
-``/custom_lab_table/visuals/table_frame`` (72 points, 9 boxes) has as its box 0 the top slab,
-x [-0.350, 1.050] * y [-0.350, 0.350] * z [-0.030, 0.000] -- the full footprint. A 12 mm pad centred
-at -0.012 spans [-0.018, -0.006] and is completely inside it wherever the two overlap. (The
-same-shaped ``collisions/top_slab`` Cube is authored ``vis=invisible`` and occludes nothing, so
-citing it, as an earlier revision of this docstring did, would have proved a rendering claim from a
-collider; the numbers happen to agree.)
+``STATUS_PAD_TOP_Z`` -- 6 mm BELOW the tabletop plane, which is now the work surface itself.
+
+The occlusion arithmetic survived the table becoming a box, which is the only reason this pad did
+not need re-deriving: the slab spans z [-0.030, 0.000] over the full footprint
+x [-0.350, 1.050] * y [-0.350, 0.350], and a 12 mm pad centred at -0.012 spans [-0.018, -0.006],
+completely inside it wherever the two overlap. It is now ONE box that is both the visible surface
+and the collider, so the older caveat here -- that the measurement had to come from
+``visuals/table_frame`` and not from the invisible ``collisions/top_slab``, since a rendering claim
+proved from a collider proves nothing -- no longer has two prims to distinguish between.
 
 What that buys, and it is the whole reason for the offsets rather than simply laying a coloured mat
 on the table:
@@ -345,10 +351,25 @@ STATUS_PAD_SIZE = (
     STATUS_PAD_THICKNESS,
 )
 
+TABLE_SLAB_THICKNESS = 0.030
+"""Thickness of the collision slab that replaced the lab-table MESH. See :func:`_lab_table_cfg`."""
+
+TABLE_ROOT_X = 0.5 * (TABLE_TOP_X[0] + TABLE_TOP_X[1])
+TABLE_ROOT_Z = WORK_SURFACE_Z - 0.5 * TABLE_SLAB_THICKNESS
+"""Where the table's ROOT sits, now that the table is a centred box rather than a modelled bench.
+
+A ``CuboidCfg`` is centred on its prim, so a slab whose TOP face is the work surface must have its
+root half a thickness below it. The USD it replaced had its root at the robot base flange and its
+geometry authored around that, which is why this pair of constants did not previously exist.
+
+Everything that is drawn RELATIVE to the table has to move with this, which is the whole reason it
+is a named constant and not a literal: see :data:`STATUS_PAD_OFFSET`.
+"""
+
 STATUS_PAD_OFFSET = (
-    0.5 * (TABLE_TOP_X[0] + TABLE_TOP_X[1]),
+    0.5 * (TABLE_TOP_X[0] + TABLE_TOP_X[1]) - TABLE_ROOT_X,
     0.0,
-    STATUS_PAD_TOP_Z - 0.5 * STATUS_PAD_THICKNESS,
+    STATUS_PAD_TOP_Z - 0.5 * STATUS_PAD_THICKNESS - TABLE_ROOT_Z,
 )
 """Pad centre RELATIVE TO THE TABLE'S ROOT, which is what the marker is drawn at.
 
@@ -408,11 +429,16 @@ def _omnireset_table_cfg() -> RigidObjectCfg:
     """
     return RigidObjectCfg(
         prim_path="{ENV_REGEX_NS}/Table",
-        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, 0.0), rot=(1.0, 0.0, 0.0, 0.0)),
-        spawn=sim_utils.UsdFileCfg(
-            usd_path=f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Mounts/CustomLabTable/custom_lab_table.usd",
+        init_state=RigidObjectCfg.InitialStateCfg(
+            pos=(TABLE_ROOT_X, 0.0, TABLE_ROOT_Z), rot=(1.0, 0.0, 0.0, 0.0)
+        ),
+        spawn=sim_utils.CuboidCfg(
+            size=(TABLE_TOP_X[1] - TABLE_TOP_X[0], 2 * TABLE_TOP_Y_HALF, TABLE_SLAB_THICKNESS),
             activate_contact_sensors=True,
             rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
+            mass_props=sim_utils.MassPropertiesCfg(mass=1000.0),
+            collision_props=sim_utils.CollisionPropertiesCfg(),
+            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.35, 0.36, 0.38)),
         ),
     )
 
@@ -1092,6 +1118,14 @@ class Ur5eDeltoMixinCfg:
         # remedies are fewer environments (the demand scales with them) or simpler hand colliders.
         # Shrinking this back and living with dropped contacts is not one of them.
         self.sim.physx.gpu_collision_stack_size = 4026531840
+
+        # -- contact patch budget, taken from the ORIGINAL DexSuite rather than left at the default.
+        # dexsuite_env_cfg.py:516 in IsaacLabDexterous (the codebase that measurably reached 88% on
+        # this task and 92.87% on the table leg) sets exactly this, and our config never carried it.
+        # It is the same class of omission as the collision stack above: a five-fingered hand
+        # generates far more contact patches than the default was chosen for, and running out of
+        # patches degrades contact reporting rather than raising an error.
+        self.sim.physx.gpu_max_rigid_patch_count = 4 * 5 * 2**15
 
         # -- terminations: drop the abnormal-velocity cut and its penalty. See the function.
         _drop_unreachable_abnormal_robot_cut(self)
