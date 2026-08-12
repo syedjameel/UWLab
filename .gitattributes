@@ -17,5 +17,7 @@ source/uwlab_assets/uwlab_assets/local/Robots/Ur10eDelto/ur10e_delto.usd -filter
 source/uwlab_assets/uwlab_assets/local/Robots/Ur5eDelto/ur5e_delto.usd -filter -diff -merge
 source/uwlab_assets/uwlab_assets/local/Props/Custom/DeltoBlock/delto_block.usd -filter -diff -merge
 source/uwlab_assets/uwlab_assets/local/Props/Custom/DeltoSlot/delto_slot.usd -filter -diff -merge
+source/uwlab_assets/uwlab_assets/local/Props/Mounts/CustomLabTable/custom_lab_table.usd -filter -diff -merge
+source/uwlab_assets/uwlab_assets/local/Props/Mounts/CustomLabTable/custom_mount_plate.usd -filter -diff -merge
 
 *.bat text eol=crlf

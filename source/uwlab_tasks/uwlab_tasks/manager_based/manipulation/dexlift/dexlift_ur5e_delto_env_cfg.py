@@ -54,7 +54,7 @@ from isaaclab_tasks.manager_based.manipulation.dexsuite.adr_curriculum import Cu
 import uwlab.envs.mdp as uwlab_mdp
 from uwlab.envs.mdp.full_actuation import assert_action_cfg_fully_actuates
 
-from uwlab_assets import UWLAB_CLOUD_ASSETS_DIR
+from uwlab_assets import UWLAB_LOCAL_ASSETS_DIR
 from uwlab_assets.robots.ur10e_delto.actions import DELTO_HAND_JOINT_NAMES
 from uwlab_assets.robots.ur5e_delto import IMPLICIT_UR5E_DELTO
 
@@ -156,21 +156,67 @@ Note the frame subtlety: ``base`` and ``base_link_inertia`` are rotated 180 degr
 ``init_state.rot`` and the articulation root use.
 """
 
-WORK_SURFACE_Z = -0.013
+WORK_SURFACE_Z = 0.004
 """Height of the OmniReset UR5e work surface in the robot's own root frame.
 
-Taken from the mount plate's root z below, which is that scene's object-placement datum: the
-current OmniReset UR5e scene states the convention outright ("ROOT z = the WORK SURFACE ... the
-object-reset placement datum"), and this is the value that plate had in the pat_vention rig.
+MEASURED, not inferred. The asset frame of ``custom_lab_table.usd`` IS the robot base frame --
+origin at the base flange centre, z = 0 at the flange plane (the structural tabletop the base bolts
+to), +x toward the workspace -- and the table therefore spawns AT the robot's default root rather
+than at an offset. Two 4 mm mats lie ON that structural top, so the surface an object actually rests
+on is 4 mm higher; ``table_dims.yaml`` states it directly ("their top = the WORK SURFACE at +0.004")
+and the generated USD's world bbox confirms it (z max = +0.004, floor at -0.676).
 
-UNVERIFIED WITHOUT ISAAC. Nothing in this repository can open ``pat_vention.usd`` offline, so the
-tabletop's true z is inferred from the plate, not measured. If the objects rest visibly above or
-below the table on the first launch, this single constant is the thing to correct -- every other
-height in this module is derived from it through :data:`WORKSPACE_Z_SHIFT`.
+That is also the mount plate's root z below, which is this scene's object-placement datum by the
+authors' own convention (plate root z == mat-top height), so the two agree by construction rather
+than by coincidence.
+
+THIS REPLACES -0.013, which was inferred from the pat_vention-era plate and is wrong by 17 mm. Every
+other height in this module derives from this constant through :data:`WORKSPACE_Z_SHIFT`.
 """
 
-GROUND_Z = -0.868
-"""Floor height, from the same OmniReset UR5e scene."""
+GROUND_Z = -0.676
+"""Floor height: ``table.body.z_bottom`` from ``table_dims.yaml``, matching main's ground plane.
+
+680 mm from the floor to the work surface, of which the mats are the last 4 mm. The table's legs
+reach exactly this z, so the rig stands on the ground plane instead of hovering over it -- which the
+previous -0.868 (a pat_vention-era number) did not do.
+"""
+
+TABLE_TOP_X = (-0.35, 1.05)
+TABLE_TOP_Y_HALF = 0.35
+"""Extent of the work surface in the robot base frame, from ``table_dims.yaml``.
+
+Recorded here because this table was MEASURED AROUND A UR10e (1.30 m reach) and is being used under
+a UR5e (0.85 m). See :data:`REACHABILITY_NOTE`; nothing in this module rescales it.
+"""
+
+REACHABILITY_NOTE = "UR5e reaches x <= 0.835 on the work surface; the table runs to x = 1.05"
+"""The consequence of putting a UR5e on a table sized for a UR10e, stated rather than papered over.
+
+Distances below are from the SHOULDER origin (0, 0, 0.1625 -- the UR5e's d1 above the base flange),
+which is the datum UR's 0.850 m reach figure is quoted against.
+
+* The FURNITURE overhangs the arm. The UR5e's reach circle crosses the work surface at x = 0.835 m
+  (y = 0); the tabletop runs to x = 1.05 m and its front corners sit 1.118 m out. The front ~215 mm
+  of the table is simply unreachable. This is cosmetic here -- nothing is ever spawned or commanded
+  there -- but it is why the table looks oversized next to this arm.
+* The OBJECT SPAWN is comfortably inside: (0.55, 0.1, 0.099) is 0.563 m out.
+* The GOAL BOX is inside except for one corner region. Sampling the mirrored, shifted box
+  x (0.3, 0.7) * y (-0.25, 0.25) * z (0.299, 0.699) uniformly, 98.6% of the volume lies within
+  0.850 m; the excess is the far-and-high corner, (0.7, +-0.25, 0.699) at 0.917 m.
+
+FLAGGED, NOT RESCALED. Two reasons for leaving the inherited ranges alone. First, the 0.850 m figure
+is to the tool FLANGE, and the goal is a pose for the OBJECT, which the hand holds roughly a palm's
+length beyond the flange -- so the arm does not have to put its flange on the goal point, and the
+1.4% of the box that is nominally out very likely is not. Second, shrinking the command ranges would
+silently change the task the inherited dexsuite reward stds and ADR tolerances were tuned against,
+which is a bigger change than the one it would be fixing.
+
+UNVERIFIED WITHOUT ISAAC: whether that corner is genuinely attainable depends on the DELTO's grasp
+offset and on wrist orientation at the goal, neither of which is decidable from the config alone. If
+training shows the goal command saturating unreached at high x AND high z, this is the note to
+revisit, and ``commands.object_pose.ranges.pos_z`` is the thing to lower.
+"""
 
 DEXSUITE_TABLE_TOP_Z = 0.255
 """Where the INHERITED dexsuite cuboid table's top sits: centre 0.235 + half of its 0.04 thickness.
@@ -189,24 +235,30 @@ still describe the same distances they were tuned against.
 
 
 def _omnireset_table_cfg() -> RigidObjectCfg:
-    """The OmniReset UR5e work table, replacing dexsuite's invisible cuboid.
+    """The REAL lab table, replacing dexsuite's invisible cuboid. Main's definition.
 
-    Contact reporting is on because ``rewards.table_contact_penalty`` reads a contact sensor
-    bound to this prim.
+    Adopted verbatim from ``omnireset/config/ur5e_robotiq_2f85/rl_state_cfg.py`` on
+    ``syedjameel/main``: same prim path, same USD, same identity pose. It is a LOCAL asset now --
+    procedurally generated from the measured ``table_dims.yaml`` by
+    ``scripts_v2/tools/conversions/make_custom_table_usd.py`` and committed alongside it -- so a
+    fresh clone spawns this scene without reaching the asset cloud. That was the one thing blocking
+    this env from using it; the previous ``pat_vention`` cloud table is gone.
 
-    NOTE, and this is the honest state of it: the CURRENT OmniReset UR5e scene has moved on to a
-    procedurally generated ``CustomLabTable`` measured off the real rig -- but that USD is not
-    committed (only ``table_dims.yaml`` is; the USD is produced by ``make_custom_table_usd.py``),
-    so an environment pinned to it cannot spawn from a fresh clone. This is therefore the last
-    scene OmniReset had that resolves from committed assets: the pat_vention table and the UR5
-    mount plate, both cloud assets, at their pat_vention-era poses. When the custom table asset is
-    published, this factory and :data:`WORK_SURFACE_Z` are what move.
+    THE POSE IS IDENTITY, and that is the correction that matters. The asset frame IS the robot base
+    frame, so the table spawns AT the robot's default root rather than at the (0.4, 0, -0.881) plus
+    90-degree yaw the pat_vention rig needed. Everything the task measures against the surface moves
+    with :data:`WORK_SURFACE_Z`.
+
+    ONE DELIBERATE DIFFERENCE FROM MAIN: ``activate_contact_sensors=True``. Main's UR5e scene has no
+    table contact sensor; this task does -- ``rewards.table_contact_penalty`` reads ``scene.table_s``,
+    which is bound to this prim -- and without the flag the spawner writes no contact reporter and
+    that sensor returns zeros forever, so the penalty would silently never pay.
     """
     return RigidObjectCfg(
         prim_path="{ENV_REGEX_NS}/Table",
-        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.4, 0.0, -0.881), rot=(0.707, 0.0, 0.0, -0.707)),
+        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, 0.0), rot=(1.0, 0.0, 0.0, 0.0)),
         spawn=sim_utils.UsdFileCfg(
-            usd_path=f"{UWLAB_CLOUD_ASSETS_DIR}/Props/Mounts/UWPatVention/pat_vention.usd",
+            usd_path=f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Mounts/CustomLabTable/custom_lab_table.usd",
             activate_contact_sensors=True,
             rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
         ),
@@ -214,12 +266,19 @@ def _omnireset_table_cfg() -> RigidObjectCfg:
 
 
 def _omnireset_mount_plate_cfg() -> RigidObjectCfg:
-    """The plate the UR5e is bolted to. Its root z is the work-surface datum; see WORK_SURFACE_Z."""
+    """The flush proxy plate in the mat's base cutout. Main's definition.
+
+    No physical plate exists on the real rig; the entity is kept because its ROOT z is the
+    object-placement datum the reset events are written against -- which is exactly
+    :data:`WORK_SURFACE_Z`, hence the constant rather than main's literal ``0.004``. The USD authors
+    its geometry BELOW its own root by the mat thickness, so the disk fills the cutout floor while
+    the root sits on the work surface.
+    """
     return RigidObjectCfg(
         prim_path="{ENV_REGEX_NS}/UR5MetalSupport",
         init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, WORK_SURFACE_Z), rot=(1.0, 0.0, 0.0, 0.0)),
         spawn=sim_utils.UsdFileCfg(
-            usd_path=f"{UWLAB_CLOUD_ASSETS_DIR}/Props/Mounts/UWPatVention2/Ur5MetalSupport/ur5plate.usd",
+            usd_path=f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Mounts/CustomLabTable/custom_mount_plate.usd",
             rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
         ),
     )
@@ -440,14 +499,18 @@ class Ur5eDeltoMixinCfg:
             robot_cfg.init_state = robot_cfg.init_state.replace(rot=(0.0, 0.0, 0.0, 1.0))
         self.scene.robot = robot_cfg
 
-        # -- scene: OmniReset's UR5e rig. The robot base stays at the origin; the table, the mount
-        # plate, the floor and the sky are that scene's, so this task and the OmniReset ones look
-        # at the same room. The dexsuite cuboid table is REPLACED (not added to) -- two work
-        # surfaces would intersect -- and ``plane``/``sky_light`` are edited rather than duplicated,
-        # since both already own their prim paths (/World/GroundPlane, /World/skyLight).
+        # -- scene: OmniReset's UR5e rig, as ``syedjameel/main`` defines it. The robot base stays at
+        # the origin and the table spawns there too, because the table's asset frame IS the base
+        # frame. The dexsuite cuboid table is REPLACED (not added to) -- two work surfaces would
+        # intersect -- and ``plane``/``sky_light`` are edited rather than duplicated, since both
+        # already own their prim paths (/World/GroundPlane, /World/skyLight), which are also the
+        # paths main uses.
         self.scene.table = _omnireset_table_cfg()
         self.scene.ur5_metal_support = _omnireset_mount_plate_cfg()
         self.scene.plane.init_state.pos = (0.0, 0.0, GROUND_Z)
+        # main's dome light is intensity 1000 over the kloofendal_43d_clear_puresky_4k HDR. Only the
+        # intensity is written here: the inherited dexsuite ``sky_light`` already names that exact
+        # texture under ISAAC_NUCLEUS_DIR and differs from main in the intensity alone (750).
         self.scene.sky_light.spawn.intensity = 1000.0
 
         # -- workspace: mirror the inherited dexsuite layout from -x to +x so the base stays
@@ -458,8 +521,13 @@ class Ur5eDeltoMixinCfg:
         self.commands.object_pose.ranges.pos_z = (0.55 + WORKSPACE_Z_SHIFT, 0.95 + WORKSPACE_Z_SHIFT)
         # The inherited bound box is written for the -x, table-at-0.235 workspace. Left alone, an
         # object at +0.55 is out of bounds on the first frame and every episode terminates
-        # immediately; and with the surface now below z=0, an object simply RESTING on the table
-        # would read as out of bounds too.
+        # immediately.
+        # The FLOOR of the z bound has to sit BELOW the work surface, or an object simply RESTING on
+        # the table reads as out of bounds and the episode ends the moment it is put down. 50 mm of
+        # margin under WORK_SURFACE_Z puts it at -0.046 -- under the surface, and still 630 mm above
+        # the ground plane at GROUND_Z, so an object knocked off the table's edge still trips it.
+        # x is left wider than the tabletop (which runs -0.35..1.05; see TABLE_TOP_X) on purpose: an
+        # object pushed past the edge leaves through the z floor a frame later anyway.
         self.terminations.object_out_of_bound.params["in_bound_range"]["x"] = (-0.5, 1.5)
         self.terminations.object_out_of_bound.params["in_bound_range"]["z"] = (WORK_SURFACE_Z - 0.05, 2.0)
         # keep the debug camera looking at the workspace rather than away from it
@@ -480,8 +548,11 @@ class Ur5eDeltoMixinCfg:
                     filter_prim_paths_expr=["{ENV_REGEX_NS}/Object"],
                 ),
             )
-        # NOTE the prim path moved with the table: OmniReset spawns it at {ENV_REGEX_NS}/Table,
-        # where dexsuite's cuboid was at .../table.
+        # NOTE the prim path moved with the table: main spawns it at {ENV_REGEX_NS}/Table (capital
+        # T), where dexsuite's cuboid was at .../table. It addresses the USD's default prim, which
+        # carries the RigidBodyAPI and therefore the contact reporter that
+        # ``_omnireset_table_cfg``'s ``activate_contact_sensors`` writes; the collider Cubes sit
+        # under it and report through it.
         self.scene.table_s = ContactSensorCfg(
             prim_path="{ENV_REGEX_NS}/Table",
             filter_prim_paths_expr=["{ENV_REGEX_NS}/Object"],
