@@ -71,6 +71,21 @@ class DexLiftUR5eDeltoRelJointPosPPORunnerCfg(DexLiftUR5eDeltoPPORunnerCfg):
 
 
 @configclass
+class DexLiftUR5eDeltoOscPPORunnerCfg(DexLiftUR5eDeltoPPORunnerCfg):
+    """Same runner again for the UR5e+DELTO's operational-space action variant.
+
+    The two UR5e+DELTO variants present the SAME 26-dimensional action space and the same three
+    observation groups, so the algorithm and the network shapes are unchanged. Only the experiment
+    name differs, and it has to: six of those twenty-six dimensions mean a Cartesian pose delta
+    here and a joint delta in the other variant, so a checkpoint from one loads into the other
+    without any shape error and is meaningless. Separate directories are the only thing preventing
+    that resume.
+    """
+
+    experiment_name = "dexlift_ur5e_delto_osc"
+
+
+@configclass
 class TableLegGraspLiftPPORunnerCfg(DexLiftUR10eDeltoPPORunnerCfg):
     """State-based PPO for the fixed-geometry FurnitureBench leg task."""
 

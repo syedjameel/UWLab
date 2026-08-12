@@ -19,6 +19,10 @@ from . import agents
 
 _ENV_CFG = f"{__name__}.dexlift_ur10e_delto_env_cfg"
 _UR5E_ENV_CFG = f"{__name__}.dexlift_ur5e_delto_env_cfg"
+# The UR5e+DELTO's second action-space variant: operational-space arm, same fully actuated hand.
+# Same 26 dimensions as the ids above, a different manifold -- hence its own ids and its own
+# experiment name. See dexlift_ur5e_delto_osc_env_cfg's module docstring.
+_UR5E_OSC_ENV_CFG = f"{__name__}.dexlift_ur5e_delto_osc_env_cfg"
 # The PPO runner is shared: both robots present the same 26-dimensional action space (6 arm + 20
 # hand) and the same three observation groups, so nothing in the runner is arm specific. Only
 # ``experiment_name`` differs, which is what Ur5e variant below overrides.
@@ -27,6 +31,7 @@ _RSL_RL_CFG = f"{agents.__name__}.rsl_rl_ppo_cfg:DexLiftUR10eDeltoPPORunnerCfg"
 # over the same observation groups, so only a separate ``experiment_name`` keeps a checkpoint of
 # one from silently resuming another. ``DexLiftUR5eDeltoPPORunnerCfg`` is their shared base.
 _UR5E_RELJOINTPOS_RSL_RL_CFG = f"{agents.__name__}.rsl_rl_ppo_cfg:DexLiftUR5eDeltoRelJointPosPPORunnerCfg"
+_UR5E_OSC_RSL_RL_CFG = f"{agents.__name__}.rsl_rl_ppo_cfg:DexLiftUR5eDeltoOscPPORunnerCfg"
 _TABLE_LEG_RSL_RL_CFG = f"{agents.__name__}.rsl_rl_ppo_cfg:TableLegGraspLiftPPORunnerCfg"
 
 gym.register(
@@ -119,6 +124,52 @@ gym.register(
     kwargs={
         "env_cfg_entry_point": f"{_UR5E_ENV_CFG}:DexLiftUR5eDeltoRelJointPosReorientEnvCfg_PLAY",
         "rsl_rl_cfg_entry_point": _UR5E_RELJOINTPOS_RSL_RL_CFG,
+    },
+)
+
+# VARIANT 2: OmniReset's operational-space arm (6 Cartesian dimensions through the analytical
+# Jacobian, torque-only actuator) + the SAME fully actuated 20-DOF hand. Also 26 dimensions, which
+# is exactly why it gets its own ids and its own experiment name rather than a flag: a checkpoint
+# of either variant loads into the other with no shape error and no meaning. See
+# ``dexlift_ur5e_delto_osc_actions`` and ``dexlift_ur5e_delto_osc_env_cfg``.
+
+gym.register(
+    id="DexLift-UR5eDelto-OSC-Lift-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{_UR5E_OSC_ENV_CFG}:DexLiftUR5eDeltoOscLiftEnvCfg",
+        "rsl_rl_cfg_entry_point": _UR5E_OSC_RSL_RL_CFG,
+    },
+)
+
+gym.register(
+    id="DexLift-UR5eDelto-OSC-Lift-Play-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{_UR5E_OSC_ENV_CFG}:DexLiftUR5eDeltoOscLiftEnvCfg_PLAY",
+        "rsl_rl_cfg_entry_point": _UR5E_OSC_RSL_RL_CFG,
+    },
+)
+
+gym.register(
+    id="DexLift-UR5eDelto-OSC-Reorient-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{_UR5E_OSC_ENV_CFG}:DexLiftUR5eDeltoOscReorientEnvCfg",
+        "rsl_rl_cfg_entry_point": _UR5E_OSC_RSL_RL_CFG,
+    },
+)
+
+gym.register(
+    id="DexLift-UR5eDelto-OSC-Reorient-Play-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{_UR5E_OSC_ENV_CFG}:DexLiftUR5eDeltoOscReorientEnvCfg_PLAY",
+        "rsl_rl_cfg_entry_point": _UR5E_OSC_RSL_RL_CFG,
     },
 )
 

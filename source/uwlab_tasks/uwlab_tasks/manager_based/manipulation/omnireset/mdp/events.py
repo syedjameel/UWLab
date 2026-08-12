@@ -994,6 +994,90 @@ def check_gripper_joint_selection(
         check_action_manager_fully_actuates(env, None, resolved, context=type(env.cfg).__name__)
 
 
+def check_osc_arm_joint_order(
+    env: ManagerBasedEnv,
+    env_ids: torch.Tensor | None,
+    action_term_name: str = "arm",
+    expected_joint_names: Sequence[str] | None = None,
+    expected_body_name: str | None = None,
+) -> None:
+    """Startup check: the OSC action term resolved the arm joints IN THE ANALYTICAL CHAIN'S ORDER.
+
+    ``RelCartesianOSCAction`` builds its Jacobian with ``compute_jacobian_analytical``, which walks
+    a FIXED serial chain read from ``metadata.yaml`` and returns ``J`` with column ``i`` belonging
+    to the i-th link of that chain. It then multiplies that ``J`` by ``joint_pos`` and
+    ``joint_vel`` sliced with the ids that ``Articulation.find_joints(["shoulder.*", "elbow.*",
+    "wrist.*"])`` returned, and writes the resulting torques back through the same ids.
+
+    Nothing connects those two orderings. ``find_joints`` delegates to ``resolve_matching_names``
+    with ``preserve_order=False``, which is documented to return matches "in the same order as the
+    provided list of strings" -- i.e. in the ARTICULATION's own joint order, which PhysX assigns
+    when it flattens the link tree, not in the order the calibration file was written. On the plain
+    UR5e the two happen to coincide, which is why every shipped OSC task works and why nothing has
+    ever caught this. A robot whose articulation enumerates its joints differently -- a graft, a
+    re-export, a different link ordering out of the USD importer -- gets a Jacobian whose columns
+    are permuted against the joint vector it is applied to. That does not raise: shapes still
+    match, torques are still finite, and the arm simply moves in the wrong direction in a way that
+    looks like a tuning problem.
+
+    This term is declared with ``mode="startup"``, which the env applies directly, so a mismatch
+    fails the process instead of being printed and swallowed inside a timeline PLAY callback.
+
+    Args:
+        env: The environment.
+        env_ids: Unused; present only to satisfy the event-term signature.
+        action_term_name: Name of the OSC action term in the action manager.
+        expected_joint_names: The chain order the Jacobian is written in. Defaults to
+            ``uwlab_assets.robots.ur5e_robotiq_gripper.kinematics.ARM_JOINT_NAMES``, which is what
+            ``compute_jacobian_analytical`` documents itself against.
+        expected_body_name: The end-effector body the Jacobian is computed to. Defaults to that
+            module's ``EE_BODY_NAME``.
+
+    Raises:
+        ValueError: if the term is missing, or its resolved joints, their ORDER, or its
+            end-effector body disagree with the analytical chain.
+    """
+    del env_ids
+    # Imported here rather than at module scope: this module is imported by every OmniReset task,
+    # and the kinematics module pulls in yaml/asset resolution that only the OSC tasks need.
+    from uwlab_assets.robots.ur5e_robotiq_gripper.kinematics import ARM_JOINT_NAMES, EE_BODY_NAME
+
+    expected = list(expected_joint_names if expected_joint_names is not None else ARM_JOINT_NAMES)
+    expected_body = expected_body_name if expected_body_name is not None else EE_BODY_NAME
+
+    try:
+        term = env.action_manager.get_term(action_term_name)
+    except (KeyError, ValueError) as exc:
+        raise ValueError(
+            f"check_osc_arm_joint_order: no action term named '{action_term_name}'. Active terms:"
+            f" {list(env.action_manager.active_terms)}."
+        ) from exc
+
+    resolved = list(getattr(term, "_joint_names", []) or [])
+    if resolved != expected:
+        raise ValueError(
+            f"OSC ACTION TERM '{action_term_name}' RESOLVED THE ARM JOINTS IN THE WRONG ORDER.\n"
+            f"  analytical chain (metadata.yaml column order): {expected}\n"
+            f"  resolved on this articulation:                 {resolved}\n"
+            "compute_jacobian_analytical returns J with one column per link of the chain above, and"
+            " RelCartesianOSCAction multiplies it by the joint vector sliced in the resolved order."
+            " When the two disagree the controller applies each column's torque to a different"
+            " joint: nothing raises, the torques stay finite, and the arm moves wrongly in a way"
+            " that reads as bad tuning. Fix the articulation's joint ordering or give the action"
+            " term joint patterns that resolve in the chain order.\n"
+            f"Guard: {__name__}.check_osc_arm_joint_order"
+        )
+
+    body_name = getattr(getattr(term, "cfg", None), "body_name", None)
+    if body_name != expected_body:
+        raise ValueError(
+            f"OSC action term '{action_term_name}' tracks body '{body_name}', but the analytical"
+            f" Jacobian is computed to '{expected_body}' (kinematics.EE_BODY_NAME). The pose error"
+            " and the Jacobian would then be expressed at two different points on the robot.\n"
+            f"Guard: {__name__}.check_osc_arm_joint_order"
+        )
+
+
 def _joint_id_list(articulation: Articulation, joint_ids: list[int] | slice) -> list[int]:
     """Normalize a ``SceneEntityCfg.joint_ids`` (list or slice) to a list of joint indices."""
     if isinstance(joint_ids, slice):

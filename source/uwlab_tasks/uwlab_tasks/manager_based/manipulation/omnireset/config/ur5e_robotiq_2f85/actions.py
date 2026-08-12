@@ -10,6 +10,8 @@ from isaaclab.utils import configclass
 from uwlab_assets import UWLAB_LOCAL_ASSETS_DIR
 from uwlab_assets.robots.ur5e_linear_gripper.actions import LINEAR_GRIPPER_BINARY_ACTIONS
 from uwlab_assets.robots.ur5e_robotiq_gripper.actions import ROBOTIQ_GRIPPER_BINARY_ACTIONS
+from uwlab_assets.robots.ur5e_robotiq_gripper.kinematics import ARM_JOINT_NAMES
+from uwlab_assets.robots.ur5e_robotiq_gripper.ur5e_robotiq_2f85_gripper import UR5E_EFFORT_LIMITS
 from uwlab_assets.robots.ur10e_delto.actions import DELTO_FULL_HAND_ACTIONS
 
 from ...mdp.actions.actions_cfg import RelCartesianOSCActionCfg
@@ -327,3 +329,152 @@ class Ur10eDeltoSysidOSCAction:
 
     arm = UR10E_DELTO_RELATIVE_OSC_UNSCALED
     gripper = DELTO_FULL_HAND_ACTIONS
+
+
+# ---------------------------------------------------------------------------------------
+# UR5e + Tesollo DELTO DG-5F
+# ---------------------------------------------------------------------------------------
+# The UR5e half is the calibrated UR5e's, verbatim: scales, translational gains and torque limits
+# are the 2F-85 pre-train action's. Only the ROTATIONAL DAMPING RATIO is re-derived, because it is
+# the one gain in this controller that is a property of the END EFFECTOR. See below.
+
+# The analytical kinematics read ``metadata.yaml`` from this directory. Pointing them at the
+# GRAFT's own asset dir rather than leaving ``calibration_dir=None`` (which falls back to the
+# cloud 2F-85 UR5e asset) is deliberate and is NOT a change of numbers: the ``calibrated_joints``
+# and ``link_inertials`` blocks in ``Robots/Ur5eDelto/metadata.yaml`` were compared against the
+# cloud UR5e's and are identical, key for key. Two reasons to name it anyway. (1) The fallback
+# resolves over the network on every process start; this file is committed, so the env spawns on a
+# machine with no route to HuggingFace -- the failure mode that already cost this project a
+# training box. (2) It makes the arm identification a stated property of THIS robot: if the graft's
+# arm is ever re-identified, one file changes and this action follows it, instead of silently
+# continuing to describe a different robot's arm.
+_UR5E_DELTO_CALIBRATION_DIR = f"{UWLAB_LOCAL_ASSETS_DIR}/Robots/Ur5eDelto"
+
+# (150, 150, 150, 28, 28, 28) N*m -- the UR5e's own effort limits, read out of the articulation
+# config IN THE ORDER THE ANALYTICAL JACOBIAN USES. Spelled as a lookup rather than as a literal so
+# that a renamed arm joint raises a KeyError at import instead of silently shifting a limit onto
+# the wrong axis. The graft did not touch the arm, so these are the same limits the 2F-85 UR5e
+# actions carry as literals a few hundred lines above.
+_UR5E_TORQUE_LIMIT = tuple(UR5E_EFFORT_LIMITS[name] for name in ARM_JOINT_NAMES)
+
+# THE ONE NUMBER THAT IS NOT INHERITED.
+#
+# This controller is a MASS-LESS Cartesian PD (``task_space_actions``: "No inertial dynamics
+# decoupling, no mass matrix"). Its damping term ``kd = 2*sqrt(kp)*damping_ratio`` is therefore
+# EXPLICIT velocity feedback evaluated once per PHYSICS step -- ``apply_actions`` runs at
+# ``sim.dt``, not at the policy rate. Linearising the rotational channel about the wrist axis gives
+# ``I * dw/dt = -kd * w``, whose explicit-Euler update is ``w <- w * (1 - kd*dt/I)``: the loop
+# diverges, with alternating sign, as soon as ``kd*dt/I > 2``. ``I`` there is the rotational
+# inertia of everything DISTAL to the wrist about the wrist axis -- an end-effector property. That
+# is the entire reason this ratio has been re-derived for every gripper on this arm family
+# (2F-85 1.0, linear/UR5e 0.2, linear/UR10e 0.1) and why none of those numbers may be copied here.
+#
+# I FOR THIS ROBOT, computed from ``Robots/Ur5eDelto/ur5e_delto.usd`` itself (pxr only, no
+# simulator): the composite rigid-body inertia of ``wrist_3_link`` plus all 28 hand bodies, about
+# the ``wrist_3_joint`` axis. That joint authors ``axis = Z``, ``localPos1 = (0,0,0)`` and
+# ``localRot1 = identity``, so the axis IS wrist_3_link's own +Z through its origin, and the hand's
+# MountJoint sits at that same origin with identity rotation. Per body: rotate the authored
+# ``diagonalInertia`` by its ``principalAxes`` quaternion into the wrist frame, then parallel-axis
+# it out to the wrist origin. Distal mass 1.9614 kg (1.7735 kg hand + 0.1879 kg wrist_3_link).
+#
+#   posture                                     I about the wrist axis
+#   open (the articulation's reset posture)     2.757e-3 kg*m^2
+#   the validated scripted close                4.376e-3 kg*m^2
+#   4000 postures drawn uniformly in the USD
+#     joint limits                              min 2.841e-3, median 4.000e-3, max 5.322e-3
+#   per-joint greedy minimum over those limits  1.931e-3 kg*m^2   <-- worst case used below
+#
+# THE ARITHMETIC, at the rotational stiffness this action uses (kp = 3.0) and dt = 1/120 s:
+#
+#   damping_ratio 0.1  ->  kd = 2*sqrt(3)*0.1 = 0.3464 N*m*s/rad
+#     kd*dt/I  =  0.3464 / (120 * I)  =  1.05 (open)   0.66 (closed)   1.50 (greedy worst case)
+#   damping_ratio 0.2  ->  kd = 0.6928
+#     kd*dt/I  =  2.09 (open)  --  ALREADY DIVERGENT AT THE RESET POSTURE.
+#
+# So 0.1, and 0.2 -- the value the UR5e's own linear gripper runs -- is not merely aggressive here,
+# it is over the bound before the policy takes its first action. The margin 0.1 buys (1.05 at the
+# reset posture, 1.50 at a posture the hand probably cannot even reach through its own
+# self-collisions) is the same margin every shipped configuration on this arm family runs at: the
+# UR5e's 1.1 kg linear gripper sits at 1.45, the UR10e's 0.575 kg one at 1.44, and the UR10e+DELTO
+# at 0.62-1.09.
+#
+# That last line is the cross-check worth reading twice. The UR10e+DELTO's ratio was fixed at 0.1
+# from a reflected inertia MEASURED IN SIMULATION (2.66e-3 to 4.67e-3 kg*m^2); this file's number
+# comes from arithmetic on a different robot's USD with no simulator involved, and lands on
+# 2.757e-3 to 4.376e-3. Two independent methods, two different arms, the same band -- which is
+# exactly what should happen, because the quantity is dominated by the hand and the hand is the
+# same graft bolted to the same flange. The agreement is evidence for the number; it is NOT a
+# licence to inherit it, and the arithmetic above is what this constant actually rests on.
+#
+# WHAT ``I`` IS AND IS NOT, because one omission is large enough to change the conclusion if it is
+# ever quietly folded in. ``I`` above is the RIGID-BODY inertia of the distal chain and excludes
+# JOINT ARMATURE. The UR5e's identified wrist_3 armature is 0.3825 kg*m^2 -- 139 times the whole
+# hand's rotational inertia about that axis -- and PhysX adds armature straight onto the joint-space
+# mass-matrix diagonal, so with it applied the same expression reads 0.0075 instead of 1.05 and no
+# rotational damping ratio would ever look unsafe. That is not a reason to raise this number:
+#
+#   * the USD authors no armature on ``wrist_3_joint`` (drive attributes only). Armature exists
+#     solely because ``randomize_arm_from_sysid`` writes it, ON RESET, and the ADR variant SCALES
+#     IT BY CURRICULUM PROGRESS -- so it is zero at the start of training and zero between spawn
+#     and the first reset even in the ``_fixed`` variant this env uses;
+#   * zero armature is therefore a regime this controller genuinely runs in, and it is the regime
+#     the vibration and runaway on the two linear grippers were actually observed in;
+#   * and the whole point of holding the criterion fixed is that its four calibration points --
+#     2F-85 at 1.0, linear/UR5e at 0.2, linear/UR10e at 0.1, DELTO/UR10e at 0.1 -- were all read
+#     with I computed this same way. A criterion is only worth the consistency of its inputs. Read
+#     "1.05" as "the same margin the shipped grippers run at", not as a proof of stability.
+#
+# Two things the bound above deliberately does not include, both checked and both slack:
+#   * the STIFFNESS half of the same discretisation, kp*dt^2/I = 3*(1/120)^2/2.757e-3 = 0.076,
+#     three orders under the kd term -- which is why a single-parameter criterion is honest here;
+#   * the TRANSLATIONAL channel, kd_xyz*dt/m = 2*sqrt(200)*3/(120*1.9614) = 0.36 against the same
+#     bound of 2. Mass, unlike rotational inertia, barely moved. That is why only the rotational
+#     ratio gets re-derived per end effector.
+#
+# NON-NEGOTIABLE if this is ever revised: validate IN CONTACT, with the hand closed on an object.
+# The UR10e linear gripper's rot Kp 3 -> 6 attempt passed every free-space jitter and authority
+# probe and then entered a high-frequency limit cycle the moment the jaws touched an object.
+# Free-space probes do not detect that class of instability, and neither does the algebra above.
+_UR5E_DELTO_ROT_DAMPING_RATIO = 0.1
+
+UR5E_DELTO_RELATIVE_OSC = RelCartesianOSCActionCfg(
+    asset_name="robot",
+    joint_names=["shoulder.*", "elbow.*", "wrist.*"],
+    body_name="wrist_3_link",
+    scale_xyz_axisangle=(0.02, 0.02, 0.02, 0.02, 0.02, 0.2),
+    motion_stiffness=(200.0, 200.0, 200.0, 3.0, 3.0, 3.0),
+    motion_damping_ratio=(3.0, 3.0, 3.0) + (_UR5E_DELTO_ROT_DAMPING_RATIO,) * 3,
+    torque_limit=_UR5E_TORQUE_LIMIT,
+    calibration_dir=_UR5E_DELTO_CALIBRATION_DIR,
+)
+
+# Eval / sim2real gains. RECORDED AS SPECIFIED AND KNOWN TO FAIL THE BOUND ABOVE: at rotational
+# kp = 50 and damping_ratio 1.0, kd = 2*sqrt(50) = 14.14, so kd*dt/I = 14.14/(120*2.757e-3) = 42.7
+# against a bound of 2 -- twenty-one times over, at the reset posture. That is not a typo
+# introduced here; it is the state every eval OSC group on this arm family is in (the UR10e+DELTO
+# and both linear-gripper eval groups carry the same caveat in prose, and the same arithmetic gives
+# 58.9 for the UR10e linear gripper). The eval gains were fitted as a stiff PAIR against the 2F-85
+# and have never been re-derived for a heavy multi-finger hand; rescaling only the damping of a
+# stiffer controller is a different correction, not this one.
+#
+# It is defined so the spec is written down in one place with its number attached, and it is
+# deliberately NOT reachable from any registered environment: nothing imports the group below.
+# Before an eval or fine-tune run on this robot, re-derive the pair -- do not simply run this.
+UR5E_DELTO_RELATIVE_OSC_EVAL = RelCartesianOSCActionCfg(
+    asset_name="robot",
+    joint_names=["shoulder.*", "elbow.*", "wrist.*"],
+    body_name="wrist_3_link",
+    scale_xyz_axisangle=(0.01, 0.01, 0.002, 0.02, 0.02, 0.2),
+    motion_stiffness=(1000.0, 1000.0, 1000.0, 50.0, 50.0, 50.0),
+    motion_damping_ratio=(1.0, 1.0, 1.0, 1.0, 1.0, 1.0),
+    torque_limit=_UR5E_TORQUE_LIMIT,
+    calibration_dir=_UR5E_DELTO_CALIBRATION_DIR,
+)
+
+# NOTE there is deliberately no ``Ur5eDeltoRelativeOSC*Action`` GROUP here, unlike every other
+# robot in this module. The groups above exist because OmniReset environments mount them. The only
+# environment that mounts the two terms above is the dexlift task, so its group -- which is what
+# pairs this arm half with the hand half and is where the resulting action dimension is asserted --
+# lives with that task, in ``dexlift/dexlift_ur5e_delto_osc_actions.py``, exactly as the other
+# variant's group does. When an OmniReset UR5e+DELTO env is written, define its group here and
+# import these same two terms; do not restate the gains.
