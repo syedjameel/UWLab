@@ -31,9 +31,13 @@ constant or the line that implements it:
   indicator geometry was cloned from a table this env then replaced. See
   :func:`_bind_task_state_visualization` and :data:`STATUS_PAD_TOP_Z`.
 * The scene is a RIGID ASSEMBLY: the table is the robot's mount, so neither may be jittered without
-  the other, and upstream's ``reset_table`` is nulled alongside ``reset_root``. See the two lines
-  in ``__post_init__`` that do it, and :data:`MOUNT_PLATE_NOTE` for the one scene entity main
-  spawns that this module deliberately does not.
+  the other. Upstream's ``reset_table`` is nulled for that reason -- it has real +-50 mm ranges --
+  while ``reset_root`` is KEPT, because every one of its ranges is zero and it is therefore not a
+  jitter at all but the term that writes the robot's root pose to the pose this config declares.
+  Nulling it too, as an earlier revision did, left the arm facing away from its own workspace; see
+  :data:`BASE_LINK_AUTHORED_YAW` and the ``reset_root`` block in ``__post_init__``. See also
+  :data:`MOUNT_PLATE_NOTE` for the one scene entity main spawns that this module deliberately does
+  not.
 
 THE ACTION SPACE IS NOT DECIDED HERE. :class:`Ur5eDeltoMixinCfg` deliberately sets NO ``actions``
 field: it carries the robot, the scene, the sensors and the events, and one subclass per action-
@@ -150,19 +154,62 @@ the implicit actuator has no delay buffer -- the same footnote the UR10e task ca
 FLIP_BASE_YAW = False
 """The robot base is never rotated. Kept as a named constant so the decision stays greppable.
 
-Identical reasoning to the UR10e task: the OmniReset cameras are parented to the robot ROOT prim
+Identical reasoning to the UR10e task: the OmniReset cameras are parented to the robot ROOT PRIM
 with offsets in the root frame, so a 180-degree root yaw here and not there would make identical
 extrinsics resolve to different world poses. The scene is mirrored instead; see
 :data:`WORKSPACE_X`. One base orientation across both task families, matching the single
 orientation of the physical rig.
+
+DO NOT SET THIS TRUE AS A WAY TO FIX THE BASE-FRAME BUG. Rotating the referencing prim by pi does
+compose with :data:`BASE_LINK_AUTHORED_YAW` to put the root link at identity -- measured, it works
+-- but it fixes the WORLD and breaks the CONFIG: ``init_state.rot`` is also
+``default_root_state``, so the declared root orientation would then be a half turn away from the
+real one, and the first event that resets the root to its default would undo the whole thing. The
+root is PINNED instead; see the ``reset_root`` block in ``__post_init__``.
+"""
+
+BASE_LINK_AUTHORED_YAW = 3.141592653589793
+"""``ur5e_delto.usd`` authors its ROOT BODY a half turn from the prim the config poses. MEASURED.
+
+Probed on the spawned stage rather than reasoned about. With ``init_state`` identity:
+
+* ``/World/envs/env_0/Robot`` -- the prim the spawner writes ``init_state.pos``/``rot`` onto --
+  carries ``xformOp:translate (0,0,0)``, ``xformOp:orient (1,0,0,0)``: identity, as configured.
+* ``/World/envs/env_0/Robot/base_link``, which ``Articulation`` reports as ``body_names[0]``, i.e.
+  the ARTICULATION ROOT, carries its own ``xformOp:orient (-4.371e-08, 0, 0, 1)`` -- yaw -pi. So
+  does ``shoulder_link``. That rotation is authored INSIDE the referenced USD and the referencing
+  Xform's identity does nothing about it.
+
+The consequence, and it is the whole reason this constant is written down: ``init_state.rot`` is
+NOT the root link's pose on this asset. It is the pose of the prim the asset is referenced under,
+and it is separately used as ``default_root_state``. Left alone the two disagree by
+:data:`BASE_LINK_AUTHORED_YAW`, and since the pose COMMAND is sampled in the root frame
+(``ObjectUniformPoseCommand`` composes with ``robot.data.root_quat_w``) while the object spawn, the
+table and the viewer are all written in the ENV frame, the goal and the object end up in opposite
+half-spaces. That is exactly what happened; see the ``reset_root`` block in ``__post_init__`` for
+the measurement and the repair.
+
+This is a property of the ASSET, shared with the calibrated UR5e it was grafted from, so it is not
+something this task may fix by editing the USD: OmniReset's own configs are written against the
+same asset and are correct because they reset the robot root every episode.
 """
 
 WORKSPACE_X = 0.55
 """Workspace centre, mirroring the inherited dexsuite scene from -x to +x.
 
-Note the frame subtlety: ``base`` and ``base_link_inertia`` are rotated 180 degrees about z from
-``base_link`` per the ROS convention. This value is stated in ``base_link``, the frame
-``init_state.rot`` and the articulation root use.
+Stated in the ENV frame, which is the frame ``scene.object.init_state.pos``, ``scene.table``,
+``viewer.lookat`` and ``terminations.object_out_of_bound`` are all resolved in.
+
+It is ALSO the robot's root frame, and that is a fact this module has to buy rather than assume:
+see :data:`BASE_LINK_AUTHORED_YAW` for what the asset authors, and the ``reset_root`` block in
+``__post_init__`` for the term that pins the two together. The commanded goal is sampled in the
+ROOT frame, so if that pin is ever dropped this constant and
+``commands.object_pose.ranges.pos_x`` stop describing the same half of the table.
+
+(The older note here -- that ``base`` and ``base_link_inertia`` are rotated 180 degrees from
+``base_link`` per the ROS convention, so the value is "stated in base_link" -- named the right
+subtlety and then drew the wrong conclusion: measured, it is ``base_link`` ITSELF that is the
+rotated one relative to the prim the config poses.)
 """
 
 WORK_SURFACE_Z = 0.004
@@ -215,35 +262,44 @@ TWO CONSEQUENCES OF THAT CARRY-OVER, both measured, neither rescaled:
   it. Fixing it means regenerating the USD with a UR5e hole diameter, not editing this module.
 """
 
-REACHABILITY_NOTE = "UR5e reaches x <= 0.835 on the work surface; the table runs to x = 1.05"
-"""The consequence of putting a UR5e on a table sized for a UR10e, stated rather than papered over.
+REACHABILITY_NOTE = "measured palm reach 1.06 m (p99); spawn and goal are inside it, the table is not"
+"""What this arm can actually touch, MEASURED on the articulation, not quoted from a datasheet.
 
-Distances below are from the SHOULDER origin (0, 0, 0.1625 -- the UR5e's d1 above the base flange),
-which is the datum UR's 0.850 m reach figure is quoted against.
+256,000 samples drawn uniformly over the six arm joints' measured limits and pushed through the
+spawned articulation's own forward kinematics (``scripts/tools/reach_measure2.py``). Radii are from
+the BASE, which is the frame everything else in this module is written in:
 
-* The FURNITURE overhangs the arm. The UR5e's reach circle crosses the work surface at x = 0.835 m
-  (y = 0); the tabletop runs to x = 1.05 m and its front corners sit 1.118 m out. The front ~215 mm
-  of the table is simply unreachable. This is cosmetic here -- nothing is ever spawned or commanded
-  there -- but it is why the table looks oversized next to this arm.
-* The OBJECT SPAWN is comfortably inside: (0.55, 0.0, 0.099) is 0.554 m out. Its ``reset_object``
-  jitter (+-0.2 m in x and y, 0..+0.4 m in z) reaches 0.779 m at the far corner of the surface and
-  0.846 m at that corner's full drop height -- both inside 0.850 m, and the object falls toward the
-  arm rather than away from it.
-* The GOAL BOX is inside except for one corner region. Sampling the mirrored, shifted box
-  x (0.3, 0.7) * y (-0.25, 0.25) * z (0.299, 0.699) uniformly, 98.6% of the volume lies within
-  0.850 m; the excess is the far-and-high corner, (0.7, +-0.25, 0.699) at 0.917 m.
+* palm (``rl_dg_mount``) radius: median 0.600, p75 0.778, p99 1.064, max 1.129. Farthest fingertip
+  1.361. The grafted DELTO adds roughly 0.25 m to the flange, so the datasheet's 0.850 m -- which is
+  quoted to the FLANGE, from the shoulder -- is not the number that governs this task.
+* the OBJECT SPAWN volume, x [0.35, 0.75] * y [-0.2, 0.2] * z [0.099, 0.499]: the palm reaches
+  82.4% of it to within 2 cm and 100% to within 5 cm, worst nearest-sample distance 0.0394 m. The
+  residual is sampling density (mean nearest-neighbour spacing ~1.4 cm), not unreachable volume.
+* the GOAL BOX, x (0.3, 0.7) * y (-0.25, 0.25) * z (0.299, 0.699): measured live, the sampled goal
+  sits 0.504 / 0.725 / 0.992 m (min/median/max) from the base -- the whole box inside the p99 palm
+  radius, and the goal is a pose for the OBJECT, which the hand holds a further palm's length out.
+  This RETIRES the older note's estimate that 1.4% of the goal box (the far-and-high corner at
+  0.917 m) was out of reach: it was computed against the 0.850 m flange figure and the corner is
+  reachable.
+* the OmniReset object envelope proven on this table under a UR5e -- x (0.35, 0.60) * y (+-0.2) *
+  z (0, 0.3) -- is 100% reachable at 3 cm, worst nearest-sample distance 0.0345 m. Our spawn box is
+  that envelope extended to x = 0.75, and the extension is inside the measured reach set.
 
-FLAGGED, NOT RESCALED. Two reasons for leaving the inherited ranges alone. First, the 0.850 m figure
-is to the tool FLANGE, and the goal is a pose for the OBJECT, which the hand holds roughly a palm's
-length beyond the flange -- so the arm does not have to put its flange on the goal point, and the
-1.4% of the box that is nominally out very likely is not. Second, shrinking the command ranges would
-silently change the task the inherited dexsuite reward stds and ADR tolerances were tuned against,
-which is a bigger change than the one it would be fixing.
+NOT RESCALED, and now for a measured reason rather than a cautious one. The spawn and the goal are
+both inside the reach set as inherited, so narrowing either would change the task the dexsuite
+reward stds and ADR tolerances were tuned against while fixing nothing. The defect that made the
+hand miss the object was never the size of these boxes; it was which half-space the arm was in. See
+BASE_LINK_AUTHORED_YAW.
 
-UNVERIFIED WITHOUT ISAAC: whether that corner is genuinely attainable depends on the DELTO's grasp
-offset and on wrist orientation at the goal, neither of which is decidable from the config alone. If
-training shows the goal command saturating unreached at high x AND high z, this is the note to
-revisit, and ``commands.object_pose.ranges.pos_z`` is the thing to lower.
+THE FURNITURE STILL OVERHANGS THE ARM, unchanged and still cosmetic: the tabletop runs to x = 1.05
+and its front corners sit 1.118 m out, past even the p99 palm radius. Nothing is spawned or
+commanded there.
+
+CAVEAT, stated because the sweep cannot see it: these are KINEMATIC reach sets. Collisions are
+ignored (the sampler lets the palm pass through z = -0.79, i.e. under the work surface), and the
+sweep says nothing about wrist orientation at the goal or about the DELTO's grasp offset. A
+collision-free reach set needs a second pass that rejects samples with contact force or joint
+residual.
 """
 
 STATUS_PAD_BORDER = 0.08
@@ -442,6 +498,22 @@ class Ur5eDeltoEventCfg(dexsuite.EventCfg):
         },
     )
 
+    # THE FRAME GUARD, and the reason it is a ``reset`` term rather than a ``startup`` one: at
+    # startup the robot still stands where the USD authored it, half a turn from the pose this
+    # config declares (see BASE_LINK_AUTHORED_YAW), and it is dexsuite's ``reset_root`` -- a reset
+    # term -- that corrects it. Event terms of one mode run in config DECLARATION order and a
+    # subclass's fields come after its base's, so this runs after ``reset_root`` by construction.
+    # It checks once and then costs nothing; see the function.
+    #
+    # The construction-time half, ``_assert_root_pin_is_a_pin``, reads the CONFIG. This one reads
+    # the spawned articulation, and so is the half that would catch a future asset revision that
+    # moved the root body again.
+    check_robot_root_pinned = EventTerm(
+        func=mdp.check_root_matches_default,
+        mode="reset",
+        params={"asset_cfg": SceneEntityCfg("robot"), "context": "dexlift UR5e+DELTO"},
+    )
+
 
 def _bind_task_state_visualization(env_cfg) -> mdp.TaskStateVisPoseCommandCfg:
     """Rebuild ``commands.object_pose`` so the goal and the red/green task state are both legible.
@@ -556,6 +628,45 @@ def _drop_unreachable_abnormal_robot_cut(env_cfg) -> None:
     """
     env_cfg.terminations.abnormal_robot = None
     env_cfg.rewards.early_termination = None
+
+
+def _assert_root_pin_is_a_pin(env_cfg) -> None:
+    """Fail construction unless ``events.reset_root`` is present AND writes a fixed pose.
+
+    Two opposite regressions, one check, because the term has to be both things at once:
+
+    * DELETED (or ``None``). Then nothing writes the robot's root pose and the arm stands at
+      whatever the USD authored -- :data:`BASE_LINK_AUTHORED_YAW`, a half turn -- while the object
+      spawn, the table and the out-of-bounds box are all written in the env frame. That is the
+      defect this check exists for; the ``reset_root`` block in ``__post_init__`` has the numbers.
+    * WIDENED. dexsuite ships every range at [0, 0] and this scene needs them to stay there: the
+      robot base is bolted to the table (see the ``reset_table`` block for the three ways a moving
+      base breaks this rig), so a nonzero range here is the same defect as jittering the table.
+
+    Construction-time and cheap. The runtime half is ``check_robot_root_pinned`` in
+    :class:`Ur5eDeltoEventCfg`, which measures the pose that actually resulted.
+    """
+    term = getattr(env_cfg.events, "reset_root", None)
+    if term is None:
+        raise ValueError(
+            "events.reset_root is missing. It is NOT a randomization -- all of its pose ranges are"
+            " zero -- it is the term that writes the robot's root pose to its configured"
+            f" init_state. This asset authors its root body {BASE_LINK_AUTHORED_YAW:.6f} rad from"
+            " the prim the spawner poses (see BASE_LINK_AUTHORED_YAW), so without this term the"
+            " arm faces away from the table while the object spawns on it."
+        )
+    asset_name = term.params["asset_cfg"].name
+    if asset_name != "robot":
+        raise ValueError(f"events.reset_root must pin scene['robot']; it names scene['{asset_name}'].")
+    for range_kind in ("pose_range", "velocity_range"):
+        for axis, bounds in term.params.get(range_kind, {}).items():
+            if float(bounds[0]) != 0.0 or float(bounds[1]) != 0.0:
+                raise ValueError(
+                    f"events.reset_root.{range_kind}['{axis}'] = {tuple(bounds)} is not zero. On"
+                    " this rig the robot base is bolted to the table, whose own reset term is"
+                    " nulled for that reason; a base that moves on its own breaks the mount, every"
+                    " height measured from the work surface, and the status pad's fixed offset."
+                )
 
 
 ##
@@ -708,11 +819,29 @@ class Ur5eDeltoMixinCfg:
         # rest of the task already assumes: the goal box ``ranges.pos_y`` is (-0.25, +0.25), i.e.
         # symmetric about the robot's own plane of symmetry, and so is the table.
         self.scene.object.init_state.pos = (WORKSPACE_X, 0.0, 0.35 + WORKSPACE_Z_SHIFT)
+        # THE TWO LINES BELOW ARE IN A DIFFERENT FRAME FROM THE ONE ABOVE, and that is worth one
+        # sentence because it is what the base-frame defect was made of. ``init_state.pos`` is
+        # resolved in the ENV frame; ``ObjectUniformPoseCommand`` samples in the ROBOT ROOT frame
+        # and composes with ``robot.data.root_quat_w`` (dexsuite/mdp/commands/pose_commands.py).
+        # The two agree only while the root really is at the identity pose this config declares,
+        # which is what ``events.reset_root`` buys -- see BASE_LINK_AUTHORED_YAW.
         self.commands.object_pose.ranges.pos_x = (0.3, 0.7)
         self.commands.object_pose.ranges.pos_z = (0.55 + WORKSPACE_Z_SHIFT, 0.95 + WORKSPACE_Z_SHIFT)
         # The inherited bound box is written for the -x, table-at-0.235 workspace. Left alone, an
         # object at +0.55 is out of bounds on the first frame and every episode terminates
         # immediately.
+        # RECOMPUTED against both sampled volumes, in the env frame, with the root pinned:
+        #   object spawn  = init_state.pos +- reset_object's [-0.2, 0.2] x/y and [0.0, 0.4] z
+        #                 -> x [0.35, 0.75]  y [-0.20, 0.20]  z [0.099, 0.499]
+        #   goal          = ranges above, in a root frame that is now the env frame
+        #                 -> x [0.30, 0.70]  y [-0.25, 0.25]  z [0.299, 0.699]
+        # Both fit inside (x, y, z) = (-0.5, 1.5), (-2.0, 2.0), (-0.046, 2.0) with margins of
+        # 0.80 / 0.75 in x, 1.75 in y, and 0.145 below the spawn floor / 1.30 above the goal
+        # ceiling in z, so the inherited x and y and the recomputed z floor all stand as they are.
+        # Both measured boxes match those predictions (reach_measure5): object x [0.352, 0.739],
+        # goal x [0.307, 0.697]. Worth stating what the SAME arithmetic said before the root was
+        # pinned: the goal box then ran to x = -0.699, i.e. half of every goal sampled sat OUTSIDE
+        # this termination's x floor of -0.5 -- the object would have been killed on arrival.
         # The FLOOR of the z bound has to sit BELOW the work surface, or an object simply RESTING on
         # the table reads as out of bounds and the episode ends the moment it is put down. 50 mm of
         # margin under WORK_SURFACE_Z puts it at -0.046 -- under the surface, and still 630 mm above
@@ -788,10 +917,41 @@ class Ur5eDeltoMixinCfg:
         self.events.joint_friction.params["asset_cfg"] = SceneEntityCfg("robot", joint_names=[HAND_JOINT_REGEX])
         # The base term names the reference robot's own wrist joint (``iiwa7_joint_7``).
         self.events.reset_robot_wrist_joint.params["asset_cfg"] = SceneEntityCfg("robot", joint_names=["wrist_3_joint"])
-        # The reference robot floats and needs its root pinned every reset. Ours is bolted to the
-        # table through a fixed root joint -- the graft keeps the arm's ``root_joint`` and asserts
-        # it is still the one articulation root -- so there is nothing to pin.
-        self.events.reset_root = None
+        # -- ``events.reset_root`` IS KEPT, exactly as dexsuite writes it. An earlier revision of
+        # this module nulled it, next to ``reset_table``, on the argument that "the reference robot
+        # floats and needs its root pinned every reset; ours is bolted to the table through a fixed
+        # root joint, so there is nothing to pin". Every clause of that is true and the conclusion
+        # is wrong, because the term is not a randomization: ALL THREE of its pose ranges are
+        # [0, 0]. It does not jitter the robot, it WRITES THE ROOT POSE TO ``default_root_state``,
+        # and on this asset that is the only thing making ``init_state.rot`` true. See
+        # BASE_LINK_AUTHORED_YAW: the USD authors the root BODY a half turn from the prim the
+        # spawner poses, so with nothing writing the root the arm stands at yaw -pi in the env
+        # frame while every config number in this module says identity.
+        #
+        # MEASURED, 64 envs, at reset, env frame (scripts/tools/reach_measure3.py, _4, _5):
+        #   nulled  -- object x [+0.359, +0.745] (on the table), fingertips x [-0.771, -0.132],
+        #              goal x [-0.690, -0.301]. Robot, reset posture and goal all in -x; the object
+        #              alone in +x. Object to nearest fingertip 0.568 / 1.035 / 1.346 m
+        #              (min/median/max), and the hand is not over the table at all -- the tabletop
+        #              runs x [-0.35, +1.05] (measured world bbox). Half the goal box was also
+        #              outside ``object_out_of_bound``'s x floor of -0.5, i.e. the object would be
+        #              killed on arrival. Nothing can touch anything; the ungated
+        #              ``any_finger_contact`` reward measured 0.0000 for a whole training run, so
+        #              no success, so ADR never promotes, so ``gravity_adr`` never leaves zero
+        #              gravity and the object never even falls.
+        #   kept    -- object x [+0.352, +0.739], fingertips x [+0.140, +0.748], goal
+        #              x [+0.307, +0.697]; root yaw exactly 0.0, root pos exactly (0, 0, 0).
+        #              Object to nearest fingertip 0.076 / 0.298 / 0.604 m. 100% of object spawns
+        #              and 100% of goals over the tabletop footprint.
+        # Nothing else moved: the object spawn, the goal ranges and the reward stds are untouched,
+        # and the distances above changed because the arm now faces the workspace, not because the
+        # task was rescaled.
+        #
+        # The rigid-assembly argument is unaffected and in fact strengthened. ``reset_table`` stays
+        # nulled (below) because it has real +-50 mm ranges; this term has none, and pinning the
+        # robot to (0, 0, 0) identity every reset is what holds the robot-to-table pose fixed
+        # rather than leaving it to whatever a future asset revision authors.
+        _assert_root_pin_is_a_pin(self)
         # THE TABLE MUST NOT MOVE RELATIVE TO THE ROBOT, and upstream's ``reset_table`` moves it.
         # dexsuite's is a free cuboid standing under a floating arm, so jittering it +-50 mm in x/y
         # every reset randomizes the robot-to-table pose -- a legitimate randomization THERE. Here

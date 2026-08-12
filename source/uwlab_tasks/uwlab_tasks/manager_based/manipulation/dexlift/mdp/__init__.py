@@ -28,6 +28,7 @@ from isaaclab_tasks.manager_based.manipulation.dexsuite.mdp import *  # noqa: F4
 # (``articulation.py:1773`` -> ``write_joint_velocity_limit_to_sim`` -> ``set_dof_max_velocities``),
 # so no scoping of it can fire. See ``_drop_unreachable_abnormal_robot_cut`` in
 # ``dexlift_ur5e_delto_env_cfg``.
+from .frame_guards import *  # noqa: F401, F403
 from .rewards import *  # noqa: F401, F403
 from .table_leg import *  # noqa: F401, F403
 
