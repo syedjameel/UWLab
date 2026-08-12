@@ -73,10 +73,14 @@ from .rl_state_cfg import (
 # nothing left for a task-config override to do -- and a second cap on top would be the same
 # mistake as a second effort cap: a coarser number shadowing a derived one.
 #
-# For scale, the binary action is nowhere near that limit: at ``DELTO_CLOSE_FRACTION = 0.10`` the
-# largest per-joint commanded stroke is 0.1411 rad (8.09 deg, ``rj_dg_1_4``), against a 3.0 rad/s
-# cap and the USD's independently-enforced ``physxJoint:maxJointVelocity`` of 419 deg/s
-# (7.31 rad/s). The deployed close does not approach either limit.
+# WHAT THE ACTUATOR CAP NOW HAS TO HOLD BACK IS DIFFERENT, AND UNMEASURED. This paragraph used to
+# say the commanded stroke was nowhere near the cap, because the closure was one scalar selecting a
+# fixed posture whose largest per-joint step was 0.1411 rad. That posture is gone: the hand is
+# twenty independent relative joint actions at 0.1 rad per unit action, so the per-step commanded
+# delta is whatever the policy asks for, every step, in any direction. The 3.0 rad/s actuator limit
+# and the USD's ``physxJoint:maxJointVelocity`` of 419 deg/s (7.31 rad/s) are now the ONLY bounds on
+# hand joint speed, where they were previously slack by an order of magnitude. Nobody has measured
+# how often a trained policy sits against them.
 #
 # (This comment previously argued for no cap at all, on the basis that a full sweep was ~1.4 rad
 # per joint and the USD ceiling was never approached. Both halves went stale: A8 added the actuator
@@ -100,10 +104,14 @@ def _exclude_hand_from_abnormal(cfg) -> None:
     of 7.31 rad/s, and therefore reachable. The comment silently became false when a number moved
     under it, which is exactly how the reader most likely to delete this line would be misled.
 
-    Reachable is not the same as measured: the binary close commands at most 0.1411 rad per joint at
-    the current closure fraction, so a normal closure will not come near 6 rad/s. The exposure is
-    reset teleports (``write_joint_state_to_sim`` writes a posture with no velocity budget) and hard
-    contact during PPO exploration. Nobody has measured whether it trips in practice -- and the
+    Reachable is not the same as measured, but the margin that used to make this comfortable is
+    gone. The old argument was that the binary close commanded at most 0.1411 rad per joint, so a
+    normal closure could not come near 6 rad/s. The hand is now twenty independent relative joint
+    actions and a policy can drive any of them at the actuator's full 3.0 rad/s indefinitely, i.e.
+    at half the trip threshold by intent rather than by accident. The exposure is therefore larger
+    than it was: on top of reset teleports (``write_joint_state_to_sim`` writes a posture with no
+    velocity budget) and hard contact during PPO exploration, ordinary hand exploration now sits
+    much closer to the limit. Nobody has measured whether it trips in practice -- and the
     linear gripper is the precedent for why that matters: its equivalent check started firing on
     ~9% of episodes as soon as its jaws were speed-capped, freezing the ADR curriculum below its
     0.95 gate. Scoping the check to the arm removes that failure mode before it can appear.

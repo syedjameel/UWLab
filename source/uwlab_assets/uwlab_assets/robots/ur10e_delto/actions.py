@@ -3,25 +3,26 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Binary hand action for the UR10e + Tesollo DELTO DG-5F.
+"""Fully actuated hand action for the UR10e + Tesollo DELTO DG-5F.
 
-OmniReset exposes one policy gripper scalar, so the 20-joint hand is represented by one measured
-open/closed posture pair. Only flexion joints move; opposition and spread joints stay at their
-open values. The closed posture uses one fraction per joint *level* instead of one uniform
-fraction. A uniform closure makes the distal phalanges lead the pads and leaves no usable cuboid
-contact window. The level-specific solution keeps the opposing pads in front of the other links.
+All twenty hand joints are independent policy actions. There is deliberately no scalar closure
+here, and no open/closed posture PAIR: a one-parameter close fraction cannot produce a two-jaw
+pinch on this hand, because the pads never lead the phalanges at any single fraction. Anything
+that reintroduces a "close command" reintroduces that limit, so a policy must be free to command
+each joint.
 
-The fractions are absolute fractions of each flexion joint's remaining travel. They were selected
-with exact convex-collider FK, independently cross-checked by an LP support solver, and verified at
-the deployed posture for joint limits, >=1.5 mm non-adjacent self-clearance, opposition, and stop
-margin. They are inseparable from the jaw frame in ``local/Robots/DeltoHand/metadata.yaml`` and the
-34 mm ``DeltoBlock``; update and validate the package together.
+The action is RELATIVE and, per Isaac Lab's ``RelativeJointPositionAction``, resolves against the
+MEASURED joint position each step (``current joint positions + processed actions``). That is the
+load-bearing property: an absolute or target-relative form lets the commanded target run ahead of
+where the force-limited fingers actually are, and the accumulated backlog discharges as an impulse
+that flings the object.
+
+The OPEN posture below stays: it is the articulation's reset posture, not a closure input.
 """
 
 from __future__ import annotations
 
-from isaaclab.envs.mdp.actions.actions_cfg import BinaryJointPositionActionCfg
-from isaaclab.utils import configclass
+from isaaclab.envs.mdp.actions.actions_cfg import RelativeJointPositionActionCfg
 
 from .ur10e_delto import DELTO_HAND_DEFAULT_JOINT_POS
 
@@ -29,57 +30,44 @@ from .ur10e_delto import DELTO_HAND_DEFAULT_JOINT_POS
 # ``finger_open_joint_angles``; aliased rather than restated so the three cannot drift apart.
 DELTO_HAND_OPEN_JOINT_POS = dict(DELTO_HAND_DEFAULT_JOINT_POS)
 
-# Upper (flexion) limit of each joint that closes, in radians, read from the hand USD's
-# ``physics:upperLimit``. Only the 15 flexion joints appear -- the five opposition/spread joints do
-# not move during a closure and so need no limit here. This asset is the "limited_jnts" variant,
-# whose limits are clamped to flexion-only; a different DELTO USD has DIFFERENT limits and this
-# table must be re-read from it (``rj_dg_{2,3,4}_3`` and ``rj_dg_5_2`` in particular are clamped
-# from 90 deg of travel down to 30).
-_DELTO_FLEXION_UPPER_LIMIT = {
-    "rj_dg_1_1": 1.3439,
-    "rj_dg_1_3": 1.5708,
-    "rj_dg_1_4": 1.5708,
-    "rj_dg_2_2": 2.0071,
-    "rj_dg_2_3": 1.5708,
-    "rj_dg_2_4": 1.5708,
-    "rj_dg_3_2": 2.0071,
-    "rj_dg_3_3": 1.5708,
-    "rj_dg_3_4": 1.5708,
-    "rj_dg_4_2": 1.9199,
-    "rj_dg_4_3": 1.5708,
-    "rj_dg_4_4": 1.5708,
-    "rj_dg_5_2": 1.5708,
-    "rj_dg_5_3": 1.5708,
-    "rj_dg_5_4": 1.5708,
+# The hand's twenty actuated joints, as one regex -- the same expression the actuator group uses.
+DELTO_HAND_JOINT_REGEX = r"rj_dg_[1-5]_[1-4]"
+
+# Radians of joint motion per unit of action, per joint. Spelled out one joint at a time rather
+# than given as a single regex-wide value, following the precedent in
+# ``dexlift/dexlift_ur10e_delto_env_cfg.py``: a joint that the action term matches but this dict
+# does not silently falls back to scale 1.0, whereas a name here that matches NO joint raises
+# during term parsing. Twenty explicit keys therefore make a renamed or dropped joint visible.
+# These names must remain exactly the keys of ``DELTO_HAND_OPEN_JOINT_POS``.
+DELTO_HAND_ACTION_SCALE = {
+    "rj_dg_1_1": 0.1,
+    "rj_dg_1_2": 0.1,
+    "rj_dg_1_3": 0.1,
+    "rj_dg_1_4": 0.1,
+    "rj_dg_2_1": 0.1,
+    "rj_dg_2_2": 0.1,
+    "rj_dg_2_3": 0.1,
+    "rj_dg_2_4": 0.1,
+    "rj_dg_3_1": 0.1,
+    "rj_dg_3_2": 0.1,
+    "rj_dg_3_3": 0.1,
+    "rj_dg_3_4": 0.1,
+    "rj_dg_4_1": 0.1,
+    "rj_dg_4_2": 0.1,
+    "rj_dg_4_3": 0.1,
+    "rj_dg_4_4": 0.1,
+    "rj_dg_5_1": 0.1,
+    "rj_dg_5_2": 0.1,
+    "rj_dg_5_3": 0.1,
+    "rj_dg_5_4": 0.1,
 }
 
-# Fractions of remaining flexion travel keyed by joint-name suffix. The distal level performs most
-# of the enclosure; the proximal levels stay nearly fixed so phalanges do not preempt pad contact.
-DELTO_CLOSE_FRACTIONS = {1: 0.004, 2: 0.092, 3: 0.0, 4: 0.947}
-
-# CLOSED posture: flexion joints advance by the fraction for their level. Every other joint is held
-# at its open value. Values cannot exceed a joint limit by construction.
-DELTO_HAND_CLOSED_JOINT_POS = {
-    name: (
-        value + DELTO_CLOSE_FRACTIONS[int(name.rsplit("_", 1)[1])] * (_DELTO_FLEXION_UPPER_LIMIT[name] - value)
-        if name in _DELTO_FLEXION_UPPER_LIMIT
-        else value
-    )
-    for name, value in DELTO_HAND_OPEN_JOINT_POS.items()
-}
-
-# Binary open/close over all 20 hand joints. ONE scalar action selects a whole posture; the joints
-# are slaved to it, not independent policy DOFs.
-DELTO_BINARY_ACTIONS = BinaryJointPositionActionCfg(
+# Twenty independent policy actions, one per hand joint. Action dimension is 20.
+DELTO_FULL_HAND_ACTIONS = RelativeJointPositionActionCfg(
     asset_name="robot",
-    joint_names=[r"rj_dg_[1-5]_[1-4]"],
-    open_command_expr=dict(DELTO_HAND_OPEN_JOINT_POS),
-    close_command_expr=dict(DELTO_HAND_CLOSED_JOINT_POS),
+    joint_names=[DELTO_HAND_JOINT_REGEX],
+    scale=DELTO_HAND_ACTION_SCALE,
+    # Relative to the MEASURED joint position: the articulation's own offset is dropped so the
+    # commanded target cannot accumulate ahead of the fingers. See the module docstring.
+    use_zero_offset=True,
 )
-
-
-@configclass
-class DeltoBinaryGripperAction:
-    """Hand-only action group, for the grasp-sampling env (no arm in the scene)."""
-
-    gripper = DELTO_BINARY_ACTIONS

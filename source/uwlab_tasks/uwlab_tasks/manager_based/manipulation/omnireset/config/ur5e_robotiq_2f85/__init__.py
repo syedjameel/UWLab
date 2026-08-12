@@ -262,15 +262,10 @@ gym.register(
 # and its cfg class. Same naming convention: OmniReset-{Robot}-{Task}-v0.
 # =======================================================================================
 
-# Grasp sampling is GRIPPER-ONLY and therefore arm-independent, so it is named after the hand
-# rather than the robot (matching OmniReset-LinearGripper-GraspSampling-v0). No rsl_rl entry
-# point: this is a scripted rollout driven by a constant close action, not an RL task.
-gym.register(
-    id="OmniReset-Delto-GraspSampling-v0",
-    entry_point="isaaclab.envs:ManagerBasedRLEnv",
-    disable_env_checker=True,
-    kwargs={"env_cfg_entry_point": f"{__name__}.delto_cfg:DeltoGraspSamplingCfg"},
-)
+# There is no DELTO grasp-sampling id. Grasp sampling is a scripted rollout driven by a constant
+# CLOSE action, so it only exists for a gripper that has a one-scalar closure; the DELTO's twenty
+# joints are independent policy actions and have no such command. Nothing downstream needs a DELTO
+# grasp dataset.
 
 # ---- UR10e + DELTO RESET STATES variants ----
 gym.register(

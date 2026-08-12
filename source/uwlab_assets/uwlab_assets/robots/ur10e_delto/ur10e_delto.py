@@ -142,8 +142,10 @@ UR10E_DELTO_ARTICULATION = ArticulationCfg(
             disable_gravity=True,
             max_depenetration_velocity=5.0,
             # The soft 20-joint hand otherwise injects persistent rigid-link ringing into the
-            # wrist during its ~10 s binary close. This is the package value used by the D2/D3
-            # datasets and the D4 training run; changing it invalidates those artifacts.
+            # wrist while the fingers close. This is the package value used by the D2/D3 datasets
+            # and the D4 training run; changing it invalidates those artifacts. (The ~10 s figure
+            # this once quoted was the duration of the deleted scripted binary close; a policy
+            # driving twenty joints has no such fixed timescale.)
             linear_damping=500.0,
             angular_damping=500.0,
         ),

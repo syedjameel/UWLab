@@ -78,8 +78,8 @@ def main(env_cfg, agent_cfg) -> None:
     #
     # This is a no-op for the shipped grippers -- ``grasp_sampling_cfg`` binds
     # ``robotiq_base_link``, and the linear gripper renames its links to that same contract, so
-    # both resolve to exactly the value that used to be written here. The DELTO does not: its palm
-    # is ``rl_dg_mount``, and ``DeltoGraspSamplingCfg`` repoints the term accordingly.
+    # both resolve to exactly the value that used to be written here. It stays read from the term
+    # for the next gripper whose palm link is named something else.
     #
     # Getting this wrong is not a clean failure. ``GraspRelativePoseRecorder`` matches the body by
     # substring and leaves the index as ``None`` when nothing matches; ``body_state_w[ids, None, :3]``

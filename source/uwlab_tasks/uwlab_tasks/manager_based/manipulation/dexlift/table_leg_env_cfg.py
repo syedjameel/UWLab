@@ -86,8 +86,13 @@ APPROACH_ARM_JOINT_POS = {
     "wrist_3_joint": -1.66108799,
 }
 # Raw hand command found by smooth, full-gravity search and verified to sustain
-# geometrically opposed contact while the arm lifts. Converting through the
-# task's default-centered action scales gives the target used by dense shaping.
+# geometrically opposed contact while the arm lifts.
+#
+# NO TERM READS THESE TWO ANY MORE. They were the close posture of the deleted one-scalar synergy.
+# They are kept as the measured record of a posture that provably holds this leg -- the search
+# that produced them is expensive and the numbers are not recoverable from anything else in the
+# tree -- but nothing in the environment is wired to them, and the fully actuated hand reaches
+# them, if at all, by learning.
 GRASP_HAND_ACTION = {
     name: action
     for name, action in zip(
@@ -156,7 +161,11 @@ NON_FINGER_HAND_CONTACT_NAMES = (PALM_BODY, "rl_dg_base", "rl_dg_palm")
 
 @configclass
 class TableLegJointPositionActionCfg:
-    """Default-centered arm control plus a validated whole-hand position synergy."""
+    """Default-centered arm control plus a fully actuated twenty-joint hand.
+
+    Action dimension is 6 + 20 = 26. It was 6 + 1 = 7 while the hand was one synergy scalar, so no
+    checkpoint from that era loads here.
+    """
 
     arm_action = mdp.JointPositionActionCfg(
         asset_name="robot",
@@ -174,14 +183,47 @@ class TableLegJointPositionActionCfg:
         },
         use_default_offset=True,
     )
-    # One scalar selects the open or collision-validated close posture. All 20
-    # joints remain actuated and move to their individually calibrated targets;
-    # the reduced policy action avoids rediscovering a fragile 20-D synergy.
-    hand_action = mdp.ContinuousSynergyJointPositionActionCfg(
+    # Twenty independent policy actions, one per hand joint. The former one-scalar synergy
+    # interpolated between two fixed postures, which is exactly the model this hand cannot
+    # express: no single close fraction puts the opposing pads in front of the phalanges, so a
+    # two-jaw pinch was unreachable at every value of that scalar. The policy now commands each
+    # joint.
+    #
+    # RELATIVE to the MEASURED joint position (Isaac Lab applies
+    # ``current joint positions + processed actions``). The force-limited fingers lag their target
+    # under contact; an absolute or target-relative form lets the commanded target accumulate ahead
+    # of them and discharge as an impulse into the 57 g leg.
+    hand_action = mdp.RelativeJointPositionActionCfg(
         asset_name="robot",
         joint_names=[HAND_JOINT_REGEX],
-        open_command_expr=DELTO_HAND_DEFAULT_JOINT_POS,
-        close_command_expr=GRASP_HAND_JOINT_POS,
+        # Spelled out per joint rather than as one regex-wide value: a joint matched by
+        # ``joint_names`` but absent from this dict silently falls back to scale 1.0, while a name
+        # here that matches no joint raises during term parsing. Same reason as the arm above.
+        # Kept local to this task rather than imported from the asset package: an action scale is
+        # only ever validated inside one environment's dynamics.
+        scale={
+            "rj_dg_1_1": 0.1,
+            "rj_dg_1_2": 0.1,
+            "rj_dg_1_3": 0.1,
+            "rj_dg_1_4": 0.1,
+            "rj_dg_2_1": 0.1,
+            "rj_dg_2_2": 0.1,
+            "rj_dg_2_3": 0.1,
+            "rj_dg_2_4": 0.1,
+            "rj_dg_3_1": 0.1,
+            "rj_dg_3_2": 0.1,
+            "rj_dg_3_3": 0.1,
+            "rj_dg_3_4": 0.1,
+            "rj_dg_4_1": 0.1,
+            "rj_dg_4_2": 0.1,
+            "rj_dg_4_3": 0.1,
+            "rj_dg_4_4": 0.1,
+            "rj_dg_5_1": 0.1,
+            "rj_dg_5_2": 0.1,
+            "rj_dg_5_3": 0.1,
+            "rj_dg_5_4": 0.1,
+        },
+        use_zero_offset=True,
     )
 
 
@@ -295,19 +337,14 @@ class TableLegRewardsCfg(dexsuite.RewardsCfg):
             "palm_body": PALM_BODY,
         },
     )
-    grasp_posture_progress = RewTerm(
-        func=mdp.synergy_grasp_action,
-        weight=20000.0,
-        params={
-            "desired_object_pos_p": DESIRED_OBJECT_POS_P,
-            "desired_object_quat_p": DESIRED_OBJECT_QUAT_P,
-            "action_term_name": "hand_action",
-            "position_std": 0.08,
-            "orientation_std": 0.75,
-            "unwanted_contact_names": NON_FINGER_HAND_CONTACT_NAMES,
-            "palm_body": PALM_BODY,
-        },
-    )
+    # REMOVED with the one-scalar hand: ``grasp_posture_progress`` (mdp.synergy_grasp_action,
+    # weight 20000). It scored ``-hand_action.raw_actions[:, 0]`` clamped to [0, 1] -- the closure
+    # scalar under Isaac Lab's binary sign convention. Against the fully actuated hand, index 0 is
+    # the relative command for ``rj_dg_1_1`` alone and a negative value there means "extend that
+    # one joint", so the term would reward one thumb joint for extending near the leg. It measures
+    # nothing that exists any more. NO replacement shaping is invented here: the closure gradient
+    # this task was tuned around is simply gone, and what should take its place is an open
+    # question for whoever retunes the reward set.
     position_tracking = RewTerm(
         func=mdp.target_position_tracking,
         weight=1000.0,

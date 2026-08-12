@@ -181,7 +181,8 @@ variants = {
         # Local dev asset (telescoping cover/lid). Switch to UWLAB_CLOUD_ASSETS_DIR when sharing.
         "cover": make_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/Cover/cover.usd"),
         # DELTO-sized part (34 x 34 x 34 mm, 0.03 kg) -- see the deltoblock note in
-        # reset_states_cfg. This is the object OmniReset-Delto-GraspSampling-v0 samples against.
+        # reset_states_cfg. There is no DELTO grasp-sampling env any more (the hand has no close
+        # command to script), so only the parallel jaws sample this part.
         # override_mass=False matters MORE here than anywhere else: the sampler VALIDATES each
         # candidate by shaking the held object, and at the 1 g the override would impose, a grasp
         # that the real 0.03 kg part would drop still survives the shake. Sampling against the

@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""The Tesollo DELTO DG-5F per-gripper seam, plus its grasp-sampling task.
+"""The Tesollo DELTO DG-5F per-gripper seam.
 
 Structural twin of ``linear_gripper_cfg.py``: the 2F-85 task configs are subclassed and only the
 robot and the action are swapped; objects, events, rewards, sim settings and the object
@@ -17,9 +17,9 @@ THREE THINGS DIFFER FROM THE PARALLEL JAW, and each is one call in :func:`_apply
    OPEN configuration is a 20-entry POSTURE rather than a single number. Declared through
    ``gripper_seam.override_gripper_joints`` (the same seam the linear gripper uses), with the
    posture read from ``Robots/DeltoHand/metadata.yaml`` -- the HAND's file, not the full robot's.
-   That is where the hand's grasp fields live by design: the grasp sampler's ``scene.robot`` is
-   the hand-only articulation, so that file is what the recorded grasps were sampled against, and
-   reading it here is what keeps the pre-grasp seeds opening the hand into the same configuration.
+   That is where the hand's grasp fields live by design: they are properties of the hand-only
+   articulation, and reading them here is what keeps the pre-grasp seeds opening the hand into the
+   configuration the geometry was authored against.
    ``Ur10eDelto/metadata.yaml`` carries only ``gripper_offset`` and the arm identification.
 
 2. **End-effector body name.** The linear gripper renames its links to the 2F-85 contract
@@ -55,35 +55,32 @@ THREE THINGS DIFFER FROM THE PARALLEL JAW, and each is one call in :func:`_apply
 EVERY NUMBER THIS MODULE USES COMES FROM METADATA BY KEY, NEVER COPIED INTO CODE. That is not
 style: the DELTO grasp block (``maximum_aperture``, ``grasp_align_axis``,
 ``gripper_approach_direction``, ``finger_offset``, ``finger_clearance``, ``gripper_offset``) is
-tied to the open/closed posture pair, and that pair has already moved once (the first one failed a
-self-collision check at 0.15 mm minimum non-adjacent clearance and a grip-force check at 40 N on a
-30-52 g part; A7 replaced it, commit 6f4ae54). The few figures quoted in the docstrings below are
-illustrations of the values current on 2026-08-06, not inputs -- nothing recomputes from them, and
-the next posture change flows through with no edit to this module.
+tied to the OPEN posture, which has already moved once (the first one failed a self-collision
+check at 0.15 mm minimum non-adjacent clearance and a grip-force check at 40 N on a 30-52 g part;
+A7 replaced it, commit 6f4ae54). The few figures quoted in the docstrings below are illustrations
+of the values current on 2026-08-06, not inputs -- nothing recomputes from them, and the next
+posture change flows through with no edit to this module.
 
 NOT here: grip force. It is set entirely by the hand actuator in ``ur10e_delto.py`` (per-joint
 stiffness from the USD, zeta ~0.7 damping, a ~2.2 N fingertip effort backstop and a 3.0 rad/s
-closing speed) together with the binary action's closed posture. A task-config override on top of
-those would be a flat number replacing per-joint ones, i.e. looser, not safer.
+closing speed) together with whatever posture the policy commands over the twenty independent
+hand actions. A task-config override on top of those would be a flat number replacing per-joint
+ones, i.e. looser, not safer.
 
-Registered gym id from this module:
-* ``OmniReset-Delto-GraspSampling-v0``
+This module registers no gym id; the DELTO task classes live in ``ur10e_delto_cfg.py``.
 """
 
 from __future__ import annotations
 
 import math
 
-from isaaclab.utils import configclass
-
 import uwlab_assets.robots.ur10e_delto as ur10e_delto
 
 from ...mdp.utils import read_metadata_from_usd_directory
-from .grasp_sampling_cfg import Robotiq2f85GraspSamplingCfg
 from .gripper_seam import override_gripper_joints
 
 # The hand's 20 actuated joints, as one regex -- the same expression the actuator group and the
-# binary action use, so all three select the same set by construction.
+# hand action use, so all three select the same set by construction.
 _DELTO_HAND_JOINTS = [r"rj_dg_[1-5]_[1-4]"]
 
 # The DELTO's palm link -- its equivalent of ``robotiq_base_link``. This is the body the metadata's
@@ -242,44 +239,3 @@ def _apply_delto(cfg, robot, action) -> None:
         # geometric residual below the C7 one-degree gate. This is deliberately DELTO-local so
         # the established grippers keep their reset distributions byte-for-byte.
         ee.params["ik_iterations"] = 25
-
-
-# ---------------------------------------------------------------------------------------
-# Grasp sampling (hand-only, like ROBOTIQ_2F85 / LINEAR_GRIPPER)
-# ---------------------------------------------------------------------------------------
-@configclass
-class DeltoGraspSamplingCfg(Robotiq2f85GraspSamplingCfg):
-    """Grasp sampling with the DELTO hand alone -- no arm, teleported onto candidate grasps.
-
-    The sampler reads its gripper geometry from the metadata of the GRIPPER asset's directory, so
-    this env is driven by ``Robots/DeltoHand/metadata.yaml`` -- the same file ``_apply_delto`` reads
-    for the full robot, which is what keeps the sampled grasps and the replayed ones consistent.
-    """
-
-    def __post_init__(self):
-        # Swap the hand-only robot and its binary action before the base configures sim.
-        self.scene.robot = ur10e_delto.DELTO_HAND.replace(prim_path="{ENV_REGEX_NS}/Robot")
-        self.actions = ur10e_delto.DeltoBinaryGripperAction()
-        super().__post_init__()
-        # The sampler poses the gripper by this BODY; the hand's root link is rl_dg_mount.
-        self.events.grasp_sampling.params["gripper_cfg"] = self.events.grasp_sampling.params["gripper_cfg"].replace(
-            body_names=DELTO_EE_BODY
-        )
-        self.events.grasp_sampling.params["num_orientations"] = 16
-        # The distal-only level posture has a 1.34 rad maximum stroke and the force-limited hand
-        # needs about 10 s to close and settle. The inherited 4 s episode enables gravity after 1 s,
-        # while the pads are still more than a radian from their target, and rejects valid
-        # candidates as drops. Keep this timing DELTO-local: parallel jaws retain their 4 s
-        # sampler. The direct C2 jitter matrix at 1200 simulation steps establishes the value.
-        self.episode_length_s = 18.0
-        physics = self.events.global_physics_control_event.params
-        physics["gravity_on_interval"] = (10.0, float("inf"))
-        physics["force_torque_on_interval"] = (11.0, 13.0)
-        # Finite soft-pad contacts retain small harmless rolling motion after the shake.  Keep the
-        # generic parallel-jaw thresholds unchanged; DELTO accepts motion below 15 cm/s summed
-        # linear and 3 rad/s summed angular velocity, still far below an ejection trajectory.
-        success = self.terminations.success.params
-        success["max_object_linear_velocity_sum"] = 0.15
-        success["max_object_angular_velocity_sum"] = 3.0
-        success["max_gripper_joint_velocity_sum"] = 10.0
-        success["consecutive_stability_steps"] = 3

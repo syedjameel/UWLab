@@ -5,10 +5,12 @@
 
 # Grasp-sampling metadata for the Tesollo DELTO DG-5F hand-only articulation.
 #
-# The binary virtual jaw uses finger 1 against finger 2. Its deployed close fractions, keyed by
-# joint suffix, are {1: .004, 2: .092, 3: 0, 4: .947}; opposition and spread do not move. The
-# updated model's fingertip visuals and convex colliders share the same local coordinates. No
-# detached contact proxies are used.
+# The grasp geometry below describes a virtual jaw of finger 1 against finger 2. It no longer has a
+# closed posture to go with it: the one-scalar closure model was deleted, and every one of the
+# hand's twenty joints is now an independent policy action, so there is no single close command to
+# record here. The fields below are OPEN-posture and frame geometry only. The updated model's
+# fingertip visuals and convex colliders share the same local coordinates. No detached contact
+# proxies are used.
 #
 # The grasp centre [0.07445, 0.05800, 0.14970], approach direction and closing axis are the source for
 # sampling and replay. maximum_aperture is the conservative 59 mm open limit;

@@ -116,8 +116,9 @@ class UR10eDelto_DAggerRunnerCfg(Base_DAggerRunnerCfg):
 
     Same shape as ``UR10eLinearGripper_DAggerRunnerCfg``: only the expert ACTION group changes.
     It cannot be shared with the linear gripper's -- the action group defines the expert's action
-    LAYOUT, and the DELTO's binary sub-action drives 20 hand joints where the jaw drives 2, so
-    reusing the linear-gripper runner would load the expert against the wrong action spec.
+    LAYOUT, and the DELTO's hand is 20 independent joint actions against the jaw's single scalar
+    (26 total versus 7), so reusing the linear-gripper runner would load the expert against the
+    wrong action spec.
     ``experts_path`` is supplied at runtime via a Hydra override.
     """
 

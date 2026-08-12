@@ -10,7 +10,7 @@ from isaaclab.utils import configclass
 from uwlab_assets import UWLAB_LOCAL_ASSETS_DIR
 from uwlab_assets.robots.ur5e_linear_gripper.actions import LINEAR_GRIPPER_BINARY_ACTIONS
 from uwlab_assets.robots.ur5e_robotiq_gripper.actions import ROBOTIQ_GRIPPER_BINARY_ACTIONS
-from uwlab_assets.robots.ur10e_delto.actions import DELTO_BINARY_ACTIONS
+from uwlab_assets.robots.ur10e_delto.actions import DELTO_FULL_HAND_ACTIONS
 
 from ...mdp.actions.actions_cfg import RelCartesianOSCActionCfg
 
@@ -299,25 +299,31 @@ UR10E_DELTO_RELATIVE_OSC_UNSCALED = RelCartesianOSCActionCfg(
 )
 
 
+# The three groups below pair an UNCHANGED 6-D Cartesian OSC arm half with the fully actuated
+# hand. Every hand joint is an independent policy action, so the group's action dimension is
+# 6 + 20 = 26, not the 6 + 1 = 7 of the deleted one-scalar closure. Any checkpoint, ONNX export or
+# recorded dataset produced against the 7-D groups is incompatible and must be regenerated.
+
+
 @configclass
 class Ur10eDeltoRelativeOSCAction:
-    """Pre-train / train gains: UR10e analytical OSC + DELTO binary hand action."""
+    """Pre-train / train gains: UR10e analytical OSC + fully actuated DELTO hand. Dim 6 + 20 = 26."""
 
     arm = UR10E_DELTO_RELATIVE_OSC
-    gripper = DELTO_BINARY_ACTIONS
+    gripper = DELTO_FULL_HAND_ACTIONS
 
 
 @configclass
 class Ur10eDeltoRelativeOSCEvalAction:
-    """Eval / sim2real gains: high-Kp UR10e OSC + DELTO binary hand action."""
+    """Eval / sim2real gains: high-Kp UR10e OSC + fully actuated DELTO hand. Dim 6 + 20 = 26."""
 
     arm = UR10E_DELTO_RELATIVE_OSC_EVAL
-    gripper = DELTO_BINARY_ACTIONS
+    gripper = DELTO_FULL_HAND_ACTIONS
 
 
 @configclass
 class Ur10eDeltoSysidOSCAction:
-    """Unscaled arm action (Cartesian delta) + DELTO binary hand action."""
+    """Unscaled arm action (Cartesian delta) + fully actuated DELTO hand. Dim 6 + 20 = 26."""
 
     arm = UR10E_DELTO_RELATIVE_OSC_UNSCALED
-    gripper = DELTO_BINARY_ACTIONS
+    gripper = DELTO_FULL_HAND_ACTIONS
