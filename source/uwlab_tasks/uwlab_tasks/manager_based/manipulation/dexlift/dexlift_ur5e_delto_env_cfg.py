@@ -1076,10 +1076,22 @@ class Ur5eDeltoMixinCfg:
         # simulation and pays nothing, ADR sees a failure, and the curriculum stalls for a reason
         # that appears nowhere in the logs unless you read PhysX's own stderr.
         #
-        # 4 GB, against ~18 GB free at 4096 envs (14.4 of 32.6 GB used). PhysX reserves this up
-        # front, so if a future run OOMs at construction this is the first line to reconsider --
-        # halving num_envs halves the demand and is the honest alternative to shrinking it back.
-        self.sim.physx.gpu_collision_stack_size = 4294967296
+        # 3.75 GiB, against ~18 GB free at 4096 envs (14.4 of 32.6 GB used) and against the 3.01 GB
+        # measured demand. PhysX reserves this up front.
+        #
+        # THE CEILING IS HARD AND IT IS NOT A MEMORY LIMIT. The USD attribute
+        # ``physxScene:gpuCollisionStackSize`` is an ``unsigned int``, so 2**32 is not merely large,
+        # it is unrepresentable:
+        #   pxr.Tf.ErrorException: Type mismatch for </physicsScene.physxScene:gpuCollisionStackSize>:
+        #   expected 'unsigned int', got 'long'
+        # -- which is what a first attempt at exactly 4 GiB (4294967296) died with, at gym.make,
+        # before any physics ran. Anything at or above 4294967296 fails the same way regardless of
+        # how much VRAM the card has.
+        #
+        # So if the demand ever exceeds ~4 GiB, the buffer CANNOT absorb it and the only honest
+        # remedies are fewer environments (the demand scales with them) or simpler hand colliders.
+        # Shrinking this back and living with dropped contacts is not one of them.
+        self.sim.physx.gpu_collision_stack_size = 4026531840
 
         # -- terminations: drop the abnormal-velocity cut and its penalty. See the function.
         _drop_unreachable_abnormal_robot_cut(self)
