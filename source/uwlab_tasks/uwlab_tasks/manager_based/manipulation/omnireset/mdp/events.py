@@ -31,6 +31,7 @@ from isaaclab.markers.config import FRAME_MARKER_CFG
 from pxr import Gf, Usd, UsdGeom, UsdLux
 
 from uwlab.envs.mdp.actions.actions_cfg import DifferentialInverseKinematicsActionCfg
+from uwlab.envs.mdp.full_actuation import check_action_manager_fully_actuates
 
 from uwlab_tasks.manager_based.manipulation.omnireset.mdp import utils
 
@@ -953,7 +954,11 @@ class reset_end_effector_round_fixed_asset(ManagerTermBase):
 
 
 def check_gripper_joint_selection(
-    env: ManagerBasedEnv, env_ids: torch.Tensor | None, joint_names: Sequence[str], asset_name: str = "robot"
+    env: ManagerBasedEnv,
+    env_ids: torch.Tensor | None,
+    joint_names: Sequence[str],
+    asset_name: str = "robot",
+    require_independent_actuation: bool = False,
 ) -> None:
     """Startup check: the task's gripper joint selection must resolve on the spawned robot.
 
@@ -966,10 +971,17 @@ def check_gripper_joint_selection(
 
     This term runs on ``startup``, which the env applies directly (not through a callback), so it
     is the first place a wrong gripper joint selection can fail the process outright.
+
+    ``require_independent_actuation`` additionally demands that every one of those RESOLVED joints
+    be its own policy action dimension -- the full-actuation guard, checked here against the
+    articulation rather than against the config's patterns. It is off by default because it is
+    false for a parallel jaw by design (a 2F-85's many linkage joints are one driver), and the
+    DELTO seam turns it on. See ``uwlab.envs.mdp.full_actuation`` and
+    ``gripper_seam.override_gripper_joints``.
     """
     asset: Articulation = env.scene[asset_name]
     try:
-        asset.find_joints(list(joint_names))
+        _, resolved = asset.find_joints(list(joint_names))
     except ValueError as exc:
         raise ValueError(
             f"Gripper joint selection {list(joint_names)} does not resolve on '{asset_name}', whose"
@@ -978,6 +990,8 @@ def check_gripper_joint_selection(
             " gripper_seam.override_gripper_joints(cfg, [...]) -- see"
             f" linear_gripper_cfg._apply_linear_gripper.\nUnderlying error: {exc}"
         ) from exc
+    if require_independent_actuation:
+        check_action_manager_fully_actuates(env, None, resolved, context=type(env.cfg).__name__)
 
 
 def _joint_id_list(articulation: Articulation, joint_ids: list[int] | slice) -> list[int]:

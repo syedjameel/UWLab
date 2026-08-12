@@ -48,7 +48,13 @@ import inspect
 from isaaclab.envs import ManagerBasedRLEnv
 from isaaclab.managers import ManagerTermBase
 
+import uwlab_tasks.manager_based.manipulation.omnireset.mdp as task_mdp
 from uwlab_tasks.utils.hydra import hydra_task_compose
+
+# A gripper joint this far from its OPEN posture counts as engaged. Replaces a 2F-85-specific
+# "fraction of the close command" test, which cannot be written for a gripper that has no close
+# command. 0.1 rad is the same 10% threshold on the 2F-85's ~0.8 rad driver stroke.
+CLOSED_DISPLACEMENT_RAD = 0.1
 
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
@@ -97,18 +103,25 @@ def main(env_cfg, agent_cfg) -> None:
     with contextlib.suppress(KeyboardInterrupt):
         while True:
             asset = env.unwrapped.scene["robot"]
-            # specific for robotiq
-            gripper_joint_positions = asset.data.joint_pos[:, asset.find_joints(["finger_joint"])[0][0]]
-            gripper_closed_fraction = (
-                torch.abs(gripper_joint_positions) / env_cfg.actions.gripper.close_command_expr["finger_joint"]
-            )
-            gripper_mask = gripper_closed_fraction > 0.1
+            # Whether each replayed state has the gripper engaged, so the viewer keeps holding
+            # what the recorded state was holding instead of dropping it on the first step.
+            #
+            # This used to read the 2F-85's ``finger_joint`` and
+            # ``env_cfg.actions.gripper.close_command_expr``, then write the command into
+            # ``action[:, -1]``. All three are parallel-jaw-specific: on the DELTO the joint does
+            # not exist, the action term has no close command at all (it is twenty independent
+            # joints), and the last dimension is ``rj_dg_5_4`` alone. Ask the gripper's joints how
+            # far they are from their OPEN posture instead, and let the scripted-gripper helper
+            # write whichever dimensions this gripper actually owns.
+            # The task's own per-gripper declaration -- the same list the gripper seam writes and
+            # the startup check validates -- so this is right for every gripper by construction.
+            gripper_joint_ids, _ = asset.find_joints(list(env_cfg.events.check_gripper_joints.params["joint_names"]))
+            open_posture = asset.data.default_joint_pos[:, gripper_joint_ids]
+            displacement = (asset.data.joint_pos[:, gripper_joint_ids] - open_posture).abs().max(dim=1).values
+            gripper_mask = displacement > CLOSED_DISPLACEMENT_RAD
             # Step the simulation
             for _ in range(5):
-                action = torch.zeros(env.action_space.shape, device=env.device, dtype=torch.float32)
-                action[gripper_mask, -1] = -1.0
-                action[~gripper_mask, -1] = 1.0
-                env.step(action)
+                env.step(task_mdp.scripted_gripper_actions_for(env.unwrapped, gripper_mask))
             for _ in range(5):
                 env.unwrapped.sim.step()
             success = env.unwrapped.reward_manager.get_term_cfg("progress_context").func.success

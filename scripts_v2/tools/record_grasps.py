@@ -78,8 +78,8 @@ def main(env_cfg, agent_cfg) -> None:
     #
     # This is a no-op for the shipped grippers -- ``grasp_sampling_cfg`` binds
     # ``robotiq_base_link``, and the linear gripper renames its links to that same contract, so
-    # both resolve to exactly the value that used to be written here. It stays read from the term
-    # for the next gripper whose palm link is named something else.
+    # both resolve to exactly the value that used to be written here. The DELTO does not: its palm
+    # is ``rl_dg_mount``, and ``DeltoGraspSamplingCfg`` repoints the term accordingly.
     #
     # Getting this wrong is not a clean failure. ``GraspRelativePoseRecorder`` matches the body by
     # substring and leaves the index as ``None`` when nothing matches; ``body_state_w[ids, None, :3]``
@@ -120,12 +120,19 @@ def main(env_cfg, agent_cfg) -> None:
 
     # Create progress bar for successful grasps
     pbar = tqdm(total=args_cli.num_grasps, desc="Successful grasps", unit="grasps")
-    actions = -torch.ones(env.action_space.shape, device=env.device, dtype=torch.float32)
 
     start_time = time.time()
 
     while current_successful_grasps < args_cli.num_grasps:
-        # Step environment (this will evaluate grasps in parallel across environments)
+        # The scripted CLOSE, asked of the env's own action terms rather than assumed.
+        #
+        # This used to be ``-torch.ones(env.action_space.shape)`` hoisted out of the loop: correct
+        # for a BinaryJointAction, where the single dimension follows Isaac Lab's negative=close
+        # convention, and exactly wrong for the fully actuated DELTO hand, where -1 on all twenty
+        # dimensions commands 0.1 rad of EXTENSION per joint per step -- it would have opened the
+        # hand while the sampler waited for a grasp. ``scripted_gripper_actions`` servos each joint
+        # toward a measured closed posture by NAME, so it must be recomputed every step.
+        actions = task_mdp.scripted_gripper_actions(env, close=True)
         _, _, terminated, truncated, _ = env.step(actions)
         dones = terminated | truncated
 

@@ -262,10 +262,21 @@ gym.register(
 # and its cfg class. Same naming convention: OmniReset-{Robot}-{Task}-v0.
 # =======================================================================================
 
-# There is no DELTO grasp-sampling id. Grasp sampling is a scripted rollout driven by a constant
-# CLOSE action, so it only exists for a gripper that has a one-scalar closure; the DELTO's twenty
-# joints are independent policy actions and have no such command. Nothing downstream needs a DELTO
-# grasp dataset.
+# ---- DELTO grasp sampling (hand only) ----
+# This id was deleted once, on the argument that grasp sampling only exists to script a CLOSE
+# command, which the fully actuated hand no longer has. The env is a scripted rollout, not a
+# training path, and the close it needs is a per-joint servo over the SAME twenty independent
+# action dimensions the policy gets -- there is no scalar in it. What deleting it actually removed
+# was the only producer of ``Grasps/<object>/grasps.pt``, which
+# ``reset_end_effector_from_grasp_dataset`` replays into all three ``*EEGrasped`` DELTO reset-state
+# envs, whose datasets are three of the four reset types of the TRAINABLE
+# ``OmniReset-UR10eDelto-RelCartesianOSC-State-v0``. See DeltoGraspSamplingCfg's docstring.
+gym.register(
+    id="OmniReset-Delto-GraspSampling-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    kwargs={"env_cfg_entry_point": f"{__name__}.delto_cfg:DeltoGraspSamplingCfg"},
+    disable_env_checker=True,
+)
 
 # ---- UR10e + DELTO RESET STATES variants ----
 gym.register(

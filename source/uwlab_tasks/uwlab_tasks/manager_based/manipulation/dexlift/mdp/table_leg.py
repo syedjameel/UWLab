@@ -603,41 +603,13 @@ class GraspPoseReward(ManagerTermBase):
         return score
 
 
-def synergy_grasp_action(
-    env: ManagerBasedRLEnv,
-    desired_object_pos_p: tuple[float, float, float],
-    action_term_name: str,
-    position_std: float,
-    orientation_std: float,
-    desired_object_quat_p: tuple[float, float, float, float],
-    unwanted_contact_names: tuple[str, ...] | None = None,
-    max_unwanted_contact_force: float = 0.05,
-    robot_name: str = "robot",
-    object_name: str = "object",
-    palm_body: str = "rl_dg_mount",
-) -> torch.Tensor:
-    """Reward engaging the continuous whole-hand closure only near the leg."""
-    robot = env.scene[robot_name]
-    object_asset = env.scene[object_name]
-    palm_ids, _ = robot.find_bodies(palm_body)
-    palm_pos_w = robot.data.body_pos_w[:, palm_ids[0]]
-    palm_quat_w = robot.data.body_quat_w[:, palm_ids[0]]
-    object_pos_p = quat_apply_inverse(palm_quat_w, object_asset.data.root_pos_w - palm_pos_w)
-    position_error = torch.linalg.vector_norm(object_pos_p - object_pos_p.new_tensor(desired_object_pos_p), dim=-1)
-    object_quat_p = quat_mul(quat_conjugate(palm_quat_w), object_asset.data.root_quat_w)
-    orientation_error = quat_error_magnitude(
-        object_quat_p,
-        object_quat_p.new_tensor(desired_object_quat_p).repeat(env.num_envs, 1),
-    )
-    pose_score = (1.0 - torch.tanh(position_error / position_std)) * (
-        1.0 - torch.tanh(orientation_error / orientation_std)
-    )
-    # Isaac Lab's binary convention is negative=close, positive=open.
-    close_score = (-env.action_manager.get_term(action_term_name).raw_actions[:, 0]).clamp(0.0, 1.0)
-    score = close_score * pose_score
-    if unwanted_contact_names:
-        score *= (max_finger_contact_force(env, unwanted_contact_names) <= max_unwanted_contact_force).float()
-    return score
+# ``synergy_grasp_action`` was here: the reward half of the one-scalar closure. It scored
+# ``(-raw_actions[:, 0]).clamp(0, 1)`` as a close fraction under Isaac Lab's binary sign
+# convention. It had no call sites after ``grasp_posture_progress`` was removed, but this module is
+# star-imported into the ``mdp`` namespace with no ``__all__``, so it stayed one attribute access
+# from any dexlift config -- and against the fully actuated hand index 0 is ``rj_dg_1_1``'s
+# relative command, so it would have paid a weight-20000 reward for extending one thumb joint.
+# Deleted with the action class it measured.
 
 
 class SuccessDifficultyScheduler(ManagerTermBase):

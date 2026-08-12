@@ -17,8 +17,11 @@ from isaaclab.sim import SimulationCfg
 from isaaclab.sim.spawners.materials.physics_materials_cfg import RigidBodyMaterialCfg
 from isaaclab.utils.configclass import configclass
 
+from uwlab.envs.mdp.full_actuation import assert_direct_action_space_fully_actuates
+
 from uwlab_assets import UWLAB_LOCAL_ASSETS_DIR
 from uwlab_assets.robots.ur10e_delto import IMPLICIT_UR10E_DELTO
+from uwlab_assets.robots.ur10e_delto.actions import DELTO_HAND_JOINT_NAMES
 
 _OBJECT_PRIM_PATH_EXPR = "/World/envs/env_.*/Object"
 _HAND_JOINT_EXPR = r"rj_dg_[1-5]_[1-4]"
@@ -295,6 +298,23 @@ class DeltoGraspEnvCfg(DirectRLEnvCfg):
     observation_space: int = 121 * 5
     # Derived from the policy observation and privileged-state layout at init.
     state_space: int = 121 * 5 + 30
+
+    def __post_init__(self):
+        # THE FULL-ACTUATION GUARD, direct-workflow form. This env has no action manager, so there
+        # are no terms to inspect -- ``action_space`` is one integer and ``task.process_actions``
+        # decides what its dimensions mean. What it does is
+        # ``target_pos.add_(action_scale * actions)`` over the articulation's whole 26-joint target
+        # vector, i.e. one dimension per joint. Asserting the width against the joint list is
+        # therefore the same property the manager-based envs are checked for, and it is what stops
+        # a future 6+1 rewrite of this task from being silent: the two direct ids
+        # (UWLab-UR10eDelto-Grasp-Direct-v0 and -TableLeg-Grasp-Direct-v0) are trainable through
+        # rl_games and are outside the manager-based guard's reach.
+        assert_direct_action_space_fully_actuates(
+            self.action_space,
+            (*self.robot.arm_joint_names, *self.robot.hand_joint_names),
+            DELTO_HAND_JOINT_NAMES,
+            context=type(self).__name__,
+        )
 
     sim: SimulationCfg = SimulationCfg(
         dt=1.0 / 120.0,

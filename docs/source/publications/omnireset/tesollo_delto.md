@@ -14,9 +14,24 @@ dexterous lifting task. The required USD assets are committed; no model-generati
 - Lift/reorient config: `source/uwlab_tasks/uwlab_tasks/manager_based/manipulation/dexlift/`
 
 The hand is mounted directly on the UR flange (zero standoff). It has 20 actuated finger joints;
-all 25 finger-link colliders are enabled. OmniReset uses a binary, calibrated grasp posture while
-generic DexLift exposes all 26 arm-and-hand joints as relative position actions. The table-leg
-task instead uses absolute, default-centered targets so zero action holds its validated pregrasp.
+all 25 finger-link colliders are enabled. **Every environment a policy trains in exposes all 20
+hand joints as independent actions.** OmniReset pairs a 6-D Cartesian OSC arm with 20 relative
+hand joint actions (26 total); generic DexLift uses 26 relative position actions over the whole
+robot; the table-leg task uses 6 absolute, default-centered arm targets plus the same 20 relative
+hand actions, so zero arm action holds its validated pregrasp.
+
+A one-scalar closure (a binary open/closed command, or one fraction interpolating between two
+calibrated postures) is **banned** on those paths and the ban is enforced, not documented:
+`uwlab.envs.mdp.full_actuation` raises at config construction and again as a `startup` event if any
+of the 20 joints is not its own action dimension. The reason is not tidiness — no single close
+fraction puts this hand's opposing pads in front of its phalanges, so the two-jaw pinch is
+unreachable at every value of such a scalar.
+
+One fixed closed posture does still exist, as **data**: `DELTO_HAND_SCRIPTED_CLOSE_JOINT_POS` in
+`ur10e_delto/actions.py`, a measured posture that holds the 0.03 kg `DeltoBlock` through the
+sampler's shake test. It is not an action and no policy can reach it; the offline dataset recorders
+servo the 20 independent actions toward it, per joint and by name, so that grasp and reset datasets
+remain reproducible.
 
 ## Task IDs
 
@@ -80,4 +95,8 @@ python scripts/reinforcement_learning/rsl_rl/play.py \
   --task DexLift-UR10eDelto-Lift-Play-v0 --num_envs 1 --checkpoint /path/to/model.pt
 ```
 
-OmniReset reset and grasp datasets are runtime artifacts and are intentionally not committed.
+OmniReset reset and grasp datasets are runtime artifacts and are intentionally not committed — so
+the two commands above are the only thing that makes them exist. Both recorders build their gripper
+command from the environment's own action terms (`omnireset.mdp.scripted_gripper`), writing all 20
+hand dimensions; neither writes a closure into `actions[:, -1]`, which on this hand is `rj_dg_5_4`
+alone and, at -1, commands extension rather than closure.

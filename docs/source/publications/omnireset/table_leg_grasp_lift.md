@@ -42,12 +42,23 @@ in z, and ±0.02 rad on each rotation axis. Larger search offsets remain out of
 scope, but spawning the leg inside an open or closed hand is explicitly outside
 the task contract.
 
-The policy has six absolute, default-centered UR10e joint-position actions and one
-continuous DELTO closure action. The latter interpolates all 20 hand joints between
-individually calibrated open and grasp postures, so the fingers remain articulated
-without requiring PPO to rediscover a fragile 20-dimensional synergy. Arm scales are
-0.50/0.375/0.375/0.75/0.75/1.60 rad. Zero arm action and a nonnegative hand action hold
-the separated reset pose. All 25 phalanges retain collision geometry. One
+The policy has six absolute, default-centered UR10e joint-position actions and **twenty
+independent DELTO hand actions**, one per hand joint: action dimension is 6 + 20 = 26. The hand
+actions are relative and resolve against the *measured* joint position at 0.1 rad per unit action,
+clipped to ±1 per step. No checkpoint from the earlier 6 + 1 = 7 layout loads here.
+
+This replaced a single continuous closure action that interpolated all 20 joints between two
+calibrated postures. That parameterisation was not a simplification of the grasp but a restriction
+that excluded it — the pads never lead the phalanges at any value of the fraction — and it is now
+rejected at config construction by `uwlab.envs.mdp.full_actuation`. Arm scales are
+0.50/0.375/0.375/0.75/0.75/1.60 rad. Zero arm action and zero hand action hold the separated reset
+pose.
+
+Two consequences are open and are not claimed to be resolved here. `grasp_posture_progress`
+(weight 20,000), the only term that paid for closing, measured the closure scalar and was removed
+with it; no replacement shaping has been invented. And `action_l2` / `action_rate_l2` now sum 26
+dimensions at the weights that were tuned against 7, so the shipped reward set is not the tuned
+one — no run against it should be read as a regression test. All 25 phalanges retain collision geometry. One
 object-centric filtered-contact view reports equal-and-opposite force separately for
 all 25 phalanges and the three non-finger hand bodies; this avoids replicating 28
 PhysX contact views per environment. The fixed
@@ -76,8 +87,10 @@ cannot succeed.
 
 The accepted training path starts from random actor/critic weights. It first clones a
 physical expert, then uses DAgger collections whose expert fraction decays to zero,
-and finishes with low-learning-rate policy-only correction. On two 4090s, use 2,048
-environments per rank (4,096 globally):
+and finishes with low-learning-rate policy-only correction. The expert emits all 26
+dimensions — its hand half servoes each of the 20 joints toward its own angle in
+`GRASP_HAND_JOINT_POS` — and the behaviour-cloning loss supervises all 26. On two 4090s,
+use 2,048 environments per rank (4,096 globally):
 
 ```bash
 torchrun --standalone --nproc_per_node=2 \

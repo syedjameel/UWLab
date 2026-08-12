@@ -71,6 +71,7 @@ def robotiq_2f85_gripper_joints() -> GripperJointsCfg:
 def override_gripper_joints(
     cfg,
     joint_names: Sequence[str],
+    require_independent_actuation: bool = False,
 ) -> None:
     """Point every gripper-joint-selecting event on ``cfg`` at ``joint_names``.
 
@@ -78,6 +79,12 @@ def override_gripper_joints(
         cfg: The env config, AFTER ``super().__post_init__()`` (the base configs build their
             event terms there).
         joint_names: The gripper's joints, as explicit names or regex patterns.
+        require_independent_actuation: When True, the startup check additionally requires each of
+            those joints to be its own policy action dimension -- the full-actuation guard. False
+            for a parallel jaw, whose many linkage joints legitimately share one driver; True for
+            a fully actuated hand, where a shared command is the banned one-scalar closure. It is
+            set HERE rather than on the check term directly so a gripper declares its joints and
+            what it expects of them in one call, and cannot set one without the other.
     Terms absent from a given task variant are skipped (``getattr`` returns ``None``).
     """
     joint_names = list(joint_names)
@@ -95,3 +102,4 @@ def override_gripper_joints(
     check = getattr(cfg.events, GRIPPER_CHECK_EVENT, None)
     if check is not None:
         check.params["joint_names"] = joint_names
+        check.params["require_independent_actuation"] = require_independent_actuation

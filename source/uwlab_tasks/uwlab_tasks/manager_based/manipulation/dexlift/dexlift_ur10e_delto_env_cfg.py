@@ -30,7 +30,11 @@ from isaaclab.sensors import ContactSensorCfg
 from isaaclab.utils import configclass
 from isaaclab_tasks.manager_based.manipulation.dexsuite import dexsuite_env_cfg as dexsuite
 
+import uwlab.envs.mdp as uwlab_mdp
+from uwlab.envs.mdp.full_actuation import assert_action_cfg_fully_actuates
+
 from uwlab_assets.robots.ur10e_delto import IMPLICIT_UR10E_DELTO
+from uwlab_assets.robots.ur10e_delto.actions import DELTO_HAND_JOINT_NAMES
 
 from ..omnireset import mdp as omnireset_mdp
 from . import mdp
@@ -119,7 +123,13 @@ class UR10eDeltoRelJointPosActionCfg:
         asset_name="robot",
         joint_names=[".*"],
         # spelled out rather than given as a scalar so that an unmatched joint is visible here:
-        # any joint missing from this dict would silently fall back to scale 1.0
+        # any joint missing from this dict would silently fall back to scale 1.0.
+        #
+        # The twenty hand entries were previously ONE regex key. Same 26 dimensions either way, but
+        # the full-actuation guard's construction-time half reads this mapping to decide, without
+        # an articulation, which joints get their own action dimension -- and a regex key names no
+        # joint in particular. Spelling them out from the asset's canonical tuple states the
+        # property the guard needs and removes the fourth independent copy of the hand regex.
         scale={
             "shoulder_pan_joint": 0.1,
             "shoulder_lift_joint": 0.1,
@@ -127,7 +137,7 @@ class UR10eDeltoRelJointPosActionCfg:
             "wrist_1_joint": 0.1,
             "wrist_2_joint": 0.1,
             "wrist_3_joint": 0.1,
-            HAND_JOINT_REGEX: 0.1,
+            **{name: 0.1 for name in DELTO_HAND_JOINT_NAMES},
         },
     )
 
@@ -236,6 +246,23 @@ class UR10eDeltoEventCfg(dexsuite.EventCfg):
     kept at OmniReset's value so the two configs read the same.
     """
 
+    # startup: the full-actuation guard, checked against the joints the action terms RESOLVED to.
+    #
+    # Every dexlift DELTO env inherits this class, so every one of them carries the check. It is
+    # the runtime half of the pair: the construction-time half runs in each env config's
+    # ``__post_init__`` and reasons about action-cfg PATTERNS, while this one sees the twenty
+    # joints the regex actually matched on the spawned articulation -- a joint renamed in the USD,
+    # or a scale mapping that quietly stopped covering one, is only visible here.
+    #
+    # ``startup`` specifically: the env applies startup events directly, whereas anything resolved
+    # during scene/manager construction runs inside a timeline PLAY callback whose exceptions
+    # Omniverse prints and then swallows. Same reasoning as omnireset's ``check_gripper_joints``.
+    check_hand_fully_actuated = EventTerm(
+        func=uwlab_mdp.check_action_manager_fully_actuates,
+        mode="startup",
+        params={"required_joints": list(DELTO_HAND_JOINT_NAMES), "context": "dexlift UR10e+DELTO"},
+    )
+
     reset_robot_elbow_joint = EventTerm(
         func=mdp.reset_joints_by_offset,
         mode="reset",
@@ -274,6 +301,13 @@ class UR10eDeltoMixinCfg:
 
     def __post_init__(self: dexsuite.DexsuiteReorientEnvCfg):
         super().__post_init__()
+
+        # THE FULL-ACTUATION GUARD, at construction time. Every dexlift DELTO env -- reorient,
+        # lift, table leg and their play/curriculum variants -- inherits this mixin, so this one
+        # line is the whole family's construction-time coverage. It raises from this frame; the
+        # ``check_hand_fully_actuated`` startup term in UR10eDeltoEventCfg re-checks the same
+        # property against the resolved articulation.
+        assert_action_cfg_fully_actuates(self.actions, DELTO_HAND_JOINT_NAMES, context=type(self).__name__)
 
         # -- robot: the same articulation object OmniReset uses, hence the same sysid metadata.
         # ``replace`` is a shallow dataclass copy, so nested cfgs are still shared with the module

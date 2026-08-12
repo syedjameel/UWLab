@@ -56,7 +56,11 @@ from isaaclab_tasks.utils import parse_env_cfg
 from rsl_rl.modules import ActorCritic
 
 import uwlab_tasks  # noqa: F401
-from uwlab_tasks.manager_based.manipulation.dexlift.table_leg_env_cfg import APPROACH_ARM_JOINT_POS, PALM_BODY
+from uwlab_tasks.manager_based.manipulation.dexlift.table_leg_env_cfg import (
+    APPROACH_ARM_JOINT_POS,
+    GRASP_HAND_JOINT_POS,
+    PALM_BODY,
+)
 
 
 def target_action(env, joint_positions: dict[str, float]) -> torch.Tensor:
@@ -66,13 +70,72 @@ def target_action(env, joint_positions: dict[str, float]) -> torch.Tensor:
     return (target - term._offset[0, ids]) / term._scale[0, ids]
 
 
+def term_slices(env) -> dict[str, slice]:
+    """Where each action term's dimensions live in the concatenated action vector.
+
+    Read from the action manager rather than assumed. The expert used to hard-code a width of 7
+    and an index of 6 for the hand; both were properties of a one-scalar closure that no longer
+    exists, and neither would have failed visibly if the layout moved -- ``vec.step`` raises on the
+    total width only.
+    """
+    slices: dict[str, slice] = {}
+    offset = 0
+    for name in env.action_manager.active_terms:
+        width = env.action_manager.get_term(name).action_dim
+        slices[name] = slice(offset, offset + width)
+        offset += width
+    return slices
+
+
 class Expert:
+    """Scripted approach -> close -> lift demonstrator, over the FULL 26-D action.
+
+    THE HAND HALF IS TWENTY INDEPENDENT COMMANDS, NOT A CLOSE FRACTION. Each hand joint is servoed
+    toward its OWN measured target angle from :data:`GRASP_HAND_JOINT_POS` -- the posture that was
+    searched for at full gravity and verified to sustain opposed contact on this leg -- through the
+    same relative action term the policy uses:
+
+        ``action_j = clamp((target_j - measured_j) / scale_j, -1, 1)``
+
+    The expert previously wrote ``actions[:, 6] = -close_fraction`` into a 7-wide buffer: one
+    scalar under Isaac Lab's binary sign convention, i.e. exactly the model the environment no
+    longer has. After the environment went to 26 dimensions that line made this script the last
+    place the one-scalar closure was still driving a documented training path -- and the naive
+    repair (pad the tensor to 26, keep index 6) would have been worse than the original: index 6 is
+    ``rj_dg_1_1`` alone, and the behaviour-cloning loss would have supervised one thumb joint while
+    nineteen others received no gradient at all.
+
+    A single scripted trajectory is still a single trajectory -- what it demonstrates is one
+    posture, not the reachable set. The property that matters here is that the CLONED POLICY emits
+    twenty independent hand outputs and is trained on all of them; DAgger's later cycles then label
+    states the policy's own twenty outputs produced.
+    """
+
     def __init__(self, env):
         self.env = env
         self.robot = env.scene["robot"]
         self.obj = env.scene["object"]
         self.arm_term = env.action_manager.get_term("arm_action")
+        self.hand_term = env.action_manager.get_term("hand_action")
+        self.slices = term_slices(env)
+        self.arm_slice = self.slices["arm_action"]
+        self.hand_slice = self.slices["hand_action"]
+        self.action_dim = env.action_manager.total_action_dim
         self.approach = target_action(env, APPROACH_ARM_JOINT_POS)
+        # Hand targets, gathered BY NAME in the order the action term resolved its joints. The
+        # YAML/metadata family is finger-major and the articulation reports joints level-major, so
+        # positional zipping here would silently permute the posture.
+        missing = [name for name in self.hand_term._joint_names if name not in GRASP_HAND_JOINT_POS]
+        if missing:
+            raise ValueError(
+                f"GRASP_HAND_JOINT_POS has no target for hand joint(s) {missing}, which the"
+                " 'hand_action' term drives. The expert cannot demonstrate a closure for them."
+            )
+        self.hand_grasp_pos = torch.tensor(
+            [GRASP_HAND_JOINT_POS[name] for name in self.hand_term._joint_names], device=env.device
+        )
+        # OPEN reference: the articulation's own default posture, which IS the hand's open posture.
+        self.hand_open_pos = self.robot.data.default_joint_pos[:, self.hand_term._joint_ids].clone()
         self.palm_id = self.robot.find_bodies(PALM_BODY)[0][0]
         self.jacobian_body_id = self.palm_id - 1 if self.robot.is_fixed_base else self.palm_id
         self.lift_object_pos = torch.zeros((env.num_envs, 3), device=env.device)
@@ -81,6 +144,16 @@ class Expert:
         # current palm orientation makes the translational servo robust to the
         # wrist's harmless null-space rotation.
         self.object_offset_p = torch.tensor((0.06681, 0.06487, 0.16058), device=env.device)
+
+    def _hand_action(self, close_fraction: torch.Tensor) -> torch.Tensor:
+        """Per-joint relative command driving the hand toward its interpolated target posture."""
+        target = torch.lerp(self.hand_open_pos, self.hand_grasp_pos.unsqueeze(0), close_fraction.unsqueeze(1))
+        measured = self.robot.data.joint_pos[:, self.hand_term._joint_ids]
+        # Recomputed from the MEASURED position every step, so the command saturates against
+        # contact and leaves a standing position error -- a sustained squeeze rather than a target
+        # the fingers reach once and then stop pressing at. This is what the deleted binary action
+        # got for free by holding a fixed absolute target.
+        return torch.clamp((target - measured) / self.hand_term._scale, -1.0, 1.0)
 
     def _arm_action_for_position(self, desired_pos: torch.Tensor) -> torch.Tensor:
         position_error = desired_pos - self.robot.data.body_pos_w[:, self.palm_id]
@@ -99,11 +172,11 @@ class Expert:
         step = self.env.episode_length_buf
         reset = step <= 1
         self.lift_initialized[reset] = False
-        actions = torch.zeros((self.env.num_envs, 7), device=self.env.device)
+        actions = torch.zeros((self.env.num_envs, self.action_dim), device=self.env.device)
         approach_fraction = ((step - 45).float() / 180.0).clamp(0.0, 1.0)
-        actions[:, :6] = approach_fraction.unsqueeze(1) * self.approach
+        actions[:, self.arm_slice] = approach_fraction.unsqueeze(1) * self.approach
         close_fraction = ((step - 450).float() / 120.0).clamp(0.0, 1.0)
-        actions[:, 6] = -close_fraction
+        actions[:, self.hand_slice] = self._hand_action(close_fraction)
 
         lifting = step >= 650
         newly_lifting = lifting & ~self.lift_initialized
@@ -119,7 +192,7 @@ class Expert:
             desired_palm_pos = desired_object_pos - quat_apply(
                 self.robot.data.body_quat_w[:, self.palm_id], self.object_offset_p.expand(self.env.num_envs, -1)
             )
-            actions[lifting, :6] = self._arm_action_for_position(desired_palm_pos)[lifting]
+            actions[lifting, self.arm_slice] = self._arm_action_for_position(desired_palm_pos)[lifting]
         return actions
 
 
@@ -182,6 +255,15 @@ def main() -> None:
         actor = torch.nn.parallel.DistributedDataParallel(actor, device_ids=[local_rank], output_device=local_rank)
     optimizer = torch.optim.Adam(policy.parameters(), lr=args.learning_rate)
     expert = Expert(base)
+    arm_dims = expert.arm_slice
+    hand_dims = expert.hand_slice
+    if vec.num_actions != expert.action_dim:
+        raise ValueError(f"actor width {vec.num_actions} != environment action width {expert.action_dim}")
+    print(
+        f"action layout: arm {arm_dims.start}:{arm_dims.stop}, hand {hand_dims.start}:{hand_dims.stop},"
+        f" total {expert.action_dim}",
+        flush=True,
+    )
 
     run = None
     if rank == 0:
@@ -259,7 +341,15 @@ def main() -> None:
                 batch_y = y[ids].to(args.device, non_blocking=True)
                 prediction = actor(batch_x)
                 error = prediction - batch_y
-                loss = error[:, :6].square().mean() + 2.0 * error[:, 6].square().mean()
+                # EVERY action dimension is supervised. This was
+                # ``error[:, :6] + 2.0 * error[:, 6]``: six arm dimensions plus the single closure
+                # scalar. Against the fully actuated hand that expression leaves dimensions 7..25
+                # -- nineteen of the twenty hand joints -- with no gradient at all, so the cloned
+                # policy's hand would be trained on ``rj_dg_1_1`` alone. The 2.0 weight is kept on
+                # the hand half: it expressed that closure matters more per-dimension than arm
+                # tracking, and applying it to the mean over the hand's dimensions preserves that
+                # ratio rather than multiplying the hand's total contribution by twenty.
+                loss = error[:, arm_dims].square().mean() + 2.0 * error[:, hand_dims].square().mean()
                 optimizer.zero_grad(set_to_none=True)
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(policy.parameters(), 1.0)

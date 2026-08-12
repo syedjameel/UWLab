@@ -24,8 +24,9 @@ analytical OSC. So every arm-side number carries over verbatim, and deliberately
   reintroduces at ``scale_progress = 0.75``.
 
 What genuinely differs from the linear-gripper variant, beyond ``_apply_delto`` itself, is the
-two UR10e-specific gripper helpers -- see :func:`_exclude_hand_from_abnormal` and the
-NO-SPEED-CAP note below.
+NO-SPEED-CAP note below. (The linear gripper's other helper, the ``abnormal_robot`` scoping, has a
+DELTO twin -- ``delto_cfg._exclude_hand_from_abnormal`` -- but it is applied inside ``_apply_delto``
+for every variant rather than named at each call site here.)
 
 Registered gym ids (mirroring the UR10e linear-gripper ones):
 * ``OmniReset-UR10eDelto-ObjectAnywhereEEAnywhere-v0``
@@ -38,7 +39,6 @@ Registered gym ids (mirroring the UR10e linear-gripper ones):
 
 from __future__ import annotations
 
-from isaaclab.managers import SceneEntityCfg
 from isaaclab.utils import configclass
 
 import uwlab_assets.robots.ur10e_delto as ur10e_delto
@@ -87,40 +87,10 @@ from .rl_state_cfg import (
 # cap, and the A7 re-sweep took the fraction from 0.75 to 0.10, shrinking the stroke tenfold.)
 
 
-def _exclude_hand_from_abnormal(cfg) -> None:
-    """Restrict the authors' ``abnormal_robot`` check (|joint_vel| > 2x limit) to the ARM joints.
-
-    Same scoping as the linear gripper's ``_exclude_gripper_from_abnormal``, for the same reason:
-    the check exists to catch runaway ARM dynamics, and a force-limited end effector cannot run
-    away. The DELTO adds 20 joints to a check that fires an episode-ending -100 penalty if ANY
-    selected joint trips, so leaving them in means twenty extra chances for a benign drive
-    overshoot to be read as a robot fault.
-
-    THIS IS LOAD-BEARING. DO NOT DELETE IT AS DEAD CODE. An earlier revision of this docstring said
-    the opposite -- that the scoping was a no-op because ``_DELTO_HAND_ACTUATOR`` set
-    ``velocity_limit_sim = 10000``, putting 2x it out of reach. The current 3.0 rad/s limit makes
-    the hand-joint threshold
-    now 2 x 3.0 = 6.0 rad/s -- BELOW the USD's independently-enforced ``physxJoint:maxJointVelocity``
-    of 7.31 rad/s, and therefore reachable. The comment silently became false when a number moved
-    under it, which is exactly how the reader most likely to delete this line would be misled.
-
-    Reachable is not the same as measured, but the margin that used to make this comfortable is
-    gone. The old argument was that the binary close commanded at most 0.1411 rad per joint, so a
-    normal closure could not come near 6 rad/s. The hand is now twenty independent relative joint
-    actions and a policy can drive any of them at the actuator's full 3.0 rad/s indefinitely, i.e.
-    at half the trip threshold by intent rather than by accident. The exposure is therefore larger
-    than it was: on top of reset teleports (``write_joint_state_to_sim`` writes a posture with no
-    velocity budget) and hard contact during PPO exploration, ordinary hand exploration now sits
-    much closer to the limit. Nobody has measured whether it trips in practice -- and the
-    linear gripper is the precedent for why that matters: its equivalent check started firing on
-    ~9% of episodes as soon as its jaws were speed-capped, freezing the ADR curriculum below its
-    0.95 gate. Scoping the check to the arm removes that failure mode before it can appear.
-    """
-    arm = SceneEntityCfg("robot", joint_names=["shoulder.*", "elbow.*", "wrist.*"])
-    if getattr(cfg, "rewards", None) is not None and getattr(cfg.rewards, "abnormal_robot", None) is not None:
-        cfg.rewards.abnormal_robot.params = {"asset_cfg": arm}
-    if getattr(cfg, "terminations", None) is not None and getattr(cfg.terminations, "abnormal_robot", None) is not None:
-        cfg.terminations.abnormal_robot.params = {"asset_cfg": arm}
+# ``_exclude_hand_from_abnormal`` used to live here and was called from the two finetune configs
+# only. It now lives in ``delto_cfg.py`` and is called from ``_apply_delto``, so every DELTO
+# variant gets it -- including the Stage-1 TRAINING env, which is the one env the fully actuated
+# hand newly exposed to that check and the one that was missing it.
 
 
 def _set_arm_max_delay(cfg, max_delay: int) -> None:
@@ -205,7 +175,6 @@ class Ur10eDeltoRelCartesianOSCFinetuneCfg(Ur5eRobotiq2f85RelCartesianOSCFinetun
     def __post_init__(self):
         super().__post_init__()
         _apply_delto(self, ur10e_delto.EXPLICIT_UR10E_DELTO, Ur10eDeltoRelativeOSCAction())
-        _exclude_hand_from_abnormal(self)
         # Arm motor delay: identical to the linear-gripper finetune, because it is an ARM property
         # and the arm is the same one. Measured residual delay is 0 steps at 500 Hz; delay_hi=1
         # over-brackets it and, unlike delay_hi=2, does not make the ADR ceiling round(p*hi) jump
@@ -232,7 +201,6 @@ class Ur10eDeltoRelCartesianOSCFinetuneEvalCfg(Ur5eRobotiq2f85RelCartesianOSCFin
     def __post_init__(self):
         super().__post_init__()
         _apply_delto(self, ur10e_delto.EXPLICIT_UR10E_DELTO, Ur10eDeltoRelativeOSCEvalAction())
-        _exclude_hand_from_abnormal(self)
         # Eval at the measured residual arm delay (0), mirroring the real robot rather than
         # drawing from the inherited range.
         self.events.randomize_arm_sysid.params["delay_range"] = (0, 0)

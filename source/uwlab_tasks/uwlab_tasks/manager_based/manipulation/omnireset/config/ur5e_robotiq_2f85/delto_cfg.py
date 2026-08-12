@@ -17,9 +17,9 @@ THREE THINGS DIFFER FROM THE PARALLEL JAW, and each is one call in :func:`_apply
    OPEN configuration is a 20-entry POSTURE rather than a single number. Declared through
    ``gripper_seam.override_gripper_joints`` (the same seam the linear gripper uses), with the
    posture read from ``Robots/DeltoHand/metadata.yaml`` -- the HAND's file, not the full robot's.
-   That is where the hand's grasp fields live by design: they are properties of the hand-only
-   articulation, and reading them here is what keeps the pre-grasp seeds opening the hand into the
-   configuration the geometry was authored against.
+   That is where the hand's grasp fields live by design: the grasp sampler's ``scene.robot`` is
+   the hand-only articulation, so that file is what the recorded grasps were sampled against, and
+   reading it here is what keeps the pre-grasp seeds opening the hand into the same configuration.
    ``Ur10eDelto/metadata.yaml`` carries only ``gripper_offset`` and the arm identification.
 
 2. **End-effector body name.** The linear gripper renames its links to the 2F-85 contract
@@ -67,16 +67,25 @@ closing speed) together with whatever posture the policy commands over the twent
 hand actions. A task-config override on top of those would be a flat number replacing per-joint
 ones, i.e. looser, not safer.
 
-This module registers no gym id; the DELTO task classes live in ``ur10e_delto_cfg.py``.
+Registered gym id from this module:
+* ``OmniReset-Delto-GraspSampling-v0`` (:class:`DeltoGraspSamplingCfg`)
+
+The arm-carrying DELTO task classes live in ``ur10e_delto_cfg.py``.
 """
 
 from __future__ import annotations
 
 import math
 
+from isaaclab.managers import SceneEntityCfg
+from isaaclab.utils import configclass
+
 import uwlab_assets.robots.ur10e_delto as ur10e_delto
+from uwlab.envs.mdp.full_actuation import assert_action_cfg_fully_actuates
+from uwlab_assets.robots.ur10e_delto.actions import DELTO_HAND_JOINT_NAMES
 
 from ...mdp.utils import read_metadata_from_usd_directory
+from .grasp_sampling_cfg import Robotiq2f85GraspSamplingCfg
 from .gripper_seam import override_gripper_joints
 
 # The hand's 20 actuated joints, as one regex -- the same expression the actuator group and the
@@ -174,6 +183,46 @@ def _delto_pitch_shift(metadata) -> float:
     return math.pi / 2.0 - math.atan2(a_x, math.hypot(a_y, a_z))
 
 
+def _exclude_hand_from_abnormal(cfg) -> None:
+    """Restrict the authors' ``abnormal_robot`` check (|joint_vel| > 2x limit) to the ARM joints.
+
+    Same scoping as the linear gripper's ``_exclude_gripper_from_abnormal``, for the same reason:
+    the check exists to catch runaway ARM dynamics, and a force-limited end effector cannot run
+    away. The DELTO adds 20 joints to a check that fires an episode-ending -100 penalty if ANY
+    selected joint trips, so leaving them in means twenty extra chances for a benign drive
+    overshoot to be read as a robot fault.
+
+    THIS IS LOAD-BEARING. DO NOT DELETE IT AS DEAD CODE. An earlier revision of this docstring said
+    the opposite -- that the scoping was a no-op because ``_DELTO_HAND_ACTUATOR`` set
+    ``velocity_limit_sim = 10000``, putting 2x it out of reach. The current 3.0 rad/s limit makes
+    the hand-joint threshold 2 x 3.0 = 6.0 rad/s -- BELOW the USD's independently-enforced
+    ``physxJoint:maxJointVelocity`` of 7.31 rad/s, and therefore reachable. The comment silently
+    became false when a number moved under it, which is exactly how the reader most likely to
+    delete this line would be misled.
+
+    Reachable is not the same as measured, but the margin that used to make this comfortable is
+    gone. The old argument was that the binary close commanded at most 0.1411 rad per joint, so a
+    normal closure could not come near 6 rad/s. The hand is now twenty independent relative joint
+    actions and a policy can drive any of them at the actuator's full 3.0 rad/s indefinitely, i.e.
+    at half the trip threshold by intent rather than by accident. The exposure is therefore larger
+    than it was: on top of reset teleports (``write_joint_state_to_sim`` writes a posture with no
+    velocity budget) and hard contact during PPO exploration, ordinary hand exploration now sits
+    much closer to the limit. Nobody has measured whether it trips in practice -- and the
+    linear gripper is the precedent for why that matters: its equivalent check started firing on
+    ~9% of episodes as soon as its jaws were speed-capped, freezing the ADR curriculum below its
+    0.95 gate. Scoping the check to the arm removes that failure mode before it can appear.
+
+    CALLED FROM :func:`_apply_delto`, i.e. for every DELTO variant. It used to be called only from
+    the two finetune configs, which left the Stage-1 training env -- the one this commit newly
+    exposed -- without it.
+    """
+    arm = SceneEntityCfg("robot", joint_names=["shoulder.*", "elbow.*", "wrist.*"])
+    if getattr(cfg, "rewards", None) is not None and getattr(cfg.rewards, "abnormal_robot", None) is not None:
+        cfg.rewards.abnormal_robot.params = {"asset_cfg": arm}
+    if getattr(cfg, "terminations", None) is not None and getattr(cfg.terminations, "abnormal_robot", None) is not None:
+        cfg.terminations.abnormal_robot.params = {"asset_cfg": arm}
+
+
 def _apply_delto_ee_body(cfg) -> None:
     """Repoint every end-effector body binding from ``robotiq_base_link`` to the DELTO palm."""
     for section_name, term_name, param in _EE_BODY_TERMS:
@@ -208,7 +257,24 @@ def _apply_delto(cfg, robot, action) -> None:
 
     # (1) Point grasp replay and gripper-gain randomization at the hand's 20 joints. The base
     # 2F-85 regex (".*left.*") matches nothing here and would raise during term parsing.
-    override_gripper_joints(cfg, _DELTO_HAND_JOINTS)
+    # ``require_independent_actuation`` also arms the startup half of the full-actuation guard,
+    # which re-runs the check below against the joints the action terms RESOLVED to.
+    override_gripper_joints(cfg, _DELTO_HAND_JOINTS, require_independent_actuation=True)
+
+    # (1a) THE FULL-ACTUATION GUARD, at construction time. Every DELTO variant reaches this line,
+    # because every DELTO variant swaps its action here -- that is what makes the guard structural
+    # rather than a convention each new task config has to remember. It raises from this frame, so
+    # it cannot be swallowed the way a SceneEntityCfg failure inside a PLAY callback is.
+    assert_action_cfg_fully_actuates(cfg.actions, DELTO_HAND_JOINT_NAMES, context=type(cfg).__name__)
+
+    # (1b) Scope the authors' abnormal_robot check to the ARM, for EVERY DELTO variant rather than
+    # only the finetune ones. The check fires an episode-ending -100 reward and a termination when
+    # any selected joint exceeds twice its velocity limit; the hand's limit is 3.0 rad/s, so its
+    # threshold is 6.0 rad/s, BELOW the USD's independently enforced 7.31 rad/s cap and therefore
+    # reachable -- and reachable by ordinary exploration now that the hand is twenty independent
+    # relative commands rather than one binary posture selection. Applying it only to the finetune
+    # configs left the Stage-1 TRAINING env, the one env this exposure is new in, unprotected.
+    _exclude_hand_from_abnormal(cfg)
 
     # (2) The DELTO's palm link is rl_dg_mount, not robotiq_base_link.
     _apply_delto_ee_body(cfg)
@@ -239,3 +305,72 @@ def _apply_delto(cfg, robot, action) -> None:
         # geometric residual below the C7 one-degree gate. This is deliberately DELTO-local so
         # the established grippers keep their reset distributions byte-for-byte.
         ee.params["ik_iterations"] = 25
+
+
+# ---------------------------------------------------------------------------------------
+# Grasp sampling (hand-only, like ROBOTIQ_2F85 / LINEAR_GRIPPER)
+# ---------------------------------------------------------------------------------------
+@configclass
+class DeltoGraspSamplingCfg(Robotiq2f85GraspSamplingCfg):
+    """Grasp sampling with the DELTO hand alone -- no arm, teleported onto candidate grasps.
+
+    THIS ENV WAS DELETED ONCE, ON THE ARGUMENT THAT GRASP SAMPLING ONLY EXISTS TO SCRIPT A CLOSE
+    COMMAND, WHICH THE FULLY ACTUATED HAND NO LONGER HAS, AND THAT NOTHING DOWNSTREAM NEEDED THE
+    DATASET. The second half is false, and it is worth spelling out the chain because it is long
+    enough to look absent:
+
+        ``Grasps/<object>/grasps.pt``
+          -> ``events.reset_end_effector_from_grasp_dataset`` (ACTIVE in reset_states_cfg for all
+             three ``*EEGrasped`` variants; ``_apply_delto`` repoints it at the DELTO palm and the
+             gripper seam points its ``gripper_cfg`` at these twenty joints)
+          -> ``OmniReset-UR10eDelto-Object{Resting,Anywhere,PartiallyAssembled}EEGrasped-v0``
+          -> ``Resets/<pair>/resets_*.pt``
+          -> ``rl_state_cfg.TrainEventCfg.reset_from_reset_states`` (three of its four reset types)
+          -> ``OmniReset-UR10eDelto-RelCartesianOSC-State-v0``, which is a TRAINING env.
+
+    ``_load_and_precompute_grasps`` hard-raises when the loaded file names none of the resolved
+    gripper joints, and the dataset path is keyed by OBJECT only, so the DELTO cannot borrow the
+    2F-85's file: without this env, that chain has no producer and the branch runs off an
+    unreproducible artifact.
+
+    The first half of the argument was the real question, and the answer is that the CLOSE
+    COMMAND WAS NEVER A PROPERTY OF THE ENVIRONMENT -- it is a property of the scripted rollout
+    that drives it. The action here is the same twenty independent dimensions the policy gets
+    (:data:`DeltoFullHandAction`), and ``record_grasps.py`` closes the hand by servoing each of
+    those twenty toward a measured posture, by name. Nothing in this config, and nothing a policy
+    could ever see, is a scalar. The full-actuation guard is applied to it like any other DELTO
+    variant.
+
+    The sampler reads its gripper geometry from the metadata of the GRIPPER asset's directory, so
+    this env is driven by ``Robots/DeltoHand/metadata.yaml`` -- the same file ``_apply_delto`` reads
+    for the full robot, which is what keeps the sampled grasps and the replayed ones consistent.
+    """
+
+    def __post_init__(self):
+        # Swap the hand-only robot and its fully actuated action before the base configures sim.
+        self.scene.robot = ur10e_delto.DELTO_HAND.replace(prim_path="{ENV_REGEX_NS}/Robot")
+        self.actions = ur10e_delto.DeltoFullHandAction()
+        super().__post_init__()
+        assert_action_cfg_fully_actuates(self.actions, DELTO_HAND_JOINT_NAMES, context=type(self).__name__)
+        # The sampler poses the gripper by this BODY; the hand's root link is rl_dg_mount.
+        self.events.grasp_sampling.params["gripper_cfg"] = self.events.grasp_sampling.params["gripper_cfg"].replace(
+            body_names=DELTO_EE_BODY
+        )
+        self.events.grasp_sampling.params["num_orientations"] = 16
+        # The scripted close has a 1.34 rad maximum stroke and the force-limited hand needs about
+        # 10 s to close and settle. The inherited 4 s episode enables gravity after 1 s, while the
+        # pads are still more than a radian from their target, and rejects valid candidates as
+        # drops. Keep this timing DELTO-local: parallel jaws retain their 4 s sampler. The direct
+        # C2 jitter matrix at 1200 simulation steps establishes the value.
+        self.episode_length_s = 18.0
+        physics = self.events.global_physics_control_event.params
+        physics["gravity_on_interval"] = (10.0, float("inf"))
+        physics["force_torque_on_interval"] = (11.0, 13.0)
+        # Finite soft-pad contacts retain small harmless rolling motion after the shake.  Keep the
+        # generic parallel-jaw thresholds unchanged; DELTO accepts motion below 15 cm/s summed
+        # linear and 3 rad/s summed angular velocity, still far below an ejection trajectory.
+        success = self.terminations.success.params
+        success["max_object_linear_velocity_sum"] = 0.15
+        success["max_object_angular_velocity_sum"] = 3.0
+        success["max_gripper_joint_velocity_sum"] = 10.0
+        success["consecutive_stability_steps"] = 3

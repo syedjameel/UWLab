@@ -12,5 +12,6 @@ from .events import *
 from .observations import *
 from .recorders import *
 from .rewards import *
+from .scripted_gripper import *
 from .terminations import *
 from .utils import *

@@ -5,12 +5,21 @@
 
 # Grasp-sampling metadata for the Tesollo DELTO DG-5F hand-only articulation.
 #
-# The grasp geometry below describes a virtual jaw of finger 1 against finger 2. It no longer has a
-# closed posture to go with it: the one-scalar closure model was deleted, and every one of the
-# hand's twenty joints is now an independent policy action, so there is no single close command to
-# record here. The fields below are OPEN-posture and frame geometry only. The updated model's
-# fingertip visuals and convex colliders share the same local coordinates. No detached contact
-# proxies are used.
+# The grasp geometry below describes a virtual jaw of finger 1 against finger 2. It is OPEN-posture
+# and frame geometry: what the grasp sampler needs to place and orient the hand on a candidate
+# grasp, and what the reset events need to open it. There is deliberately no closed posture HERE --
+# the closed posture the offline recorders servo to is a code-side measurement
+# (DELTO_HAND_SCRIPTED_CLOSE_JOINT_POS in ur10e_delto/actions.py) and is not a policy action; every
+# one of the hand's twenty joints is an independent action in every environment a policy trains in.
+# The updated model's fingertip visuals and convex colliders share the same local coordinates. No
+# detached contact proxies are used.
+#
+# WHICH FIELDS ARE READ BY WHAT: finger_offset, finger_clearance, maximum_aperture,
+# grasp_center_offset, grasp_center_clearance, grasp_align_axis, orientation_sample_axis and the
+# grasp_sample_mode/grasp_topdown_* block are consumed by the grasp_sampling event, i.e. only by
+# OmniReset-Delto-GraspSampling-v0. gripper_approach_direction and finger_open_joint_angles are
+# read on every DELTO env (delto_cfg's roll/pitch derivation, terminations.check_reset_state_success
+# and gripper_metadata.read_gripper_open_posture respectively).
 #
 # The grasp centre [0.07445, 0.05800, 0.14970], approach direction and closing axis are the source for
 # sampling and replay. maximum_aperture is the conservative 59 mm open limit;

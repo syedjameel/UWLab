@@ -142,7 +142,6 @@ def main(env_cfg, agent_cfg) -> None:
     # Run reset state sampling
     num_reset_conditions_evaluated = 0
     current_successful_reset_conditions = 0
-    actions = torch.zeros(env.action_space.shape, device=env.device, dtype=torch.float32)
     # Every "*EEGrasped" reset type promises the end-effector is holding the object, so the gripper
     # must be commanded shut for all of them. This used to test the two literal names
     # "ObjectAnywhereEEGrasped"/"ObjectRestingEEGrasped", which silently excluded any other grasped
@@ -150,12 +149,19 @@ def main(env_cfg, agent_cfg) -> None:
     # open/close branch below. The collision-free success gate favours the open-jaw samples, so ~65%
     # of that dataset was recorded with fully-open jaws and was not grasping anything. Matching on
     # the "EEGrasped" substring covers present and future grasped variants.
-    if "EEGrasped" in args_cli.task:
-        actions[:, -1] = -1.0
-    else:
-        actions[:, -1] = (
-            torch.randint(0, 2, (env.num_envs,), device=env.device, dtype=torch.float32) * 2 - 1
-        )  # Randomly choose between -1 and 1
+    #
+    # THE COMMAND IS NO LONGER WRITTEN INTO ``actions[:, -1]``. That index is the whole gripper for
+    # a BinaryJointAction and nothing but ``rj_dg_5_4`` for the fully actuated DELTO hand, where -1
+    # additionally means EXTENSION rather than closure -- so the same line that closed a parallel
+    # jaw quietly recorded an open, non-grasping hand, with no shape error to catch it (the buffer
+    # is sized from ``env.action_space.shape``, which stays right while the meaning goes wrong).
+    # ``scripted_gripper_actions`` asks the env's own action terms what "close" means for them and
+    # writes every dimension they own -- all twenty, by joint name, for the DELTO. It is recomputed
+    # each step because a per-joint servo has to read the measured joint positions.
+    grasped = "EEGrasped" in args_cli.task
+    close_mask = torch.ones(env.num_envs, device=env.device, dtype=torch.bool)
+    if not grasped:
+        close_mask = torch.randint(0, 2, (env.num_envs,), device=env.device) == 1
 
     # Create progress bar
     pbar = tqdm(total=args_cli.num_reset_states, desc="Successful reset states", unit="reset states")
@@ -164,16 +170,16 @@ def main(env_cfg, agent_cfg) -> None:
 
     while current_successful_reset_conditions < args_cli.num_reset_states:
         # Step environment (this will evaluate grasps in parallel across environments)
+        actions = task_mdp.scripted_gripper_actions_for(env, close_mask)
         _, _, terminated, truncated, _ = env.step(actions)
         dones = terminated | truncated
         done_idx = torch.where(dones)[0]
 
-        # Reset actions for environments that are done. Same substring test as above: a grasped
-        # reset type must keep the gripper closed on re-randomisation, never flip back to open.
-        if done_idx.numel() > 0 and "EEGrasped" not in args_cli.task:
-            actions[done_idx, -1] = (
-                torch.randint(0, 2, (done_idx.numel(),), device=env.device, dtype=torch.float32) * 2 - 1
-            )
+        # Re-randomise the open/closed choice for environments that are done. Same substring test
+        # as above: a grasped reset type must keep the gripper closed on re-randomisation, never
+        # flip back to open.
+        if done_idx.numel() > 0 and not grasped:
+            close_mask[done_idx] = torch.randint(0, 2, (done_idx.numel(),), device=env.device) == 1
 
         # Update progress based on successful reset conditions
         new_successful_count = env.recorder_manager.exported_successful_episode_count

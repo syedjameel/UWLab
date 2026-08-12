@@ -20,8 +20,10 @@ from isaaclab.utils import configclass
 from isaaclab_tasks.manager_based.manipulation.dexsuite import dexsuite_env_cfg as dexsuite
 from isaaclab_tasks.manager_based.manipulation.dexsuite.adr_curriculum import CurriculumCfg as DexsuiteCurriculumCfg
 
+from uwlab.envs.mdp.full_actuation import assert_action_cfg_fully_actuates
+
 from uwlab_assets import UWLAB_LOCAL_ASSETS_DIR
-from uwlab_assets.robots.ur10e_delto.ur10e_delto import DELTO_HAND_DEFAULT_JOINT_POS
+from uwlab_assets.robots.ur10e_delto.actions import DELTO_HAND_JOINT_NAMES
 
 from . import mdp
 from .dexlift_ur10e_delto_env_cfg import (
@@ -85,46 +87,41 @@ APPROACH_ARM_JOINT_POS = {
     "wrist_2_joint": 1.40925562,
     "wrist_3_joint": -1.66108799,
 }
-# Raw hand command found by smooth, full-gravity search and verified to sustain
-# geometrically opposed contact while the arm lifts.
+# Hand posture found by smooth, full-gravity search and verified to sustain geometrically opposed
+# contact on this leg while the arm lifts. IN RADIANS, PER JOINT, RESOLVED.
 #
-# NO TERM READS THESE TWO ANY MORE. They were the close posture of the deleted one-scalar synergy.
-# They are kept as the measured record of a posture that provably holds this leg -- the search
-# that produced them is expensive and the numbers are not recoverable from anything else in the
-# tree -- but nothing in the environment is wired to them, and the fully actuated hand reaches
-# them, if at all, by learning.
-GRASP_HAND_ACTION = {
-    name: action
-    for name, action in zip(
-        (f"rj_dg_{finger}_{joint}" for finger in range(1, 6) for joint in range(1, 5)),
-        (
-            0.43454090,
-            -0.14072552,
-            0.55655491,
-            0.33865815,
-            -0.83503151,
-            -0.43959865,
-            1.0,
-            0.69505721,
-            -0.42886350,
-            -0.65505075,
-            0.45063210,
-            0.61510897,
-            0.23848540,
-            0.93663901,
-            -0.06144656,
-            0.08257288,
-            0.56994998,
-            0.23781885,
-            -0.63208628,
-            -0.08513815,
-        ),
-        strict=True,
-    )
-}
+# It is READ: ``scripts/reinforcement_learning/rsl_rl/train_table_leg_dagger.py`` servos each of
+# the twenty independent hand actions toward the corresponding angle here, which is the whole of
+# the expert's closure behaviour. That is what makes it a demonstration target rather than a
+# control model -- there is no fraction, no shared command, and the policy being cloned emits
+# twenty separate numbers.
+#
+# STORED RESOLVED, DELIBERATELY. This used to be a derived expression: a raw ``GRASP_HAND_ACTION``
+# vector times ``(1.50 if name.endswith("_4") else 0.30)``, scale factors that belonged to the
+# deleted one-scalar synergy action and exist nowhere else in the tree. A record that can only be
+# decoded through deleted code is not a record. These are the angles; the search that produced
+# them is expensive and they are not recoverable from anything else here, so they are kept whole.
 GRASP_HAND_JOINT_POS = {
-    name: DELTO_HAND_DEFAULT_JOINT_POS[name] + (1.50 if name.endswith("_4") else 0.30) * action
-    for name, action in GRASP_HAND_ACTION.items()
+    "rj_dg_1_1": 0.312241,
+    "rj_dg_1_2": -0.415853,
+    "rj_dg_1_3": 0.470110,
+    "rj_dg_1_4": 0.667294,
+    "rj_dg_2_1": -0.309303,
+    "rj_dg_2_2": 0.768120,
+    "rj_dg_2_3": 0.995646,
+    "rj_dg_2_4": 1.616439,
+    "rj_dg_3_1": -0.161514,
+    "rj_dg_3_2": 0.703485,
+    "rj_dg_3_3": 0.830836,
+    "rj_dg_3_4": 1.496516,
+    "rj_dg_4_1": 0.245898,
+    "rj_dg_4_2": 1.180992,
+    "rj_dg_4_3": 0.677212,
+    "rj_dg_4_4": 0.697712,
+    "rj_dg_5_1": 0.364770,
+    "rj_dg_5_2": 0.971346,
+    "rj_dg_5_3": 0.506020,
+    "rj_dg_5_4": 0.446146,
 }
 # Smooth replay carries the root 372 mm from the table while preserving the
 # palm-down orientation and triggers the strict 30-step success hold.
@@ -199,30 +196,15 @@ class TableLegJointPositionActionCfg:
         # Spelled out per joint rather than as one regex-wide value: a joint matched by
         # ``joint_names`` but absent from this dict silently falls back to scale 1.0, while a name
         # here that matches no joint raises during term parsing. Same reason as the arm above.
-        # Kept local to this task rather than imported from the asset package: an action scale is
-        # only ever validated inside one environment's dynamics.
-        scale={
-            "rj_dg_1_1": 0.1,
-            "rj_dg_1_2": 0.1,
-            "rj_dg_1_3": 0.1,
-            "rj_dg_1_4": 0.1,
-            "rj_dg_2_1": 0.1,
-            "rj_dg_2_2": 0.1,
-            "rj_dg_2_3": 0.1,
-            "rj_dg_2_4": 0.1,
-            "rj_dg_3_1": 0.1,
-            "rj_dg_3_2": 0.1,
-            "rj_dg_3_3": 0.1,
-            "rj_dg_3_4": 0.1,
-            "rj_dg_4_1": 0.1,
-            "rj_dg_4_2": 0.1,
-            "rj_dg_4_3": 0.1,
-            "rj_dg_4_4": 0.1,
-            "rj_dg_5_1": 0.1,
-            "rj_dg_5_2": 0.1,
-            "rj_dg_5_3": 0.1,
-            "rj_dg_5_4": 0.1,
-        },
+        # The VALUE is kept local to this task rather than imported from the asset package: an
+        # action scale is only ever validated inside one environment's dynamics. The KEYS are not
+        # -- they come from the asset's canonical name tuple, so a renamed joint moves one
+        # definition instead of leaving this copy and the asset's copy silently disagreeing.
+        scale={name: 0.1 for name in DELTO_HAND_JOINT_NAMES},
+        # See DELTO_HAND_ACTION_CLIP: the term integrates ``measured + scale * action`` every step
+        # and a Gaussian policy's raw output is unbounded, so without a clip the only ceiling is
+        # the plant's own velocity limit.
+        clip={name: (-1.0, 1.0) for name in DELTO_HAND_JOINT_NAMES},
         use_zero_offset=True,
     )
 
@@ -606,6 +588,13 @@ class TableLegGraspLiftEnvCfg(UR10eDeltoMixinCfg, dexsuite.DexsuiteLiftEnvCfg):
         self.curriculum = None
         super().__post_init__()
         self.curriculum = task_curriculum
+
+        # The full-actuation guard already ran inside ``UR10eDeltoMixinCfg.__post_init__`` above,
+        # against THIS class's ``actions`` -- the field is bound before any ``__post_init__``
+        # executes. Re-asserting here anyway: this task is the one that carried the one-scalar
+        # synergy, its action group is declared locally rather than inherited, and the cost of the
+        # second call is a dictionary scan at config build.
+        assert_action_cfg_fully_actuates(self.actions, DELTO_HAND_JOINT_NAMES, context=type(self).__name__)
 
         self.scene.object = _leg_cfg()
         self.scene.table = _table_cfg()
