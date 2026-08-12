@@ -25,10 +25,15 @@ constant or the line that implements it:
   0.255 m and every height in the task moves with it. See :data:`WORKSPACE_Z_SHIFT`.
 * The abnormal-joint-velocity termination and its penalty are DELETED, because on this
   articulation the test cannot fire. See :func:`_drop_unreachable_abnormal_robot_cut`.
-* The GOAL and RED/GREEN TASK-STATE markers are rebound to this scene and to the scored success
-  predicate. dexsuite owns the markers; what it cannot know is that its indicator geometry was
-  cloned from a table this env then replaced. See :func:`_bind_task_state_visualization` and
-  :data:`STATUS_PAD_TOP_Z`.
+* The GOAL and RED/GREEN TASK-STATE markers are rebound to this scene and to the ADR SCHEDULER's
+  success threshold -- the only thresholded success test in the task, and NOT the reward term that
+  happens to be named ``success``. dexsuite owns the markers; what it cannot know is that its
+  indicator geometry was cloned from a table this env then replaced. See
+  :func:`_bind_task_state_visualization` and :data:`STATUS_PAD_TOP_Z`.
+* The scene is a RIGID ASSEMBLY: the table is the robot's mount, so neither may be jittered without
+  the other, and upstream's ``reset_table`` is nulled alongside ``reset_root``. See the two lines
+  in ``__post_init__`` that do it, and :data:`MOUNT_PLATE_NOTE` for the one scene entity main
+  spawns that this module deliberately does not.
 
 THE ACTION SPACE IS NOT DECIDED HERE. :class:`Ur5eDeltoMixinCfg` deliberately sets NO ``actions``
 field: it carries the robot, the scene, the sensors and the events, and one subclass per action-
@@ -168,14 +173,13 @@ origin at the base flange centre, z = 0 at the flange plane (the structural tabl
 to), +x toward the workspace -- and the table therefore spawns AT the robot's default root rather
 than at an offset. Two 4 mm mats lie ON that structural top, so the surface an object actually rests
 on is 4 mm higher; ``table_dims.yaml`` states it directly ("their top = the WORK SURFACE at +0.004")
-and the generated USD's world bbox confirms it (z max = +0.004, floor at -0.676).
-
-That is also the mount plate's root z below, which is this scene's object-placement datum by the
-authors' own convention (plate root z == mat-top height), so the two agree by construction rather
-than by coincidence.
+and the generated USD's world bbox confirms it. Probed per prim, in the asset's own frame:
+``visuals/mat_black`` and ``visuals/mat_green`` occupy z [0.0000, 0.0040] on top of
+``visuals/table_frame``, whose slab face is z = 0.0000 and whose legs reach z = -0.6760.
 
 THIS REPLACES -0.013, which was inferred from the pat_vention-era plate and is wrong by 17 mm. Every
-other height in this module derives from this constant through :data:`WORKSPACE_Z_SHIFT`.
+other height in this module derives from this constant through :data:`WORKSPACE_Z_SHIFT`, with the
+one deviation named at the out-of-bounds z floor.
 """
 
 GROUND_Z = -0.676
@@ -184,6 +188,12 @@ GROUND_Z = -0.676
 680 mm from the floor to the work surface, of which the mats are the last 4 mm. The table's legs
 reach exactly this z, so the rig stands on the ground plane instead of hovering over it -- which the
 previous -0.868 (a pat_vention-era number) did not do.
+
+EXACTLY coincident, deliberately noted: ``visuals/table_frame`` bottoms out at z = -0.6760 and
+``collisions/cabinet`` at -0.6760, on a plane at -0.676. Two coplanar faces would normally be a
+z-fighting risk, but this pair is safe on both counts -- the leg face points DOWN and is never in
+frame, and both bodies are static (the plane is a collider, the table is ``kinematic_enabled``), so
+there is no contact-resolution instability to be had either.
 """
 
 TABLE_TOP_X = (-0.35, 1.05)
@@ -192,6 +202,17 @@ TABLE_TOP_Y_HALF = 0.35
 
 Recorded here because this table was MEASURED AROUND A UR10e (1.30 m reach) and is being used under
 a UR5e (0.85 m). See :data:`REACHABILITY_NOTE`; nothing in this module rescales it.
+
+TWO CONSEQUENCES OF THAT CARRY-OVER, both measured, neither rescaled:
+
+* REACH -- the front ~215 mm of the table is unreachable. :data:`REACHABILITY_NOTE`.
+* THE BASE CUTOUT IS OVERSIZED. ``table_dims.yaml`` sizes the black mat's hole at diameter 0.200
+  for a UR10e ("UR10e base is 0.190 -> 5 mm radial clearance"). The UR5e's ``base_link`` world bbox
+  in ``ur5e_delto.usd`` is [-0.0755, -0.0755, 0.0000]..[+0.0755, +0.0755, +0.0991], so the actual
+  radial clearance is 24.5 mm, not 5 mm: a 24.5 mm annulus of bare structural tabletop, 4 mm deep,
+  rings the base. Purely cosmetic -- nothing is placed or commanded there -- but it is the second
+  "measured for a UR10e, used under a UR5e" number in this scene and the reach note does not cover
+  it. Fixing it means regenerating the USD with a UR5e hole diameter, not editing this module.
 """
 
 REACHABILITY_NOTE = "UR5e reaches x <= 0.835 on the work surface; the table runs to x = 1.05"
@@ -204,7 +225,10 @@ which is the datum UR's 0.850 m reach figure is quoted against.
   (y = 0); the tabletop runs to x = 1.05 m and its front corners sit 1.118 m out. The front ~215 mm
   of the table is simply unreachable. This is cosmetic here -- nothing is ever spawned or commanded
   there -- but it is why the table looks oversized next to this arm.
-* The OBJECT SPAWN is comfortably inside: (0.55, 0.1, 0.099) is 0.563 m out.
+* The OBJECT SPAWN is comfortably inside: (0.55, 0.0, 0.099) is 0.554 m out. Its ``reset_object``
+  jitter (+-0.2 m in x and y, 0..+0.4 m in z) reaches 0.779 m at the far corner of the surface and
+  0.846 m at that corner's full drop height -- both inside 0.850 m, and the object falls toward the
+  arm rather than away from it.
 * The GOAL BOX is inside except for one corner region. Sampling the mirrored, shifted box
   x (0.3, 0.7) * y (-0.25, 0.25) * z (0.299, 0.699) uniformly, 98.6% of the volume lies within
   0.850 m; the excess is the far-and-high corner, (0.7, +-0.25, 0.699) at 0.917 m.
@@ -236,9 +260,13 @@ So the indicator is a SEPARATE slab, sized and placed so that it is legible with
 anything the task uses. It is the tabletop footprint (:data:`TABLE_TOP_X`, :data:`TABLE_TOP_Y_HALF`)
 grown by ``STATUS_PAD_BORDER`` in every horizontal direction, and it is tucked so its top face lies
 ``STATUS_PAD_TOP_Z`` -- 6 mm BELOW the structural tabletop plane at z = 0, hence 10 mm below the
-work surface. The USD's own collider extents (probed with pxr) show the structural top slab
-occupying z in [-0.030, 0.000] across the FULL footprint, so a 12 mm pad centred at -0.012 spans
-[-0.018, -0.006] and is completely inside that slab wherever the two overlap.
+work surface. What has to hide the pad is the VISIBLE mesh, so that is the prim measured:
+``/custom_lab_table/visuals/table_frame`` (72 points, 9 boxes) has as its box 0 the top slab,
+x [-0.350, 1.050] * y [-0.350, 0.350] * z [-0.030, 0.000] -- the full footprint. A 12 mm pad centred
+at -0.012 spans [-0.018, -0.006] and is completely inside it wherever the two overlap. (The
+same-shaped ``collisions/top_slab`` Cube is authored ``vis=invisible`` and occludes nothing, so
+citing it, as an earlier revision of this docstring did, would have proved a rendering claim from a
+collider; the numbers happen to agree.)
 
 What that buys, and it is the whole reason for the offsets rather than simply laying a coloured mat
 on the table:
@@ -287,6 +315,18 @@ WORKSPACE_Z_SHIFT = WORK_SURFACE_Z - DEXSUITE_TABLE_TOP_Z
 The dexsuite geometry is preserved RELATIVE to the work surface (object spawned 95 mm above it,
 goals 0.295-0.695 m above it) rather than re-authored, so the reward stds and the ADR tolerances
 still describe the same distances they were tuned against.
+
+Two heights escape this rule and each says so where it is written: the object spawn's y, which is
+re-centred for a narrower table, and the out-of-bounds z FLOOR, which is recomputed from the
+surface rather than shifted.
+
+WHAT THE 95 mm IS NOT. It is not "resting on the table" and it is not "clearing the table" -- it is
+dexsuite's 0.350 - 0.255, carried over exactly. ``reset_object`` then adds 0..+0.4 m of drop and a
+uniformly random SO(3) orientation, and the longest object's half-extent is 0.125 m, so at a
+zero z-offset draw its lowest point is 26 mm inside the ``collisions/top_slab`` span of
+[-0.030, 0.000] and PhysX depenetrates it with a pop on the first frame. Identical geometry
+upstream, so this is inherited behaviour rather than something this rig introduced; recorded
+because "spawned 95 mm above the surface" reads like a clearance guarantee and is not one.
 """
 
 
@@ -321,23 +361,33 @@ def _omnireset_table_cfg() -> RigidObjectCfg:
     )
 
 
-def _omnireset_mount_plate_cfg() -> RigidObjectCfg:
-    """The flush proxy plate in the mat's base cutout. Main's definition.
+MOUNT_PLATE_NOTE = "ur5_metal_support is NOT spawned here: coincident with the tabletop, and unread"
+"""Why this scene has no ``ur5_metal_support`` entity, although main's UR5e scene does.
 
-    No physical plate exists on the real rig; the entity is kept because its ROOT z is the
-    object-placement datum the reset events are written against -- which is exactly
-    :data:`WORK_SURFACE_Z`, hence the constant rather than main's literal ``0.004``. The USD authors
-    its geometry BELOW its own root by the mat thickness, so the disk fills the cutout floor while
-    the root sits on the work surface.
-    """
-    return RigidObjectCfg(
-        prim_path="{ENV_REGEX_NS}/UR5MetalSupport",
-        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, WORK_SURFACE_Z), rot=(1.0, 0.0, 0.0, 0.0)),
-        spawn=sim_utils.UsdFileCfg(
-            usd_path=f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Mounts/CustomLabTable/custom_mount_plate.usd",
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
-        ),
-    )
+Main spawns ``custom_mount_plate.usd`` at ``{ENV_REGEX_NS}/UR5MetalSupport``, root z 0.004, and an
+earlier revision of this module copied that over. It was REMOVED, for two independent reasons, both
+probed with pxr rather than reasoned about:
+
+* IT IS COINCIDENT WITH THE TABLE. The USD authors its disk at local z [-0.0080, -0.0040], so a root
+  at 0.004 puts it at world z [-0.0040, 0.0000] -- its top face at EXACTLY z = 0.000. The visible
+  mesh ``/custom_lab_table/visuals/table_frame`` is a solid 9-box frame whose top slab face is also
+  exactly z = 0.000 and spans the full footprint (no cutout: its 72 points carry no ring
+  coordinates). Two coplanar-coincident faces over the whole r = 0.098 disk is guaranteed
+  z-fighting, in the one patch of the scene the debug camera is aimed at. Its collider Cube likewise
+  sits fully inside ``/custom_lab_table/collisions/top_slab`` (z [-0.030, 0.000]).
+* NOTHING IN THIS TASK READS IT. The plate's former docstring claimed its root z was "the
+  object-placement datum the reset events are written against". That is true in
+  ``omnireset/config/ur5e_robotiq_2f85/reset_states_cfg.py``, which passes it as
+  ``offset_asset_cfg`` -- and false here: this task's ``reset_object`` is written against
+  ``scene.object.init_state.pos``, and no term, sensor or reward in ``dexlift`` names the entity.
+
+What is lost by dropping it: nothing visible. No physical plate exists on the real rig; the mat's
+base cutout exposes the bare structural tabletop, which is exactly what ``table_frame`` renders
+there. What is saved: one redundant kinematic rigid body and one embedded collider per environment.
+
+:data:`WORK_SURFACE_Z` stands on its own measurement (``table_dims.yaml`` plus the generated USD's
+world bbox) and no longer needs the plate's root z as a corroborating datum.
+"""
 
 
 ##
@@ -415,22 +465,46 @@ def _bind_task_state_visualization(env_cfg) -> mdp.TaskStateVisPoseCommandCfg:
       ``rot_std / 2`` = 0.25 -- a marker that goes green on runs the curriculum counts as failures.
       Binding here means the two cannot drift.
     * HOW BIG the goal ball is: the position tolerance itself, so "the object is inside the sphere"
-      is the success condition rather than a hint at it.
+      is the success condition rather than a hint at it. NOTE this only shows on a POSITION-ONLY
+      task; see :meth:`.mdp.task_state_vis.TaskStateVisPoseCommand._debug_vis_callback`.
 
     The tolerances are read AFTER ``super().__post_init__()``, which is where dexsuite sets
     ``pos_tol = rewards.success.params["pos_std"] / 2`` and where the Lift subclass then drops
     ``rot_tol`` to None. Reading them earlier would capture the un-derived defaults.
+
+    WHAT "ADR" MEANS HERE, because there is a same-named reward and it is NOT this. The colour
+    tracks the only THRESHOLDED success test in the task, which is the ADR scheduler's
+    (``dexsuite/mdp/curriculums.py``). The reward term literally named ``success`` is a different
+    quantity: on this env it resolves to ``dexlift.mdp.rewards.success_reward``, a per-step tanh
+    that is additionally multiplied by a fingertip-CONTACT gate. On the reorient task an object
+    thrown to the goal and released is inside tolerance -- the pad goes green and ADR promotes --
+    while that reward pays exactly 0. Binding to ADR is the deliberate choice; it is written down
+    here so the pad is not misread as "the reward is paying".
     """
     adr_params = env_cfg.curriculum.adr.params if env_cfg.curriculum is not None else {}
-    # The dexsuite base always sets pos_tol when a curriculum exists; the fallback is for a config
-    # that deliberately runs with curriculum=None, where upstream's own literal is the only datum.
-    pos_tol = adr_params.get("pos_tol") or 0.05
-    rot_tol = adr_params.get("rot_tol")
+    # ``.get(key, default)``, NOT ``.get(key) or default``: a configured 0.0 is falsy, so ``or``
+    # would swallow it into the fallback and the guard below could never fire on zero -- which is
+    # precisely the failure this binding exists to prevent (ADR would never promote, because
+    # ``pos_dist < 0.0`` is always False, while the pad went green at 0.05).
+    pos_tol = adr_params.get("pos_tol", 0.05)
+    # rot_tol gets the SAME treatment, and for the same reason. Present-and-None is meaningful --
+    # the Lift subclass sets it to None to drop the orientation gate -- so the default is only
+    # reached when there is no ADR curriculum at all, and it is then upstream's own literal, 0.5.
+    # Without this a curriculum-less REORIENT config would silently colour on position alone, i.e.
+    # be strictly more permissive than the upstream marker it replaced.
+    rot_tol = adr_params.get("rot_tol", 0.5)
     if not isinstance(pos_tol, (int, float)) or pos_tol <= 0.0:
         raise ValueError(
             f"curriculum.adr.params['pos_tol'] must be a positive distance; got {pos_tol!r}. The"
             " task-state marker colours itself with the same threshold the ADR scheduler promotes"
             " on, so an unusable value here would be an unusable success test there too."
+        )
+    if rot_tol is not None and (not isinstance(rot_tol, (int, float)) or rot_tol <= 0.0):
+        raise ValueError(
+            f"curriculum.adr.params['rot_tol'] must be a positive angle or None; got {rot_tol!r}."
+            " None deliberately drops the orientation gate (the Lift task does exactly that); a"
+            " zero or negative value instead makes the gate unsatisfiable, and ADR -- which tests"
+            " `rot_dist < rot_tol` -- would never promote while the pad still turned green."
         )
     return mdp.upgrade_pose_command_to_task_state_vis(
         env_cfg.commands.object_pose,
@@ -610,7 +684,10 @@ class Ur5eDeltoMixinCfg:
         # already own their prim paths (/World/GroundPlane, /World/skyLight), which are also the
         # paths main uses.
         self.scene.table = _omnireset_table_cfg()
-        self.scene.ur5_metal_support = _omnireset_mount_plate_cfg()
+        # NO mount plate; see MOUNT_PLATE_NOTE for what main spawns here and why this does not.
+        # The ground plane's z is the table's own leg bottom, so the rig stands on it rather than
+        # hovering; the two faces are exactly coincident, which is fine because both bodies are
+        # static and the leg face points down (see GROUND_Z).
         self.scene.plane.init_state.pos = (0.0, 0.0, GROUND_Z)
         # main's dome light is intensity 1000 over the kloofendal_43d_clear_puresky_4k HDR. Only the
         # intensity is written here: the inherited dexsuite ``sky_light`` already names that exact
@@ -620,7 +697,17 @@ class Ur5eDeltoMixinCfg:
         # -- workspace: mirror the inherited dexsuite layout from -x to +x so the base stays
         # unrotated, and drop every height onto the real work surface. The relative geometry is
         # preserved so the reward stds still mean what they meant; see WORKSPACE_Z_SHIFT.
-        self.scene.object.init_state.pos = (WORKSPACE_X, 0.1, 0.35 + WORKSPACE_Z_SHIFT)
+        # y is RE-CENTRED, not inherited, and that is a deliberate deviation from "shift, don't
+        # re-author". dexsuite spawns at y = +0.1 on a table 1.5 m wide (y_half 0.75), so its
+        # +-0.2 m ``reset_object`` jitter left 450 mm of margin at the near edge. This table is
+        # y_half 0.35 (TABLE_TOP_Y_HALF, measured), so the same bias leaves 50 mm -- and the largest
+        # object in the set, ``CapsuleCfg(radius=0.025, height=0.2)``, has a 0.125 m half-extent and
+        # is dropped from up to +0.4 m with a uniformly random orientation. At y = +0.1 roughly a
+        # fifth of resets put part of it past the +y edge. At y = 0 the worst case is
+        # 0.2 + 0.125 = 0.325 < 0.35 and the object is always over the table. y = 0 is also what the
+        # rest of the task already assumes: the goal box ``ranges.pos_y`` is (-0.25, +0.25), i.e.
+        # symmetric about the robot's own plane of symmetry, and so is the table.
+        self.scene.object.init_state.pos = (WORKSPACE_X, 0.0, 0.35 + WORKSPACE_Z_SHIFT)
         self.commands.object_pose.ranges.pos_x = (0.3, 0.7)
         self.commands.object_pose.ranges.pos_z = (0.55 + WORKSPACE_Z_SHIFT, 0.95 + WORKSPACE_Z_SHIFT)
         # The inherited bound box is written for the -x, table-at-0.235 workspace. Left alone, an
@@ -630,12 +717,20 @@ class Ur5eDeltoMixinCfg:
         # the table reads as out of bounds and the episode ends the moment it is put down. 50 mm of
         # margin under WORK_SURFACE_Z puts it at -0.046 -- under the surface, and still 630 mm above
         # the ground plane at GROUND_Z, so an object knocked off the table's edge still trips it.
+        # THIS ONE HEIGHT IS RECOMPUTED, NOT SHIFTED, and that is the module's only deviation from
+        # the preserve-relative-geometry rule stated at WORKSPACE_Z_SHIFT. Shifting the inherited
+        # 0.0 would have given -0.251, which also works; recomputing tightens the fall distance
+        # before termination from 255 mm to 50 mm, so an object knocked off the table ends its
+        # episode sooner. Deliberate, and named here so it is not read as an oversight.
         # x is left wider than the tabletop (which runs -0.35..1.05; see TABLE_TOP_X) on purpose: an
         # object pushed past the edge leaves through the z floor a frame later anyway.
         self.terminations.object_out_of_bound.params["in_bound_range"]["x"] = (-0.5, 1.5)
         self.terminations.object_out_of_bound.params["in_bound_range"]["z"] = (WORK_SURFACE_Z - 0.05, 2.0)
-        # keep the debug camera looking at the workspace rather than away from it
-        self.viewer.eye = (2.25, 0.0, 0.75)
+        # Keep the debug camera looking at the workspace rather than away from it. BOTH ends are
+        # derived from WORK_SURFACE_Z, so the ~18-degree elevation the scene was framed at survives
+        # a future correction of that constant; an absolute literal for the eye height would let the
+        # angle drift silently while the lookat moved.
+        self.viewer.eye = (2.25, 0.0, WORK_SURFACE_Z + 0.746)
         self.viewer.lookat = (WORKSPACE_X, 0.0, WORK_SURFACE_Z + 0.2)
 
         # -- GOAL + TASK-STATE VISUALIZATION. Runs AFTER the table swap and after the workspace
@@ -697,6 +792,23 @@ class Ur5eDeltoMixinCfg:
         # table through a fixed root joint -- the graft keeps the arm's ``root_joint`` and asserts
         # it is still the one articulation root -- so there is nothing to pin.
         self.events.reset_root = None
+        # THE TABLE MUST NOT MOVE RELATIVE TO THE ROBOT, and upstream's ``reset_table`` moves it.
+        # dexsuite's is a free cuboid standing under a floating arm, so jittering it +-50 mm in x/y
+        # every reset randomizes the robot-to-table pose -- a legitimate randomization THERE. Here
+        # the table IS the robot's mount: ``table_dims.yaml`` states the frame contract outright
+        # ("the robot/support/table are jittered TOGETHER (rigid assembly -- the base is bolted to
+        # this table)"), and the robot root is pinned by the line above. Left live, the term breaks
+        # the assembly three ways, all measured rather than guessed:
+        #   * the base_link world bbox of ``ur5e_delto.usd`` is +-0.0755 in x/y, and the black mat's
+        #     cutout radius is 0.1000, so a 50 mm x-jitter drives the base 25 mm into the mat mesh
+        #     and a corner jitter (0.0707 diagonal) 46 mm into it;
+        #   * every height in this module is measured from a work surface that would no longer be
+        #     under the arm, and TABLE_TOP_Y_HALF's 50 mm of spawn margin (see the object spawn
+        #     above) would go to zero;
+        #   * the red/green status pad is drawn at ``table.root_pos_w`` plus a FIXED offset (see
+        #     STATUS_PAD_OFFSET), so the pad itself would slide +-50 mm under the robot each episode.
+        # Nulled, not narrowed: there is no axis along which this rig's table may move on its own.
+        self.events.reset_table = None
 
         # -- terminations: drop the abnormal-velocity cut and its penalty. See the function.
         _drop_unreachable_abnormal_robot_cut(self)

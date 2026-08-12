@@ -39,6 +39,28 @@ THREE THINGS THAT ARRANGEMENT CANNOT DO ON THIS RIG, which is what this module a
    thresholded success that decides curriculum promotion. One tensor, :attr:`success_ids`, is
    computed once per step and every marker reads it.
 
+   THE HONEST LIMIT OF THAT CLAIM. Three markers now read one tensor, but the RULE that builds the
+   tensor is still written twice in the tree: here, as ``not position_only and success_rot_tol is
+   not None``, and in the ADR scheduler as ``move_up = (pos_dist < pos_tol) & (rot_dist < rot_tol)
+   if rot_tol else pos_dist < pos_tol`` (``dexsuite/mdp/curriculums.py:106``), which tests
+   ``rot_tol`` for TRUTHINESS and never consults ``position_only``. Two ways the copies could
+   disagree, and where each is closed:
+
+   * ``rot_tol == 0.0`` -- ADR drops the gate (0.0 is falsy), this drops nothing. Closed at bind
+     time: ``_bind_task_state_visualization`` refuses a non-positive ``rot_tol``.
+   * ``position_only=True`` with a non-None ``rot_tol`` -- this drops the gate, ADR keeps it. NOT
+     closed, only inert: every config built today pairs ``position_only=True`` with
+     ``rot_tol=None`` (lift) or ``position_only=False`` with ``rot_tol=0.25`` (reorient). Making it
+     structurally impossible means moving the predicate itself into one shared callable, which the
+     ADR term would have to import.
+
+   AND THE COLOUR IS NOT THE REWARD, despite the reward term being named ``success``. On this env
+   that term resolves to ``dexlift.mdp.rewards.success_reward``, a CONTACT-GATED shadow of the
+   dexsuite function: with ``rot_std`` set it multiplies by a thumb/fingertip contact test, so on
+   reorient an object thrown to the goal and released is green here and promotes ADR while that
+   reward pays exactly 0. The colour tracks the only THRESHOLDED success test in the task, which is
+   ADR's; the reward is a dense shaping term with no threshold to track.
+
 SEMANTICS OF THE COLOUR, stated because the two readings differ and an unlabelled marker gets
 misread: **GREEN MEANS CURRENTLY WITHIN TOLERANCE.** It is not sticky and not latched. The object
 being inside the goal ball right now turns the pad green; the object drifting back out turns it red
@@ -144,7 +166,12 @@ def make_goal_marker_cfg(prim_path: str, ball_radius: float, opacity: float = 1.
         prim_path: where the ``PointInstancer`` goes.
         ball_radius: sphere radius. Passing the SUCCESS POSITION TOLERANCE makes the goal marker the
             tolerance ball itself -- the object being inside the sphere is exactly the condition
-            that turns it green -- instead of upstream's decorative 1 cm dot.
+            that turns it green -- instead of upstream's decorative 1 cm dot. SCOPE: this only
+            reaches a POSITION-ONLY task. On a reorientation task the goal has an orientation to
+            show, so upstream's draw path selects prototype 0, the ``frame``, and neither sphere is
+            instanced; see :meth:`TaskStateVisPoseCommand._debug_vis_callback`. Sizing them is still
+            worth doing -- the same factory builds the lift task's marker -- but "the goal ball IS
+            the tolerance ball" is a statement about lift, not about the task family.
         opacity: sphere opacity; below 1.0 so a goal ball drawn around the object does not hide it.
     """
     material = {"roughness": 0.4, "opacity": opacity}
@@ -255,6 +282,14 @@ class TaskStateVisPoseCommand(ObjectUniformPoseCommand):
         # -- GOAL and CURRENT OBJECT POSE. Upstream's two draw paths, with the one difference that
         # the position-only path reads the success flag computed above instead of recomputing a
         # second `distance < 0.05`.
+        #
+        # NOTE which branch gets the tolerance ball. ``visualize`` with no ``marker_indices`` sets
+        # every instance to prototype 0 (isaaclab/markers/visualization_markers.py:316-336), and
+        # prototype 0 is the ``frame``. So on a REORIENTATION task the goal is drawn as an
+        # orientation frame -- correct, since the orientation is half the goal -- and the resized
+        # red/green spheres are simply not instanced. The "goal ball == tolerance ball" property
+        # therefore applies to the LIFT task only. Colouring the reorient goal would need a fourth
+        # prototype (an oriented frame in each colour), not an index change.
         if not self.cfg.position_only:
             self.goal_visualizer.visualize(self.pose_command_w[:, :3], self.pose_command_w[:, 3:])
             self.curr_visualizer.visualize(self.object.data.root_pos_w, self.object.data.root_quat_w)
@@ -296,12 +331,30 @@ class TaskStateVisPoseCommandCfg(ObjectUniformPoseCommandCfg):
     """
 
     success_visualizer_cfg: VisualizationMarkersCfg = make_status_pad_marker_cfg((0.8, 1.5, 0.04))
-    """The red/green status pad. ANNOTATED ON PURPOSE -- upstream declares this same name with no
-    type annotation, which in a ``configclass`` leaves it a plain CLASS attribute rather than a
-    dataclass field: every env config in the process then shares one marker dict, and the mutation
-    upstream performs in ``__post_init__`` (``...markers["failure"] = ...``) writes through to all of
-    them. With the annotation it is a real field with a per-instance default. The default value here
-    is dexsuite's own cuboid size, kept only so the class is usable unconfigured."""
+    """The red/green status pad, restated with a type annotation purely for readability.
+
+    NO BUG IS BEING FIXED HERE, and an earlier revision of this docstring claimed there was. It said
+    that upstream declares this same name without an annotation (true --
+    ``dexsuite/mdp/commands/pose_commands_cfg.py:91``), that a ``configclass`` therefore leaves it a
+    plain CLASS attribute rather than a dataclass field, and that every env config in the process
+    consequently shares one marker dict. THE LAST TWO ARE FALSE. ``configclass`` calls
+    ``_add_annotation_types`` (``isaaclab/utils/configclass.py:88``, defined at :182), which promotes
+    every unannotated class member to an annotated dataclass field, and ``_process_mutable_types``
+    (:303) then replaces its value with a ``default_factory`` that deep-copies it (:381, :480).
+    Verified against the real upstream class with the offline stub harness:
+
+    * ``'success_visualizer_cfg' in {f.name for f in dataclasses.fields(ObjectUniformPoseCommandCfg)}``
+      -> True, with ``default=MISSING`` and ``default_factory=_return_f.<locals>._wrap``;
+    * ``hasattr(ObjectUniformPoseCommandCfg, 'success_visualizer_cfg')`` -> False, i.e. no class
+      attribute exists to be shared;
+    * two freshly constructed instances give ``a.…markers is b.…markers`` -> False, and mutating
+      ``a``'s dict leaves ``b``'s at ``{}``.
+
+    So the described cross-config leak never happened, and restating the field changes nothing about
+    instance isolation. It is kept because this class also changes the DEFAULT -- from upstream's
+    empty ``markers={}`` (filled in by the env's ``__post_init__``) to a usable red/green pad -- and
+    because :func:`upgrade_pose_command_to_task_state_vis` overwrites it per instance anyway. The
+    default size is dexsuite's own cuboid, kept only so the class is usable unconfigured."""
 
 
 def upgrade_pose_command_to_task_state_vis(
