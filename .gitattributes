@@ -14,6 +14,7 @@
 # These self-contained runtime assets are small enough for normal Git and must work without LFS.
 source/uwlab_assets/uwlab_assets/local/Robots/DeltoHand/delto_hand.usd -filter -diff -merge
 source/uwlab_assets/uwlab_assets/local/Robots/Ur10eDelto/ur10e_delto.usd -filter -diff -merge
+source/uwlab_assets/uwlab_assets/local/Robots/Ur5eDelto/ur5e_delto.usd -filter -diff -merge
 source/uwlab_assets/uwlab_assets/local/Props/Custom/DeltoBlock/delto_block.usd -filter -diff -merge
 source/uwlab_assets/uwlab_assets/local/Props/Custom/DeltoSlot/delto_slot.usd -filter -diff -merge
 
