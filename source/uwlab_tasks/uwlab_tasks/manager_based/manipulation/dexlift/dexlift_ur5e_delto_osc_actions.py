@@ -14,7 +14,11 @@ Two halves, from two different places, and neither is re-authored here:
   family live in ``omnireset/config/ur5e_robotiq_2f85/actions.py``, next to every sibling gain set
   they have to be read against;
 * the HAND half is the identical ``DELTO_FULL_HAND_ACTIONS`` that variant 1 mounts: twenty
-  independent relative joint-position dimensions, one per DELTO joint.
+  independent relative joint-position dimensions, one per DELTO joint, at the same 0.1 rad scale
+  and behind the same per-joint +-1 ``DELTO_HAND_ACTION_CLIP``. That sentence was FALSE when this
+  module was written -- variant 1 mounted its own 26-joint term with the clip omitted, so the two
+  hands differed by 3x in their command tails. The equality check at the bottom of this module is
+  what makes the claim checkable rather than asserted in prose.
 
 TOTAL ACTION DIMENSION 6 + 20 = 26 -- THE SAME WIDTH AS VARIANT 1, A DIFFERENT MANIFOLD. Six of
 those dimensions mean "move the wrist this far in space" here and "move these six joints this far"
@@ -45,6 +49,7 @@ from uwlab.envs.mdp.full_actuation import assert_action_cfg_fully_actuates
 from uwlab_assets.robots.ur10e_delto.actions import DELTO_FULL_HAND_ACTIONS, DELTO_HAND_JOINT_NAMES
 
 from ..omnireset.config.ur5e_robotiq_2f85.actions import UR5E_DELTO_RELATIVE_OSC
+from .dexlift_ur5e_delto_actions import Ur5eDeltoRelJointPosActionCfg
 
 
 @configclass
@@ -81,3 +86,30 @@ class Ur5eDeltoOscActionCfg:
 assert_action_cfg_fully_actuates(
     Ur5eDeltoOscActionCfg(), DELTO_HAND_JOINT_NAMES, context=f"{__name__} (import-time)"
 )
+
+# THE EXPERIMENTAL CONSTANT, CHECKED. The two variants exist to compare ARM action spaces; the hand
+# half is supposed to be the same term on both sides, and for a while it was not -- variant 1 had a
+# 26-joint term of its own whose ``clip`` was omitted while this one carried DELTO_HAND_ACTION_CLIP.
+# Nothing failed, because both spellings are valid configs of the same class with the same scale.
+#
+# So compare the constructed halves, field by field, at import. EQUAL rather than IS: ``configclass``
+# deep-copies each class attribute into every instance, so the two groups legitimately hold distinct
+# copies of the asset package's object.
+_V1_HAND = Ur5eDeltoRelJointPosActionCfg().gripper
+_V2_HAND = Ur5eDeltoOscActionCfg().gripper
+if _V1_HAND != _V2_HAND:
+    _differing = sorted(
+        key
+        for key in set(vars(_V1_HAND)) | set(vars(_V2_HAND))
+        if getattr(_V1_HAND, key, None) != getattr(_V2_HAND, key, None)
+    )
+    raise ValueError(
+        f"{__name__}: THE TWO UR5e+DELTO ACTION-SPACE VARIANTS NO LONGER SHARE A HAND.\n"
+        f"  fields that differ: {_differing}\n"
+        f"  variant 1 (dexlift_ur5e_delto_actions.Ur5eDeltoRelJointPosActionCfg.gripper): {_V1_HAND}\n"
+        f"  variant 2 (this module's Ur5eDeltoOscActionCfg.gripper):                      {_V2_HAND}\n"
+        "The variants differ in the ARM half by design; the hand is the control. A difference here"
+        " -- a scale, a clip, a use_zero_offset -- confounds every comparison between their runs,"
+        " and it is invisible in the action-space WIDTH, which stays 26 either way. Both sides must"
+        " mount uwlab_assets.robots.ur10e_delto.actions.DELTO_FULL_HAND_ACTIONS."
+    )

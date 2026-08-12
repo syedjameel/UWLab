@@ -65,9 +65,26 @@ UR10E_DELTO_DEFAULT_JOINT_POS = {
 #
 # What the USD authors, for reference: stiffness 0.096-2.45 N*m/rad, damping pinned at exactly
 # stiffness/2500 (3.8e-5 - 9.8e-4), maxForce 30 N*m, type "force". The stiffness column is good and
-# is kept; the damping column is auto-generated and is not. The USD also authors
-# ``physxJoint:maxJointVelocity`` 419 deg/s, which PhysX enforces independently of the actuator's
-# velocity_limit_sim below.
+# is kept; the damping column is auto-generated and is not.
+#
+# CORRECTION, because this comment propagated a wrong number into two task modules. It used to say
+# the USD authors ``physxJoint:maxJointVelocity`` 419 deg/s "which PhysX enforces independently of
+# the actuator's velocity_limit_sim below". Both halves are false:
+#
+#   * the value. Read with pxr from the crates themselves: ``Robots/Ur10eDelto/ur10e_delto.usd``
+#     authors 120 and 180 deg/s, ``Robots/DeltoHand/delto_hand.usd`` 180 deg/s, and the UR5e graft
+#     ``Robots/Ur5eDelto/ur5e_delto.usd`` 180 deg/s (= 3.1416 rad/s) on all 26 joints. 419 deg/s
+#     appears in no USD in this repository;
+#   * the independence. ``Articulation._process_actuators_cfg`` calls
+#     ``write_joint_velocity_limit_to_sim(actuator.velocity_limit_sim, ...)`` for every actuator,
+#     implicit or explicit (isaaclab/assets/articulation/articulation.py:1773), and that writes
+#     both ``data.joint_vel_limits`` and ``root_physx_view.set_dof_max_velocities``. The authored
+#     USD value is OVERWRITTEN at startup by the ``velocity_limit_sim`` below, which is therefore
+#     the only cap that exists at run time.
+#
+# The practical consequence, for anything that reads a velocity limit: ``data.joint_vel_limits`` is
+# exactly this actuator's 3.0 rad/s, so a termination of the form "joint_vel > 2 * limit" cannot
+# fire. Two task modules were justified by the sentence above; both are fixed.
 _DELTO_HAND_ACTUATOR = ImplicitActuatorCfg(
     joint_names_expr=[r"rj_dg_[1-5]_[1-4]"],
     # The USD's OWN per-joint stiffness, except for the three distal _4 joints whose authored

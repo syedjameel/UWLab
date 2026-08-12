@@ -23,8 +23,8 @@ constant or the line that implements it:
 * The SCENE is OmniReset's UR5e rig (real table, mount plate, ground, sky) rather than dexsuite's
   invisible cuboid, so the work surface sits at :data:`WORK_SURFACE_Z` instead of dexsuite's
   0.255 m and every height in the task moves with it. See :data:`WORKSPACE_Z_SHIFT`.
-* The abnormal-joint-velocity termination is SCOPED TO THE ARM instead of being deleted. See
-  :func:`_scope_abnormal_robot_to_arm`.
+* The abnormal-joint-velocity termination and its penalty are DELETED, because on this
+  articulation the test cannot fire. See :func:`_drop_unreachable_abnormal_robot_cut`.
 
 THE ACTION SPACE IS NOT DECIDED HERE. :class:`Ur5eDeltoMixinCfg` deliberately sets NO ``actions``
 field: it carries the robot, the scene, the sensors and the events, and one subclass per action-
@@ -46,7 +46,6 @@ from isaaclab.managers import CurriculumTermCfg as CurrTerm
 from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.managers import SceneEntityCfg
-from isaaclab.managers import TerminationTermCfg as DoneTerm
 from isaaclab.sensors import ContactSensorCfg
 from isaaclab.utils import configclass
 from isaaclab_tasks.manager_based.manipulation.dexsuite import dexsuite_env_cfg as dexsuite
@@ -279,37 +278,47 @@ class Ur5eDeltoEventCfg(dexsuite.EventCfg):
     )
 
 
-def _scope_abnormal_robot_to_arm(env_cfg) -> None:
-    """Point the abnormal-joint-velocity termination at the ARM's six joints only.
+def _drop_unreachable_abnormal_robot_cut(env_cfg) -> None:
+    """Delete the abnormal-joint-velocity termination and its penalty. It cannot fire.
 
-    THE FAILURE THIS PREVENTS. ``abnormal_robot_state`` ends the episode when any joint exceeds
-    twice its velocity limit, and the paired ``early_termination`` reward pays a large negative for
-    it (-1 in the dexsuite base; the OmniReset state task, which this robot's other family uses,
-    weights the same signal -100). Both upstream implementations accept a ``SceneEntityCfg`` and
-    then ignore its joint selection, reducing over EVERY joint of the articulation. On a 6-joint
-    arm that is a sane instability detector. On this articulation, twenty of the twenty-six joints
-    are soft force-limited fingers whose actuator cap is 3.0 rad/s while the USD independently
-    authors ``physxJoint:maxJointVelocity`` 7.31 rad/s -- so a finger snapping back as it releases
-    an object legitimately crosses the 2x threshold, kills the episode, and charges the penalty to
-    a policy that did nothing wrong. The gradient that produces is "never let go".
+    ``abnormal_robot_state`` is ``|joint_vel| > 2 * data.joint_vel_limits``, and the paired
+    ``early_termination`` reward pays a negative when it does (-1 in the dexsuite base; the
+    OmniReset state task weights the same signal -100). The test compares the measured velocity
+    against THE SAME NUMBER THAT WAS WRITTEN INTO PHYSX AS THE JOINT'S MAXIMUM:
 
-    WHY NOT JUST DELETE IT, which is what the UR10e task does (``terminations.abnormal_robot`` and
-    ``rewards.early_termination`` both set to None). Deleting it also throws away the arm-side
-    instability cut, and a UR5e whose solver has diverged then runs the episode out at nonsense
-    velocities and feeds that data to PPO. Scoping keeps the detector where it means something.
+        ``Articulation._process_actuators_cfg`` calls ``write_joint_velocity_limit_to_sim(
+        actuator.velocity_limit_sim, ...)`` for EVERY actuator, implicit or explicit
+        (isaaclab/assets/articulation/articulation.py:1773), and that method both fills
+        ``_data.joint_vel_limits`` and calls ``root_physx_view.set_dof_max_velocities`` (:801-803).
 
-    This is a function rather than three lines in ``__post_init__`` because it is the kind of thing
-    that gets silently reverted by the next config that inherits the mixin; a named call is
-    greppable and can be re-asserted.
+    So PhysX brakes each joint toward exactly the value the termination divides by: 3.0 rad/s on
+    the twenty hand joints, 1.5708/3.1415 rad/s on the six arm joints (both articulation variants
+    set them). Twice that is not a state the solver produces. The term never evaluates True, the
+    early-termination penalty never pays, and any prose about what it protects is describing a
+    branch that is never taken.
+
+    THIS REPLACES a "scope it to the arm" helper whose stated premise was fiction. It argued that
+    the hand's fingers legitimately exceed the threshold because "the USD independently authors
+    ``physxJoint:maxJointVelocity`` 7.31 rad/s" against an actuator cap of 3.0. Both halves are
+    wrong: ``Robots/Ur5eDelto/ur5e_delto.usd`` authors 180 deg/s = 3.1416 rad/s on all 26 joints
+    (checked with pxr; 419 deg/s = 7.31 rad/s appears in no USD in this repository), and the USD
+    value is not independent -- the write above overwrites it at startup.
+
+    WHAT IS ACTUALLY LOST by deleting it: nothing that was working. The instability this term is
+    named for shows up as diverging joint POSITIONS, not velocities, precisely because the velocity
+    is clamped; what catches a runaway here is ``object_out_of_bound`` plus the episode timeout.
+    The UR10e+DELTO sibling reached the same end state (``abnormal_robot``/``early_termination``
+    both None) and its docstring's claim that this was a mistake was itself the mistake.
+
+    IF A REAL ARM-INSTABILITY CUT IS WANTED, it needs a criterion that can fire -- a joint-position
+    or effort test, or dropping ``velocity_limit_sim`` from the arm actuator so the comparison has
+    headroom. That second option changes the PLANT (and the shared articulation, which OmniReset
+    also spawns), so it is a deliberate decision and not a config tweak.
+
+    A named function rather than two lines in ``__post_init__``, so the decision is greppable.
     """
-    env_cfg.terminations.abnormal_robot = DoneTerm(
-        func=mdp.abnormal_robot_state_scoped,
-        params={"asset_cfg": SceneEntityCfg("robot", joint_names=ARM_JOINT_NAMES)},
-    )
-    # The penalty term stays, and stays bound to this key: with the cut scoped, firing it really
-    # does mean the arm went unstable, which is worth a negative.
-    if env_cfg.rewards.early_termination is not None:
-        env_cfg.rewards.early_termination.params["term_keys"] = "abnormal_robot"
+    env_cfg.terminations.abnormal_robot = None
+    env_cfg.rewards.early_termination = None
 
 
 ##
@@ -508,8 +517,8 @@ class Ur5eDeltoMixinCfg:
         # it is still the one articulation root -- so there is nothing to pin.
         self.events.reset_root = None
 
-        # -- terminations: keep the instability cut, but only over the arm's joints.
-        _scope_abnormal_robot_to_arm(self)
+        # -- terminations: drop the abnormal-velocity cut and its penalty. See the function.
+        _drop_unreachable_abnormal_robot_cut(self)
 
 
 @configclass

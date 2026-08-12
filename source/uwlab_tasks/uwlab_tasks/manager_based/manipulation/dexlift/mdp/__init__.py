@@ -20,6 +20,13 @@ from isaaclab_tasks.manager_based.manipulation.dexsuite.mdp import *  # noqa: F4
 # ``mdp`` namespace that every dexlift env config already uses, so reinstating the banned
 # one-scalar closure was a single line, ``mdp.ContinuousSynergyJointPositionActionCfg(...)``, in
 # any of them. Deleting the class is what makes the ban structural instead of a convention.
+# NOTE: there is no local ``terminations`` module either. It held ONE function,
+# ``abnormal_robot_state_scoped`` -- the upstream velocity-limit cut with ``asset_cfg.joint_ids``
+# honoured, so it could be pointed at the arm alone. It was deleted with its only call site: the
+# test is ``|joint_vel| > 2 * data.joint_vel_limits``, and ``joint_vel_limits`` is the very number
+# Isaac Lab writes into PhysX as each joint's maximum velocity
+# (``articulation.py:1773`` -> ``write_joint_velocity_limit_to_sim`` -> ``set_dof_max_velocities``),
+# so no scoping of it can fire. See ``_drop_unreachable_abnormal_robot_cut`` in
+# ``dexlift_ur5e_delto_env_cfg``.
 from .rewards import *  # noqa: F401, F403
 from .table_leg import *  # noqa: F401, F403
-from .terminations import *  # noqa: F401, F403

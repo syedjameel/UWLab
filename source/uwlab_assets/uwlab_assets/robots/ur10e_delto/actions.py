@@ -59,9 +59,11 @@ DELTO_HAND_ACTION_SCALE = {name: 0.1 for name in DELTO_HAND_JOINT_NAMES}
 
 # Per-step bound on the commanded joint delta, in units of action. The action is RELATIVE and
 # INTEGRATING (``target = measured + scale * action`` every step), and a Gaussian policy's raw
-# output is unbounded, so without this the only ceilings are the actuator's 3.0 rad/s
-# ``velocity_limit_sim`` and the USD's ``physxJoint:maxJointVelocity`` of 7.31 rad/s -- i.e. the
-# plant, not the controller. The deleted binary action was bounded by construction (it selected
+# output is unbounded, so without this the only ceiling is the plant: the actuator's 3.0 rad/s
+# ``velocity_limit_sim``, which Isaac Lab writes straight into PhysX as the joint's maximum
+# velocity and which therefore also overwrites whatever the USD authored (see the correction on
+# ``_DELTO_HAND_ACTUATOR``; the "7.31 rad/s USD limit" this comment used to cite does not exist).
+# The deleted binary action was bounded by construction (it selected
 # one of two fixed postures); nothing replaced that bound when it went. +-1 x 0.1 rad per control
 # step is the stroke the hand can actually track: at the 60 Hz control rate it is 6 rad/s of
 # commanded joint speed, already twice the actuator cap, so this clip constrains the COMMAND

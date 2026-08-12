@@ -370,47 +370,74 @@ _UR5E_TORQUE_LIMIT = tuple(UR5E_EFFORT_LIMITS[name] for name in ARM_JOINT_NAMES)
 # (2F-85 1.0, linear/UR5e 0.2, linear/UR10e 0.1) and why none of those numbers may be copied here.
 #
 # I FOR THIS ROBOT, computed from ``Robots/Ur5eDelto/ur5e_delto.usd`` itself (pxr only, no
-# simulator): the composite rigid-body inertia of ``wrist_3_link`` plus all 28 hand bodies, about
+# simulator) by ``scripts_v2/tools/compute_delto_wrist_inertia.py``, which prints every row and
+# every ratio below and is how a future retune reproduces them rather than trusting this comment:
+# the composite rigid-body inertia of ``wrist_3_link`` plus all 28 hand bodies, about
 # the ``wrist_3_joint`` axis. That joint authors ``axis = Z``, ``localPos1 = (0,0,0)`` and
 # ``localRot1 = identity``, so the axis IS wrist_3_link's own +Z through its origin, and the hand's
 # MountJoint sits at that same origin with identity rotation. Per body: rotate the authored
 # ``diagonalInertia`` by its ``principalAxes`` quaternion into the wrist frame, then parallel-axis
 # it out to the wrist origin. Distal mass 1.9614 kg (1.7735 kg hand + 0.1879 kg wrist_3_link).
 #
-#   posture                                     I about the wrist axis
-#   open (the articulation's reset posture)     2.757e-3 kg*m^2
-#   the validated scripted close                4.376e-3 kg*m^2
+#   posture                                       I about the wrist axis    kd*dt/I at zeta 0.1
+#   ZERO hand angles (all twenty joints at 0)     2.757e-3 kg*m^2           1.05
+#   the ARTICULATION'S RESET POSTURE              5.041e-3 kg*m^2           0.57
+#     (UR5E_DELTO_DEFAULT_JOINT_POS, i.e.
+#      DELTO_HAND_DEFAULT_JOINT_POS -- all
+#      twenty entries nonzero)
+#   the validated scripted close                  4.376e-3 kg*m^2           0.66
 #   4000 postures drawn uniformly in the USD
-#     joint limits                              min 2.841e-3, median 4.000e-3, max 5.322e-3
-#   per-joint greedy minimum over those limits  1.931e-3 kg*m^2   <-- worst case used below
+#     joint limits                                min 2.841e-3,             1.02 (at the min)
+#                                                 median 4.000e-3,
+#                                                 max 5.322e-3
+#   coordinate-descent minimum over those limits  1.923e-3 kg*m^2           1.50
+#                                                 <-- worst case used below
+#
+# THE FIRST TWO ROWS WERE ONE ROW, AND IT WAS MISLABELLED. "2.757e-3" was written down as "open
+# (the articulation's reset posture)". It is the ZERO posture: recomputing with all twenty joints
+# at 0 reproduces 2.757150e-3 exactly, and the reset posture -- which is the OPEN posture, and is
+# nowhere near zero (rj_dg_[2-5]_2 alone sit at 0.9 rad) -- gives 5.040864e-3, 1.83x larger. The
+# fingers being folded out is what puts their mass off the wrist axis.
 #
 # THE ARITHMETIC, at the rotational stiffness this action uses (kp = 3.0) and dt = 1/120 s:
 #
 #   damping_ratio 0.1  ->  kd = 2*sqrt(3)*0.1 = 0.3464 N*m*s/rad
-#     kd*dt/I  =  0.3464 / (120 * I)  =  1.05 (open)   0.66 (closed)   1.50 (greedy worst case)
+#     kd*dt/I  =  0.3464 / (120 * I)  =  0.57 (reset posture)   0.66 (scripted close)
+#                                        1.05 (zero angles)     1.02 (uniform-sweep minimum)
+#                                        1.50 (coordinate-descent minimum)
 #   damping_ratio 0.2  ->  kd = 0.6928
-#     kd*dt/I  =  2.09 (open)  --  ALREADY DIVERGENT AT THE RESET POSTURE.
+#     kd*dt/I  =  1.15 (reset posture)   1.32 (scripted close)
+#                 2.09 (zero angles)     2.03 (uniform-sweep minimum)   2.99 (c-d minimum)
 #
-# So 0.1, and 0.2 -- the value the UR5e's own linear gripper runs -- is not merely aggressive here,
-# it is over the bound before the policy takes its first action. The margin 0.1 buys (1.05 at the
-# reset posture, 1.50 at a posture the hand probably cannot even reach through its own
-# self-collisions) is the same margin every shipped configuration on this arm family runs at: the
-# UR5e's 1.1 kg linear gripper sits at 1.45, the UR10e's 0.575 kg one at 1.44, and the UR10e+DELTO
-# at 0.62-1.09.
+# So 0.1 -- and the conclusion survives the correction, but NOT the sentence that used to carry it
+# ("2.09 at the reset posture, ALREADY DIVERGENT before the policy acts"). At the true reset
+# posture 0.2 gives 1.15 and is inside the bound. What rules it out is that the bound is crossed at
+# any I below 0.6928/240 = 2.887e-3, and the hand reaches there: the uniform sweep's own minimum
+# (2.841e-3 -> 2.03) is already over it, the zero posture is over it, and the coordinate-descent
+# minimum is 50% over. A ratio that diverges on a reachable subset of the workspace is not a
+# margin, and 0.2 is the value the UR5e's own linear gripper runs, which is exactly the kind of
+# number that gets copied across without this arithmetic being redone.
+#
+# The margin 0.1 buys (0.57 at the reset posture, 1.05 at zero angles, 1.50 at a posture the hand
+# probably cannot even reach through its own self-collisions) is the same margin every shipped
+# configuration on this arm family runs at: the UR5e's 1.1 kg linear gripper sits at 1.45, the
+# UR10e's 0.575 kg one at 1.44, and the UR10e+DELTO at 0.62-1.09.
 #
 # That last line is the cross-check worth reading twice. The UR10e+DELTO's ratio was fixed at 0.1
 # from a reflected inertia MEASURED IN SIMULATION (2.66e-3 to 4.67e-3 kg*m^2); this file's number
 # comes from arithmetic on a different robot's USD with no simulator involved, and lands on
-# 2.757e-3 to 4.376e-3. Two independent methods, two different arms, the same band -- which is
+# 2.8e-3 to 5.3e-3 over the reachable postures. Two independent methods, two different arms, the
+# same band (the sim measurement's own upper end, 4.67e-3, sits inside it) -- which is
 # exactly what should happen, because the quantity is dominated by the hand and the hand is the
 # same graft bolted to the same flange. The agreement is evidence for the number; it is NOT a
 # licence to inherit it, and the arithmetic above is what this constant actually rests on.
 #
 # WHAT ``I`` IS AND IS NOT, because one omission is large enough to change the conclusion if it is
 # ever quietly folded in. ``I`` above is the RIGID-BODY inertia of the distal chain and excludes
-# JOINT ARMATURE. The UR5e's identified wrist_3 armature is 0.3825 kg*m^2 -- 139 times the whole
-# hand's rotational inertia about that axis -- and PhysX adds armature straight onto the joint-space
-# mass-matrix diagonal, so with it applied the same expression reads 0.0075 instead of 1.05 and no
+# JOINT ARMATURE. The UR5e's identified wrist_3 armature is 0.3825 kg*m^2 -- 76 times the whole
+# hand's rotational inertia about that axis at the reset posture, 139 times it at zero hand angles --
+# and PhysX adds armature straight onto the joint-space
+# mass-matrix diagonal, so with it applied the same expression reads 0.0075 instead of 0.57-1.05 and no
 # rotational damping ratio would ever look unsafe. That is not a reason to raise this number:
 #
 #   * the USD authors no armature on ``wrist_3_joint`` (drive attributes only). Armature exists
@@ -422,11 +449,13 @@ _UR5E_TORQUE_LIMIT = tuple(UR5E_EFFORT_LIMITS[name] for name in ARM_JOINT_NAMES)
 #   * and the whole point of holding the criterion fixed is that its four calibration points --
 #     2F-85 at 1.0, linear/UR5e at 0.2, linear/UR10e at 0.1, DELTO/UR10e at 0.1 -- were all read
 #     with I computed this same way. A criterion is only worth the consistency of its inputs. Read
-#     "1.05" as "the same margin the shipped grippers run at", not as a proof of stability.
+#     "0.57 at reset, 1.05 at zero angles" as "the same margin the shipped grippers run at", not as
+#     a proof of stability.
 #
 # Two things the bound above deliberately does not include, both checked and both slack:
-#   * the STIFFNESS half of the same discretisation, kp*dt^2/I = 3*(1/120)^2/2.757e-3 = 0.076,
-#     three orders under the kd term -- which is why a single-parameter criterion is honest here;
+#   * the STIFFNESS half of the same discretisation, kp*dt^2/I = 3*(1/120)^2/I = 0.041 at the reset
+#     posture and 0.076 at zero angles -- three orders under the kd term, which is why a
+#     single-parameter criterion is honest here;
 #   * the TRANSLATIONAL channel, kd_xyz*dt/m = 2*sqrt(200)*3/(120*1.9614) = 0.36 against the same
 #     bound of 2. Mass, unlike rotational inertia, barely moved. That is why only the rotational
 #     ratio gets re-derived per end effector.
@@ -449,8 +478,9 @@ UR5E_DELTO_RELATIVE_OSC = RelCartesianOSCActionCfg(
 )
 
 # Eval / sim2real gains. RECORDED AS SPECIFIED AND KNOWN TO FAIL THE BOUND ABOVE: at rotational
-# kp = 50 and damping_ratio 1.0, kd = 2*sqrt(50) = 14.14, so kd*dt/I = 14.14/(120*2.757e-3) = 42.7
-# against a bound of 2 -- twenty-one times over, at the reset posture. That is not a typo
+# kp = 50 and damping_ratio 1.0, kd = 2*sqrt(50) = 14.14, so kd*dt/I = 14.14/(120*5.041e-3) = 23.4
+# at the reset posture and 42.7 at zero hand angles, against a bound of 2 -- twelve to twenty-one
+# times over, everywhere in the workspace. That is not a typo
 # introduced here; it is the state every eval OSC group on this arm family is in (the UR10e+DELTO
 # and both linear-gripper eval groups carry the same caveat in prose, and the same arithmetic gives
 # 58.9 for the UR10e linear gripper). The eval gains were fitted as a stiff PAIR against the 2F-85

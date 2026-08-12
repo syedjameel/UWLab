@@ -18,8 +18,10 @@ WHAT CHANGES, AND ONLY THIS:
 * the arm ACTUATOR therefore becomes the explicit ``DelayedPDActuatorCfg`` at stiffness 0 and
   damping 0, so every newton-metre the arm sees comes from that action term.
 
-The HAND half is byte-identical to variant 1: the same ``DELTO_FULL_HAND_ACTIONS``, twenty
-independent relative joint-position dimensions. Total action dimension is 6 + 20 = 26 -- the SAME
+The HAND half is the same ``DELTO_FULL_HAND_ACTIONS`` object variant 1 mounts -- twenty independent
+relative joint-position dimensions, same scale, same +-1 clip -- and an import-time check in
+:mod:`.dexlift_ur5e_delto_osc_actions` compares the two constructed halves rather than leaving that
+as prose. Total action dimension is 6 + 20 = 26 -- the SAME
 WIDTH as variant 1 and a completely different manifold. A checkpoint, an ONNX export or a recorded
 dataset from one variant will load into the other without complaint and mean nothing, which is why
 the two are registered under separate gym ids rather than selected by a flag. The action group
@@ -80,6 +82,22 @@ from .dexlift_ur5e_delto_osc_actions import Ur5eDeltoOscActionCfg
 ##
 
 
+def _any_nonzero(gain) -> bool:
+    """True if a gain -- a scalar, or a per-joint/per-pattern mapping -- is anywhere nonzero.
+
+    Not ``bool(gain)``, which is what this check used to be. An actuator whose gains are spelled
+    per joint carries a MAPPING, and ``{"shoulder_pan_joint": 0.0, ...}`` is truthy while being
+    exactly the zero-gain arm this environment requires: the truthiness form raises on a correct
+    config and reads the VALUES of no entry, so it is testing the wrong thing in both directions.
+    Compare against zero, per element when there is more than one.
+    """
+    if gain is None:
+        return False
+    if isinstance(gain, dict):
+        return any(float(value) != 0.0 for value in gain.values())
+    return float(gain) != 0.0
+
+
 def _assert_arm_is_torque_only(env_cfg) -> None:
     """Fail construction unless the arm is driven ONLY by the OSC action term's torques.
 
@@ -99,7 +117,7 @@ def _assert_arm_is_torque_only(env_cfg) -> None:
     hand passes.
     """
     arm = env_cfg.scene.robot.actuators["arm"]
-    if arm.stiffness or arm.damping:
+    if _any_nonzero(arm.stiffness) or _any_nonzero(arm.damping):
         raise ValueError(
             "The UR5e+DELTO OSC environment requires a TORQUE-ONLY arm actuator, but"
             f" scene.robot.actuators['arm'] has stiffness={arm.stiffness}, damping={arm.damping}."
@@ -155,10 +173,17 @@ class Ur5eDeltoOscEventCfg(Ur5eDeltoEventCfg):
         params={"required_joints": list(DELTO_HAND_JOINT_NAMES), "context": "dexlift UR5e+DELTO (OSC arm)"},
     )
 
+    # NO ``expected_joint_names``. The guard defaults to
+    # ``uwlab_assets.robots.ur5e_robotiq_gripper.kinematics.ARM_JOINT_NAMES``, which is the list
+    # ``compute_jacobian_analytical`` actually writes its columns in -- the authority. Passing a
+    # list explicitly would defeat that default and validate the articulation against whatever the
+    # caller happened to hand over. (This task's ``ARM_JOINT_NAMES`` is now an alias of the same
+    # object, so the two cannot disagree; not passing it is what keeps that true if the alias ever
+    # becomes a copy again.)
     check_osc_arm_joints = EventTerm(
         func=omnireset_mdp.check_osc_arm_joint_order,
         mode="startup",
-        params={"action_term_name": "arm", "expected_joint_names": ARM_JOINT_NAMES},
+        params={"action_term_name": "arm"},
     )
 
 
