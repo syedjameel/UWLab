@@ -1061,6 +1061,26 @@ class Ur5eDeltoMixinCfg:
         )
         _assert_gravity_is_on_and_fixed(self)
 
+        # -- PhysX contact buffer: sized for a five-fingered hand, not for a parallel jaw.
+        # MEASURED on run vbhg1qwz (4096 envs): 2379 occurrences of
+        #   "collisionStackSize buffer overflow detected, please increase its size to at least
+        #    <N> in the scene desc! Contacts have been dropped."
+        # The demand printed as -1280352880, i.e. it had wrapped signed 32-bit: the real figure is
+        # 2**32 - 1280352880 = 3.01 GB against a 64 MB default, and it was still growing.
+        #
+        # WHY THIS IS NOT A PERFORMANCE NOTE. Dropped contacts are dropped SILENTLY as far as the
+        # MDP is concerned, and every reward that matters here is contact-gated: ``contacts()``
+        # reads per-fingertip normal force out of ``force_matrix_w``, and ``position_tracking`` and
+        # ``success`` are multiplied by a hard 0/1 gate built from it. A dropped contact is
+        # therefore indistinguishable from a finger that never touched -- the grasp happens in the
+        # simulation and pays nothing, ADR sees a failure, and the curriculum stalls for a reason
+        # that appears nowhere in the logs unless you read PhysX's own stderr.
+        #
+        # 4 GB, against ~18 GB free at 4096 envs (14.4 of 32.6 GB used). PhysX reserves this up
+        # front, so if a future run OOMs at construction this is the first line to reconsider --
+        # halving num_envs halves the demand and is the honest alternative to shrinking it back.
+        self.sim.physx.gpu_collision_stack_size = 4294967296
+
         # -- terminations: drop the abnormal-velocity cut and its penalty. See the function.
         _drop_unreachable_abnormal_robot_cut(self)
 
