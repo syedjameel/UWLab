@@ -351,6 +351,32 @@ STATUS_PAD_SIZE = (
     STATUS_PAD_THICKNESS,
 )
 
+SELF_COLLISIONS_ENABLED = False
+"""⚠ TEMPORARY, FOR THROUGHPUT TESTING ONLY. RESTORE TO ``True`` BEFORE ANY RESULT IS BELIEVED. ⚠
+
+The asset asks for self-collisions and means it: ``ur5e_delto.usd`` inherits them from the
+reference's ``..._self_collision.usd`` variant, which authors
+``physxArticulation:enabledSelfCollisions = True``, and ``ur5e_delto.py`` sets them on the
+articulation for that reason. This constant does NOT change the asset; it overrides the spawn for
+this task only, so the truth stays in one place and the override is greppable.
+
+WHY IT IS OFF RIGHT NOW. Training is simulation-bound -- ~98.7% of wall clock in PhysX, measured
+``Perf/collection time`` 21 s against ``Perf/learning_time`` 0.3 s -- and we are ~3x slower per
+environment than the reference that reached 88%/92.87% with the same Tesollo hand. Two candidate
+causes were tested and REFUTED: the modelled lab-table mesh (replaced with a box: no change,
+6055 -> ~6100 fps) and the missing contact-patch budget. Self-collisions across a 20-joint
+five-finger hand is the next candidate, and it is the one that cannot be settled by reading code.
+
+WHAT TURNING THEM OFF ACTUALLY COSTS, so this is not mistaken for free speed: the fingers may pass
+through one another and through the palm. A policy trained this way can learn a grasp that is
+geometrically impossible on the real hand, and it will still be scored a success, because nothing
+in the reward or the success predicate looks at finger-finger interpenetration.
+
+THE PLAN, agreed with the user: run the setup fast while the pipeline is being debugged, then set
+this back to ``True`` for fine-tuning and for anything reported as a result. A policy certified with
+this ``False`` is a pipeline test, not a result.
+"""
+
 TABLE_SLAB_THICKNESS = 0.030
 """Thickness of the collision slab that replaced the lab-table MESH. See :func:`_lab_table_cfg`."""
 
@@ -929,8 +955,14 @@ class Ur5eDeltoMixinCfg:
         # level object; anything mutated below is replaced wholesale rather than edited in place,
         # which would otherwise reach every other environment built in the same process.
         robot_cfg = IMPLICIT_UR5E_DELTO.replace(prim_path="{ENV_REGEX_NS}/Robot")
-        # the fingertip contact sensors need contact reporters on the robot's bodies
-        robot_cfg.spawn = robot_cfg.spawn.replace(activate_contact_sensors=True)
+        # the fingertip contact sensors need contact reporters on the robot's bodies, and
+        # self-collisions are toggled HERE rather than on the asset -- see SELF_COLLISIONS_ENABLED.
+        robot_cfg.spawn = robot_cfg.spawn.replace(
+            activate_contact_sensors=True,
+            articulation_props=robot_cfg.spawn.articulation_props.replace(
+                enabled_self_collisions=SELF_COLLISIONS_ENABLED
+            ),
+        )
         # position targets need PD gains; see ARM_STIFFNESS
         robot_cfg.actuators = dict(robot_cfg.actuators)
         robot_cfg.actuators["arm"] = robot_cfg.actuators["arm"].replace(stiffness=ARM_STIFFNESS, damping=ARM_DAMPING)
