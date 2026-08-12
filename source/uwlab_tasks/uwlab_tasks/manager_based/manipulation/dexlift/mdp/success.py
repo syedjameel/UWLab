@@ -74,15 +74,24 @@ if TYPE_CHECKING:
 __all__ = [
     "ADR_TERM_NAME",
     "AdrSuccessSpec",
+    "CUMULATIVE_SUCCESS_RATE_KEY",
+    "DEXSUITE_RECORDER_ORIENTATION_THRESHOLD",
+    "DEXSUITE_RECORDER_POSITION_THRESHOLD",
+    "EPISODE_SUCCESS_RATE_KEY",
     "EpisodeSuccessProbe",
+    "EpisodeSuccessRateLogger",
     "GOAL_COMMAND_NAME",
+    "RL_GAMES_EPISODE_LOG_PREFIX",
     "SUCCESS_PROBE_TERM_NAME",
+    "SUCCESS_RATE_LOG_TERM_NAME",
     "SharedPredicateDifficultyScheduler",
     "adr_param",
     "assert_upstream_predicate_unchanged",
     "goal_pose_error",
+    "matches_certified_recorder_predicate",
     "resolve_adr_success_spec",
     "success_probe_term_cfg",
+    "success_rate_log_term_cfg",
     "upstream_predicate_fingerprint",
     "within_success_tolerance",
 ]
@@ -99,6 +108,72 @@ SUCCESS_PROBE_TERM_NAME = "adr_success_probe"
 
 Deliberately not ``success``: nothing in this task family may end an episode on success, and a term
 called ``success`` in a ``TerminationsCfg`` reads like one that does.
+"""
+
+SUCCESS_RATE_LOG_TERM_NAME = "success_rate_log"
+"""Name a TRAINING config registers :class:`EpisodeSuccessRateLogger` under.
+
+Also, unavoidably, the tail of one more logged series: ``TerminationManager.reset`` publishes
+``Episode_Termination/<term name>`` for every term it owns, so this one contributes a flat 0.0
+under ``Episode_Termination/success_rate_log``. That series is the term declaring, every
+iteration, that it never ended an episode -- which is the property the class is built around.
+"""
+
+RL_GAMES_EPISODE_LOG_PREFIX = "Episode/"
+"""Prefix rl_games' ``IsaacAlgoObserver`` puts in front of every ``extras["log"]`` key, and which
+rsl_rl does NOT -- so this package has to add it back by hand to land on the same wandb tag.
+
+The two trainers disagree about who owns the namespace, and the disagreement is the entire reason
+a metric that is the same quantity shows up as two unrelated series in wandb:
+
+* rl_games (``rl_games/common/algo_observer.py``, ``IsaacAlgoObserver.after_print_stats``)::
+
+      self.writer.add_scalar("Episode/" + key, value, epoch_num)
+
+  Every key the environment logs is re-namespaced under ``Episode/``. That is where the certified
+  runs' ``Episode/Episode_Reward/success``, ``Episode/Curriculum/adr`` and
+  ``Episode/Success_Rate/Episode/success_rate`` come from -- the environment emitted
+  ``Success_Rate/Episode/success_rate`` and the observer prefixed it.
+
+* rsl_rl (``rsl_rl/runners/on_policy_runner.py``, ``OnPolicyRunner.log``)::
+
+      if "/" in key:
+          self.writer.add_scalar(key, value, locs["it"])
+      else:
+          self.writer.add_scalar("Episode/" + key, value, locs["it"])
+
+  A key that already contains a slash is passed through VERBATIM. Every IsaacLab log key contains
+  one, so under rsl_rl the prefix is never applied and the same environment produces
+  ``Episode_Reward/success`` and ``Curriculum/adr``.
+
+So for an rsl_rl run to write the tag the rl_games lineage wrote, the environment must emit the
+prefix itself. That is what :class:`EpisodeSuccessRateLogger` does, and it is why its
+``log_key_prefix`` parameter exists rather than being hardcoded: a config that trains this task
+with rl_games must set it to ``""``, or the observer above would double it into
+``Episode/Episode/Success_Rate/...``. No dexlift task registers an rl_games entry point today
+(``dexlift/__init__.py`` registers ``rsl_rl_cfg_entry_point`` only), which is why the default is
+the rsl_rl-correct value.
+"""
+
+EPISODE_SUCCESS_RATE_KEY = "Success_Rate/Episode/success_rate"
+"""Per-reset-batch success rate, under the name dexsuite's own recorder logged it as.
+
+Verbatim from ``DexsuiteSuccessRecorder.record_pre_reset`` in the reference tree
+(``IsaacLabDexterous/source/isaaclab_tasks/.../dexsuite/mdp/recorders.py``). Copying the string is
+the point: a chart that plots this key shows the certified rl_games runs and our rsl_rl runs as
+two lines of one series instead of two series.
+"""
+
+CUMULATIVE_SUCCESS_RATE_KEY = "Success_Rate/Cumulative/success_rate"
+"""Run-to-date success rate over every episode the run has finished. Also the recorder's name."""
+
+DEXSUITE_RECORDER_POSITION_THRESHOLD = 0.05
+"""``DexsuiteSuccessRecorderCfg.position_threshold``. A LITERAL in the reference recorder."""
+
+DEXSUITE_RECORDER_ORIENTATION_THRESHOLD = 0.5
+"""``DexsuiteSuccessRecorderCfg.orientation_threshold``, applied only when the goal command is not
+``position_only``. A literal there too, and on the reorientation task it disagrees with the scored
+rotation tolerance of ``rot_std / 2`` = 0.25 -- see :func:`matches_certified_recorder_predicate`.
 """
 
 UPSTREAM_PREDICATE_FINGERPRINT = "1e8216838f3d89614abddba21fec42e49d5f20b4067fa7dc66e1057776e1acd5"
@@ -360,3 +435,152 @@ class EpisodeSuccessProbe(ManagerTermBase):
 def success_probe_term_cfg(adr_term_name: str = ADR_TERM_NAME) -> TerminationTermCfg:
     """Term config an evaluator adds to ``terminations`` to make the success test observable."""
     return TerminationTermCfg(func=EpisodeSuccessProbe, params={"adr_term_name": adr_term_name}, time_out=False)
+
+
+def matches_certified_recorder_predicate(pos_tol: float, rot_tol: float | None, position_only: bool) -> bool:
+    """Is this task's scored success test the SAME TEST the certified rl_games runs measured?
+
+    The two are written down in different places and neither cites the other, so this function is
+    where they are compared instead of assumed equal:
+
+    * The reference recorder (``DexsuiteSuccessRecorder.record_post_step``) tests
+      ``pos_dist < position_threshold`` with a HARDCODED 0.05, and ANDs in
+      ``rot_dist < orientation_threshold`` (0.5) unless the goal command declares ``position_only``.
+    * This package tests :func:`within_success_tolerance` with the tolerances the ADR curriculum
+      is actually invoked with, which dexsuite derives as ``pos_tol = rewards.success.params[
+      "pos_std"] / 2`` and which the Lift subclass then strips the rotation half of.
+
+    ON THE LIFT TASK THEY COINCIDE, and that is a measured fact rather than a design intent: the
+    four certified runs (``in3kt4m6``, ``pe7mepo5``, ``us5i9luk``, ``lvjenlx7``) and every run of
+    this port log the identical ``env_cfg`` fragment -- ``rewards.success.params.pos_std = 0.1``
+    (hence ``pos_tol`` 0.05), ``curriculum.adr.params.rot_tol = null``, and
+    ``commands.object_pose.position_only = true``. Both predicates therefore reduce to the same
+    single comparison, ``pos_dist < 0.05``, and a chart may honestly draw them as one series.
+
+    ON THE REORIENTATION TASK THEY DO NOT. There ``rot_tol`` is ``rot_std / 2`` = 0.25 while the
+    recorder's constant is 0.5, so the recorder counts successes this package's predicate rejects.
+    A number logged under :data:`EPISODE_SUCCESS_RATE_KEY` for that task would silently overlay two
+    different tests, which is worse than having no line at all -- so the caller
+    (``_attach_certified_success_rate_metric`` in the env config) leaves the metric off instead.
+
+    ``rot_tol`` is tested for TRUTHINESS because that is how :func:`within_success_tolerance` tests
+    it: ``None`` and ``0.0`` both drop the orientation gate.
+    """
+    if float(pos_tol) != DEXSUITE_RECORDER_POSITION_THRESHOLD:
+        return False
+    if position_only:
+        # The recorder drops its orientation gate here, so ours has to be dropped too.
+        return not rot_tol
+    # Otherwise the recorder applies its own 0.5 rad gate, and only that exact value agrees.
+    return bool(rot_tol) and float(rot_tol) == DEXSUITE_RECORDER_ORIENTATION_THRESHOLD
+
+
+class EpisodeSuccessRateLogger(EpisodeSuccessProbe):
+    """Per-episode success rate, published into ``extras["log"]`` for whatever trainer is watching.
+
+    WHAT IT MEASURES, and why it is not any of the numbers already in wandb. ``Curriculum/adr`` is
+    the ADR difficulty fraction: it samples the success predicate ONCE per episode, at the terminal
+    state, and then reports a promotion counter divided by ``max_difficulty`` -- a number that is
+    zero both when the policy never succeeds and when the curriculum has stalled, and that is not
+    on a 0..1 success scale in between. The reward term named ``success`` is a per-step tanh with a
+    contact gate and no threshold at all. Neither is a success rate. THIS is: the fraction of
+    finished episodes in which the object was inside tolerance of its goal AT ANY POINT, which is
+    the sticky-OR protocol the certified runs were scored under and the one the certification
+    harness re-implements with :class:`EpisodeSuccessProbe`.
+
+    WHY IT IS A TERMINATION TERM AND NOT A ``RecorderTerm``. The reference implementation is a
+    recorder, and this is deliberately not a port of the class -- only of its definition:
+
+    * There is nothing to import. The dexsuite package vendored into THIS tree has no
+      ``mdp/recorders.py``; the file exists only in the reference ``IsaacLabDexterous`` checkout,
+      and the vendored tree is recreated by ``uwlab.sh``, so adding it there would not survive.
+    * A recorder costs an extra observation pass PER STEP. ``ManagerBasedRLEnv.step`` guards the
+      recorder hooks with ``if len(self.recorder_manager.active_terms) > 0:`` and, inside that
+      guard, recomputes ``self.obs_buf = self.observation_manager.compute()`` before calling
+      ``record_post_step``. Activating one recorder term to log one scalar would therefore double
+      the observation cost of every step -- and this environment's ``perception`` group samples an
+      object point cloud. The termination manager gives the same pre-reset timing for free.
+    * The timing argument is already written down, on the parent class: ``TerminationManager``
+      runs BEFORE ``_reset_idx``, which is the only in-band hook that still sees the terminal
+      state. This subclass adds the sticky OR and the reset-time publication on top of it.
+
+    WHERE THE NUMBER SURFACES. ``TerminationManager.reset(env_ids)`` is called from
+    ``ManagerBasedRLEnv._reset_idx`` AFTER that method has replaced ``self.extras["log"]`` with a
+    fresh dict and BEFORE it returns, so a write performed from :meth:`reset` lands in the same
+    dict the reward and termination managers just filled and reaches the trainer with them.
+
+    WHAT IS NOT PORTED: the recorder's per-asset-label breakdown
+    (``Success_Rate/Episode/<label>/rate``). It buckets environments by the USD attribute
+    ``isaaclab:spawn:asset_label``, which none of the objects in either tree authors -- in all four
+    certified runs the breakdown collapsed to the single bucket ``Unknown``, i.e. it duplicated the
+    aggregate. Reproducing a key whose only value is a copy of another key is not comparability.
+    """
+
+    def __init__(self, cfg, env: ManagerBasedRLEnv):
+        super().__init__(cfg, env)
+        self._log_key_prefix: str = cfg.params.get("log_key_prefix", RL_GAMES_EPISODE_LOG_PREFIX)
+        # Allocated here, outside any inference-mode block, and mutated IN PLACE afterwards -- the
+        # opposite of the parent's rebinding discipline, and correct for the opposite reason. The
+        # parent rebinds per-step RESULTS so they are never inference tensors held across a reset;
+        # this is a persistent accumulator, so it must be a normal tensor that survives, and an
+        # in-place bool update inside inference mode is exactly what the reference recorder does
+        # (``self._episode_success |= success_now``).
+        self._episode_success = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
+        self._total_success = 0
+        self._total_attempts = 0
+
+    def __call__(
+        self,
+        env: ManagerBasedRLEnv,
+        adr_term_name: str = ADR_TERM_NAME,
+        log_key_prefix: str = RL_GAMES_EPISODE_LOG_PREFIX,
+    ) -> torch.Tensor:
+        self._log_key_prefix = log_key_prefix
+        never = super().__call__(env, adr_term_name)
+        # STICKY OR, the reference recorder's ``record_post_step`` in one line. "Reached the goal at
+        # any point in the episode", not "was at the goal when the clock ran out" -- the object is
+        # not held at the goal by this task, and the terminal-state reading is what ADR already
+        # reports.
+        self._episode_success |= self.success
+        return never
+
+    def reset(self, env_ids: Sequence[int] | torch.Tensor | slice | None = None) -> None:
+        """Publish the rate for the episodes ending now, then clear their flags.
+
+        ``env_ids`` arrives as ``slice(None)`` for a whole-environment reset (``TerminationManager``
+        substitutes it for ``None``), so it is used as an index and never as a length.
+        """
+        if env_ids is None:
+            env_ids = slice(None)
+        flags = self._episode_success[env_ids]
+        # COUNT ONLY EPISODES THAT ACTUALLY RAN. ``_reset_idx`` zeroes ``episode_length_buf`` after
+        # this call, so here it still holds the finished episode's length -- and it is 0 for the
+        # construction-time reset, where every environment would otherwise be counted as a failed
+        # episode that never happened. The reference recorder never saw that case: its
+        # ``record_pre_reset`` hook is driven from ``step``, while this one is driven from
+        # ``_reset_idx``, which ``env.reset()`` also calls.
+        ran = self._env.episode_length_buf[env_ids] > 0
+        attempts = int(ran.sum().item())
+        if attempts == 0:
+            return
+        successes = int((flags & ran).sum().item())
+        self._total_success += successes
+        self._total_attempts += attempts
+        log = self._env.extras.setdefault("log", {})
+        log[self._log_key_prefix + EPISODE_SUCCESS_RATE_KEY] = successes / attempts
+        log[self._log_key_prefix + CUMULATIVE_SUCCESS_RATE_KEY] = self._total_success / self._total_attempts
+        self._episode_success[env_ids] = False
+
+
+def success_rate_log_term_cfg(
+    adr_term_name: str = ADR_TERM_NAME, log_key_prefix: str = RL_GAMES_EPISODE_LOG_PREFIX
+) -> TerminationTermCfg:
+    """Term config a TRAINING config adds to ``terminations`` to log the episode success rate.
+
+    See :data:`RL_GAMES_EPISODE_LOG_PREFIX` for what ``log_key_prefix`` is for and when to blank it.
+    """
+    return TerminationTermCfg(
+        func=EpisodeSuccessRateLogger,
+        params={"adr_term_name": adr_term_name, "log_key_prefix": log_key_prefix},
+        time_out=False,
+    )

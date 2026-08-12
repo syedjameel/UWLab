@@ -658,6 +658,52 @@ def _drop_unreachable_abnormal_robot_cut(env_cfg) -> None:
     A named function rather than two lines in ``__post_init__``, so the decision is greppable.
     """
     env_cfg.terminations.abnormal_robot = None
+
+
+def _attach_certified_success_rate_metric(env_cfg) -> None:
+    """Log an episode success rate, under the metric name the certified rl_games runs used.
+
+    THE PROBLEM THIS SOLVES IS NOT A MISSING NUMBER, IT IS TWO INCOMPARABLE DASHBOARDS. The runs
+    that reached 88% on this task and 92.87% on the table leg were trained with rl_games, which
+    logged a real success rate through dexsuite's ``DexsuiteSuccessRecorder`` as
+    ``Episode/Success_Rate/Episode/success_rate``. This port trains with rsl_rl, whose configs
+    carry no recorder, so its runs logged NO success rate at all -- the nearest series,
+    ``Curriculum/adr``, is a difficulty fraction that reads 0.0 both for "never succeeds" and for
+    "curriculum stalled". Overlaying the two lineages in wandb therefore meant comparing a success
+    rate against a curriculum counter, which is not a comparison.
+
+    :class:`~.mdp.success.EpisodeSuccessRateLogger` publishes the same quantity, computed with the
+    same sticky-OR-over-the-episode protocol, under the same string. It is the ONLY thing added
+    here; nothing about the task, the rewards or the terminations changes, and the term cannot end
+    an episode.
+
+    WHY IT IS CONDITIONAL. The name means a specific test -- the reference recorder's
+    ``pos_dist < 0.05`` with its orientation gate dropped by ``position_only``. On the Lift task
+    this port's own scored tolerances reduce to exactly that (see
+    :func:`~.mdp.success.matches_certified_recorder_predicate`, which checks it rather than
+    assuming it). On the Reorient task they do not -- the scored rotation tolerance is
+    ``rot_std / 2`` = 0.25 against the recorder's 0.5 -- and a line drawn under this name would put
+    two different tests on one axis. The metric is then left off, deliberately and visibly: the
+    series is simply absent for that task rather than present and wrong.
+
+    The tolerances are read the same way everything else in this module reads them -- out of the
+    LIVE ``curriculum.adr`` term via ``mdp.adr_param``, after ``super().__post_init__()`` has
+    derived them -- so this decision cannot drift from the one the scheduler, the certification
+    harness and the red/green table pad all make.
+    """
+    adr_term = env_cfg.curriculum.adr if env_cfg.curriculum is not None else None
+    if adr_term is None:
+        # No ADR term means no thresholded success test to report; ``resolve_adr_success_spec``
+        # would raise at the first step rather than invent one.
+        env_cfg.terminations.success_rate_log = None
+        return
+    pos_tol = mdp.adr_param(adr_term, "pos_tol")
+    rot_tol = mdp.adr_param(adr_term, "rot_tol")
+    position_only = bool(getattr(env_cfg.commands.object_pose, "position_only", False))
+    if not mdp.matches_certified_recorder_predicate(pos_tol, rot_tol, position_only):
+        env_cfg.terminations.success_rate_log = None
+        return
+    env_cfg.terminations.success_rate_log = mdp.success_rate_log_term_cfg()
     env_cfg.rewards.early_termination = None
 
 
@@ -1129,6 +1175,12 @@ class Ur5eDeltoMixinCfg:
 
         # -- terminations: drop the abnormal-velocity cut and its penalty. See the function.
         _drop_unreachable_abnormal_robot_cut(self)
+
+        # -- metrics: publish an episode success rate under the certified lineage's own metric
+        # name, so the rl_games baseline and this rsl_rl port land on ONE wandb series instead of
+        # two. Runs last because it reads the tolerances the ADR curriculum ended up with, which
+        # ``super().__post_init__()`` derives and the Lift subclass then trims. See the function.
+        _attach_certified_success_rate_metric(self)
 
 
 @configclass
