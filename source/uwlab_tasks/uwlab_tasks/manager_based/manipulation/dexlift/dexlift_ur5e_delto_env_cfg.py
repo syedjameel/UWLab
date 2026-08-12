@@ -553,18 +553,23 @@ def _bind_task_state_visualization(env_cfg) -> mdp.TaskStateVisPoseCommandCfg:
     while that reward pays exactly 0. Binding to ADR is the deliberate choice; it is written down
     here so the pad is not misread as "the reward is paying".
     """
-    adr_params = env_cfg.curriculum.adr.params if env_cfg.curriculum is not None else {}
-    # ``.get(key, default)``, NOT ``.get(key) or default``: a configured 0.0 is falsy, so ``or``
+    adr_term = env_cfg.curriculum.adr if env_cfg.curriculum is not None else None
+    # ``mdp.adr_param``, NOT ``params.get(key) or default``: a configured 0.0 is falsy, so ``or``
     # would swallow it into the fallback and the guard below could never fire on zero -- which is
     # precisely the failure this binding exists to prevent (ADR would never promote, because
-    # ``pos_dist < 0.0`` is always False, while the pad went green at 0.05).
-    pos_tol = adr_params.get("pos_tol", 0.05)
-    # rot_tol gets the SAME treatment, and for the same reason. Present-and-None is meaningful --
-    # the Lift subclass sets it to None to drop the orientation gate -- so the default is only
-    # reached when there is no ADR curriculum at all, and it is then upstream's own literal, 0.5.
-    # Without this a curriculum-less REORIENT config would silently colour on position alone, i.e.
-    # be strictly more permissive than the upstream marker it replaced.
-    rot_tol = adr_params.get("rot_tol", 0.5)
+    # ``pos_dist < 0.0`` is always False, while the pad went green at 0.05). Present-and-None is
+    # meaningful too -- the Lift subclass sets ``rot_tol`` to None to drop the orientation gate --
+    # and ``adr_param`` preserves both, falling back for an ABSENT key to the scheduler's own
+    # signature default rather than to a literal typed here. That last part is the whole reason to
+    # route through it: it is the same resolver the certification harness uses, so the colour, the
+    # promotion threshold and the certified threshold cannot be three different numbers.
+    #
+    # The literals below are reached only when the config has NO ADR curriculum at all, i.e. when
+    # there is no scheduler to agree with; they are then upstream's own marker defaults. Without the
+    # 0.5 a curriculum-less REORIENT config would silently colour on position alone, i.e. be
+    # strictly more permissive than the upstream marker it replaced.
+    pos_tol = mdp.adr_param(adr_term, "pos_tol") if adr_term is not None else 0.05
+    rot_tol = mdp.adr_param(adr_term, "rot_tol") if adr_term is not None else 0.5
     if not isinstance(pos_tol, (int, float)) or pos_tol <= 0.0:
         raise ValueError(
             f"curriculum.adr.params['pos_tol'] must be a positive distance; got {pos_tol!r}. The"
@@ -741,6 +746,15 @@ class Ur5eDeltoAdrCurriculumCfg(DexsuiteCurriculumCfg):
     def __post_init__(self):
         # Construction-time, so a future edit that reintroduces the collapse cannot reach training.
         _assert_adr_noise_bounds_are_ranges(self)
+        # THE SUCCESS PREDICATE MOVES OUT OF THE SCHEDULER, and only the predicate: this subclass
+        # keeps upstream's promotion arithmetic verbatim and reads ``move_up`` from
+        # ``mdp.within_success_tolerance``, which is also what the certification harness scores
+        # episodes with. Without it the thresholded success test exists twice -- once here, once in
+        # whatever evaluates a checkpoint -- with nothing tying the two together. Only ``func`` is
+        # replaced; the inherited ``params`` (and the ``pos_tol``/``rot_tol`` dexsuite writes into
+        # them in ``__post_init__``) are untouched. See ``mdp/success.py`` for the guard that fails
+        # loudly if the vendored upstream method drifts from the copy.
+        self.adr.func = mdp.SharedPredicateDifficultyScheduler
 
 
 ##

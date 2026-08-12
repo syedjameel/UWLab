@@ -30,6 +30,12 @@ from isaaclab_tasks.manager_based.manipulation.dexsuite.mdp import *  # noqa: F4
 # ``dexlift_ur5e_delto_env_cfg``.
 from .frame_guards import *  # noqa: F401, F403
 from .rewards import *  # noqa: F401, F403
+
+# The one thresholded success test of the task family -- the predicate the ADR curriculum promotes
+# on -- extracted so the curriculum and the evaluation harness call one rule instead of two copies.
+# It shadows nothing upstream: every name it exports is new, and it subclasses ``DifficultyScheduler``
+# rather than replacing it.
+from .success import *  # noqa: F401, F403
 from .table_leg import *  # noqa: F401, F403
 
 # The goal / red-green task-state markers. This module SUBCLASSES the dexsuite pose command rather
