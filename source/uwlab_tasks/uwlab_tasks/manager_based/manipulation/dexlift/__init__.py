@@ -34,6 +34,22 @@ _UR5E_RELJOINTPOS_RSL_RL_CFG = f"{agents.__name__}.rsl_rl_ppo_cfg:DexLiftUR5eDel
 _UR5E_OSC_RSL_RL_CFG = f"{agents.__name__}.rsl_rl_ppo_cfg:DexLiftUR5eDeltoOscPPORunnerCfg"
 _TABLE_LEG_RSL_RL_CFG = f"{agents.__name__}.rsl_rl_ppo_cfg:TableLegGraspLiftPPORunnerCfg"
 
+# The rl_games PPO configs are verbatim copies of the reference DexSuite one (IsaacLabDexterous @
+# 2208576f), which is the setup that measurably reached 88% on the 16-primitive dexsuite lift. That
+# is the trainer to reach for when the question is "does OUR robot reproduce the reference"; the
+# rsl_rl runners above are a port and differ from it in six hyperparameters (reward scaling,
+# critic_coef, entropy_coef, the bounds loss, horizon length, minibatch size). Registering both
+# leaves the choice explicit at the command line instead of implicit in the package.
+#
+# There is ONE FILE PER TASK ID FAMILY, not one shared file, because the reference's single shared
+# file is exactly what makes its ``config.name: reorient`` a trap -- see the comment in any of the
+# four. The Play id of each family deliberately shares its sibling's file: it must resolve to the
+# same ``logs/rl_games/<name>/`` directory to find the checkpoint it is replaying.
+_UR5E_RELJOINTPOS_LIFT_RL_GAMES_CFG = f"{agents.__name__}:rl_games_ppo_ur5e_delto_reljointpos_lift_cfg.yaml"
+_UR5E_RELJOINTPOS_REORIENT_RL_GAMES_CFG = f"{agents.__name__}:rl_games_ppo_ur5e_delto_reljointpos_reorient_cfg.yaml"
+_UR5E_OSC_LIFT_RL_GAMES_CFG = f"{agents.__name__}:rl_games_ppo_ur5e_delto_osc_lift_cfg.yaml"
+_UR5E_OSC_REORIENT_RL_GAMES_CFG = f"{agents.__name__}:rl_games_ppo_ur5e_delto_osc_reorient_cfg.yaml"
+
 gym.register(
     id="DexLift-UR10eDelto-Reorient-v0",
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
@@ -93,6 +109,7 @@ gym.register(
     disable_env_checker=True,
     kwargs={
         "env_cfg_entry_point": f"{_UR5E_ENV_CFG}:DexLiftUR5eDeltoRelJointPosLiftEnvCfg",
+        "rl_games_cfg_entry_point": _UR5E_RELJOINTPOS_LIFT_RL_GAMES_CFG,
         "rsl_rl_cfg_entry_point": _UR5E_RELJOINTPOS_RSL_RL_CFG,
     },
 )
@@ -103,6 +120,7 @@ gym.register(
     disable_env_checker=True,
     kwargs={
         "env_cfg_entry_point": f"{_UR5E_ENV_CFG}:DexLiftUR5eDeltoRelJointPosLiftEnvCfg_PLAY",
+        "rl_games_cfg_entry_point": _UR5E_RELJOINTPOS_LIFT_RL_GAMES_CFG,
         "rsl_rl_cfg_entry_point": _UR5E_RELJOINTPOS_RSL_RL_CFG,
     },
 )
@@ -113,6 +131,7 @@ gym.register(
     disable_env_checker=True,
     kwargs={
         "env_cfg_entry_point": f"{_UR5E_ENV_CFG}:DexLiftUR5eDeltoRelJointPosReorientEnvCfg",
+        "rl_games_cfg_entry_point": _UR5E_RELJOINTPOS_REORIENT_RL_GAMES_CFG,
         "rsl_rl_cfg_entry_point": _UR5E_RELJOINTPOS_RSL_RL_CFG,
     },
 )
@@ -123,6 +142,7 @@ gym.register(
     disable_env_checker=True,
     kwargs={
         "env_cfg_entry_point": f"{_UR5E_ENV_CFG}:DexLiftUR5eDeltoRelJointPosReorientEnvCfg_PLAY",
+        "rl_games_cfg_entry_point": _UR5E_RELJOINTPOS_REORIENT_RL_GAMES_CFG,
         "rsl_rl_cfg_entry_point": _UR5E_RELJOINTPOS_RSL_RL_CFG,
     },
 )
@@ -139,6 +159,7 @@ gym.register(
     disable_env_checker=True,
     kwargs={
         "env_cfg_entry_point": f"{_UR5E_OSC_ENV_CFG}:DexLiftUR5eDeltoOscLiftEnvCfg",
+        "rl_games_cfg_entry_point": _UR5E_OSC_LIFT_RL_GAMES_CFG,
         "rsl_rl_cfg_entry_point": _UR5E_OSC_RSL_RL_CFG,
     },
 )
@@ -149,6 +170,7 @@ gym.register(
     disable_env_checker=True,
     kwargs={
         "env_cfg_entry_point": f"{_UR5E_OSC_ENV_CFG}:DexLiftUR5eDeltoOscLiftEnvCfg_PLAY",
+        "rl_games_cfg_entry_point": _UR5E_OSC_LIFT_RL_GAMES_CFG,
         "rsl_rl_cfg_entry_point": _UR5E_OSC_RSL_RL_CFG,
     },
 )
@@ -159,6 +181,7 @@ gym.register(
     disable_env_checker=True,
     kwargs={
         "env_cfg_entry_point": f"{_UR5E_OSC_ENV_CFG}:DexLiftUR5eDeltoOscReorientEnvCfg",
+        "rl_games_cfg_entry_point": _UR5E_OSC_REORIENT_RL_GAMES_CFG,
         "rsl_rl_cfg_entry_point": _UR5E_OSC_RSL_RL_CFG,
     },
 )
@@ -169,6 +192,7 @@ gym.register(
     disable_env_checker=True,
     kwargs={
         "env_cfg_entry_point": f"{_UR5E_OSC_ENV_CFG}:DexLiftUR5eDeltoOscReorientEnvCfg_PLAY",
+        "rl_games_cfg_entry_point": _UR5E_OSC_REORIENT_RL_GAMES_CFG,
         "rsl_rl_cfg_entry_point": _UR5E_OSC_RSL_RL_CFG,
     },
 )
