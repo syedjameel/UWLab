@@ -1048,7 +1048,19 @@ class Ur5eDeltoMixinCfg:
             filter_prim_paths_expr=["{ENV_REGEX_NS}/Object"],
         )
 
-        # -- observations
+        # -- observations: the object point cloud is sampled at the REFERENCE's density, not the
+        # vendored tree's. IsaacLabDexterous @ 2208576f uses ``num_points: 32`` on every point-cloud
+        # term (dexsuite_env_cfg.py:187, :205, :240); the IsaacLab 2.3.2 dexsuite we inherit from
+        # ships 64 (:168). That single number is the whole difference between our policy input width
+        # and the reference's -- measured at runtime, 1870 against 1390, and 1870 - 480 = 1390
+        # exactly, so nothing else diverges.
+        #
+        # It matters beyond parity for one specific reason: the 88% and 92.87% results were measured
+        # on a 1390-wide observation. A network trained on 1870 is not the same experiment, its
+        # checkpoints are not interchangeable with that lineage, and any claim of "we reproduced the
+        # reference" would be false at the first layer.
+        self.observations.perception.object_point_cloud.params["num_points"] = 32
+
         self.observations.proprio.contact = ObsTerm(
             func=mdp.fingers_contact_force_b,
             params={"contact_sensor_names": [f"{link}_object_s" for link in ALL_TIP_NAMES]},
