@@ -324,6 +324,30 @@ def main() -> None:
             flush=True,
         )
 
+    # -- SEVENTH verify line (bead UWLab-qiao.9): whether the pose GOAL is uniform-sampled or pinned
+    # to the object's own spawn pose, read off the CONSTRUCTED command term's class -- not off
+    # DEXLIFT_GOAL_AT_SPAWN / DEXLIFT_PARTIAL_ASSEMBLY directly -- same reasoning as the sixth line
+    # above: C3's measurement showed the accepted-height floor tracks the GOAL range, not the spawn
+    # distribution, so a silently-unset toggle here produces a plausible-looking but WRONG height
+    # distribution rather than an error -- exactly the failure mode the sixth line already guards for
+    # spawn, now covered for goal.
+    _object_pose_class = env_cfg.commands.object_pose.class_type
+    _goal_is_pinned = _object_pose_class is dexlift_mdp.GoalAtSpawnPoseCommand
+    if _goal_is_pinned:
+        print(
+            f"[verify] commands.object_pose.class_type = {_object_pose_class.__name__}  "
+            f"goal = PINNED to object spawn pose (DEXLIFT_GOAL_AT_SPAWN=1 or DEXLIFT_PARTIAL_ASSEMBLY=1)",
+            flush=True,
+        )
+    else:
+        _pos_z_range = env_cfg.commands.object_pose.ranges.pos_z
+        print(
+            f"[verify] commands.object_pose.class_type = {_object_pose_class.__name__}  "
+            f"goal = UNIFORM-SAMPLED, ranges.pos_z = {_pos_z_range}  "
+            f"(DEXLIFT_GOAL_AT_SPAWN and DEXLIFT_PARTIAL_ASSEMBLY both unset/not '1')",
+            flush=True,
+        )
+
     # -- HARD GUARD, not a print. A silently-unset (or silently-ineffective) DEXLIFT_SPAWN_CLEARANCE
     # yields a plausible WRONG spawn distribution rather than an error -- the exact failure mode
     # that turned a 46.71% acceptance run into a 2.69% one when DEXLIFT_REF_* went unexported (see
@@ -343,6 +367,33 @@ def main() -> None:
             f"events.reset_object.func is {_reset_object_func.__name__!r} anyway -- something else "
             f"switched the spawn term. Refusing to generate reset states under a distribution the "
             f"launch command did not ask for."
+        )
+
+    # -- HARD GUARD, not a print (bead UWLab-qiao.9/H). Same shape as the DEXLIFT_SPAWN_CLEARANCE
+    # guard immediately above, for the same reason: a silently-unset (or silently-ineffective)
+    # DEXLIFT_GOAL_AT_SPAWN / DEXLIFT_PARTIAL_ASSEMBLY yields a plausible WRONG goal distribution --
+    # a full generation run of high-altitude grasps indistinguishable from "the mechanism does not
+    # work" -- rather than an error. "What was requested" is read from os.environ (mirroring the
+    # __post_init__ implication: DEXLIFT_PARTIAL_ASSEMBLY=1 implies goal-at-spawn without needing
+    # DEXLIFT_GOAL_AT_SPAWN exported too); "what was built" is read from the CONSTRUCTED cfg, never
+    # os.environ, same as the clearance guard.
+    _requested_goal_at_spawn = (
+        os.environ.get("DEXLIFT_GOAL_AT_SPAWN") == "1" or os.environ.get("DEXLIFT_PARTIAL_ASSEMBLY") == "1"
+    )
+    if _requested_goal_at_spawn and not _goal_is_pinned:
+        raise RuntimeError(
+            f"DEXLIFT_GOAL_AT_SPAWN=1 (or DEXLIFT_PARTIAL_ASSEMBLY=1) was requested but the "
+            f"constructed env_cfg's commands.object_pose.class_type is "
+            f"{_object_pose_class.__name__!r}, not GoalAtSpawnPoseCommand. The toggle did not take "
+            f"effect -- refusing to generate reset states under a silently-wrong goal distribution."
+        )
+    if not _requested_goal_at_spawn and _goal_is_pinned:
+        raise RuntimeError(
+            f"DEXLIFT_GOAL_AT_SPAWN and DEXLIFT_PARTIAL_ASSEMBLY were both unset (or not '1') but "
+            f"the constructed env_cfg's commands.object_pose.class_type is "
+            f"{_object_pose_class.__name__!r} anyway -- something else switched the goal source. "
+            f"Refusing to generate reset states under a goal distribution the launch command did "
+            f"not ask for."
         )
 
     # -- (2) THE HELD-CHECK, wired as terminations.success. Set as a plain instance attribute on

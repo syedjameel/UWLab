@@ -269,6 +269,117 @@ class Ur5eDeltoTableLegOscMixinCfg(Ur5eDeltoOscMixinCfg):
 # reachable AT ALL for this hand is an open physical question, not a hyperparameter.
 
 
+def _apply_partial_assembly_and_goal_toggles(env_cfg) -> None:
+    """PARTIALLY-ASSEMBLED SPAWN, and separately GOAL-AT-SPAWN, opt-in via the environment (bead
+    UWLab-qiao.2/.6/.9). Two INDEPENDENT toggles, because C3's box measurement showed the height
+    floor a policy converges to is set by the GOAL command's range, not the spawn distribution --
+    ``DEXLIFT_SPAWN_CLEARANCE`` alone (leg spawns 1-40 cm above the table) did not move the accepted
+    height distribution at all; it tracked ``commands.object_pose.ranges.pos_z`` exactly. Pinning
+    the goal to the spawn pose (this bead's original Y3, ``GoalAtSpawnPoseCommand``) removes the
+    incentive to lift at all, forcing an in-place grasp instead -- ``contacts()`` still gates
+    ``success_reward`` and ``rewards.position_tracking`` (``dexlift/mdp/rewards.py:113-165``), so
+    the grasp still has to be real.
+
+    A MODULE-LEVEL FUNCTION, not inline in one class's ``__post_init__``, and called from BOTH the
+    TRAIN and the PLAY Reorient-table-leg classes (bead UWLab-qiao.9/J) -- exactly the pattern
+    ``_apply_pose_tilt_stage`` above already uses for ``DEXLIFT_POSE_TILT``/``DEXLIFT_DROP_Z``, and
+    the ONLY reason it works for those and briefly did not for this: those are called from
+    ``Ur5eDeltoMixinCfg.__post_init__`` in ``dexlift_ur5e_delto_env_cfg.py``, the SHARED base every
+    task family's MRO passes through (train AND ``_PLAY``, Lift AND Reorient, RelJointPos AND OSC)
+    -- so a single call site there reaches every id. This toggle pair is Reorient-table-leg-specific
+    and has no such shared base to hang off; ``DexLiftUR5eDeltoRelJointPosTableLegReorientEnvCfg``
+    and its ``_PLAY`` sibling are NOT in an inheritance relationship with each other (both are built
+    fresh from ``Ur5eDeltoTableLegRelJointPosMixinCfg`` + a *different* dexsuite base --
+    ``DexsuiteReorientEnvCfg`` vs ``DexsuiteReorientEnvCfg_PLAY``), so a block written directly into
+    one class's ``__post_init__`` is invisible to the other's MRO -- confirmed on the box: the
+    sixth ``[verify]`` line reported ``reset_root_state_uniform`` under a Play-id run with
+    ``DEXLIFT_PARTIAL_ASSEMBLY=1`` exported, run killed 20s in before any GPU time was spent on it.
+
+    MECHANISM CHOSEN OVER THE ALTERNATIVES, and why. A shared MIXIN class (both Reorient classes
+    inheriting one small ``Ur5eDeltoTableLegReorientPartialAssemblyMixinCfg`` ahead of
+    ``Ur5eDeltoTableLegRelJointPosMixinCfg`` in their bases) would also work, but adds a THIRD base
+    to reason about the MRO of, for a toggle that is pure ``__post_init__`` behaviour with no fields
+    of its own -- a plain function call is the same fix with no linearization to get right. Making
+    ``_PLAY`` inherit from the TRAIN class directly was explicitly ruled out: ``dexsuite``'s
+    ``*_PLAY`` bases are near-certain to differ in env count, episode length or randomization
+    (mirroring every other ``_PLAY`` sibling in this file, e.g. ``DexLiftUR5eDeltoRelJointPos
+    TableLegLiftEnvCfg_PLAY`` is its own sibling of the Lift train class, not a subclass of it), and
+    routing Play's construction through the Train class's MRO risks silently picking up whatever
+    those differences are.
+
+    LIFT IS STILL EXCLUDED BY CONSTRUCTION: this function is called from exactly two ``__post_init__``
+    methods, both on Reorient classes, in this same module. Nothing calls it from either
+    ``DexLiftUR5eDeltoRelJointPosTableLegLiftEnvCfg`` or its ``_PLAY`` sibling -- on Lift, ``rot_std``
+    is forced ``None``, which makes ``success_reward`` return before its contact gate, so goal-at-
+    spawn there would pay an idle policy. The OSC Reorient variants
+    (``DexLiftUR5eDeltoOscTableLegReorientEnvCfg{,_PLAY}``) are ALSO not wired to this function --
+    out of scope for this bead (target task was RelJointPos only) and left that way deliberately, not
+    silently: see the audit table in this bead's chat log for the full toggle-by-toggle reachability
+    accounting.
+
+    DEFAULT PATH IS BYTE-IDENTICAL WHEN BOTH ENV VARS ARE UNSET: nothing below runs unless one of the
+    two is "1", matching the ``DEXLIFT_REF_RESET`` / ``DEXLIFT_SPAWN_CLEARANCE`` idiom this mirrors.
+    """
+    partial_assembly = os.environ.get("DEXLIFT_PARTIAL_ASSEMBLY") == "1"
+    goal_at_spawn = partial_assembly or os.environ.get("DEXLIFT_GOAL_AT_SPAWN") == "1"
+    spawn_clearance = os.environ.get("DEXLIFT_SPAWN_CLEARANCE") == "1"
+
+    if partial_assembly:
+        # -- Y1: the fixture. Never present in this scene before this toggle.
+        env_cfg.scene.receptive_object = mdp.make_dexlift_receptive_object_cfg()
+
+        # -- Y2: ONE event places the fixture, then composes+places the leg against it, in that
+        # order, inside one Python call -- see partial_assembly.py's docstring for why two
+        # separate EventTerms would race. REPLACES (does not add to) whatever ``reset_object``
+        # currently is -- including a ``DEXLIFT_SPAWN_CLEARANCE=1`` assignment from earlier in
+        # this same ``__post_init__`` chain, if that was also set: the fixture-composed pose is
+        # the intended source of truth for this pairing and wins over a free-scatter clearance
+        # spawn, not merged with it.
+        env_cfg.events.reset_object = EventTerm(
+            func=mdp.SpawnPartialAssembly,
+            mode="reset",
+            params={
+                "dataset_dir": mdp.DEXLIFT_PARTIAL_ASSEMBLY_DATASET_DIR,
+                "insertive_object_cfg": SceneEntityCfg("object"),
+                "receptive_object_cfg": SceneEntityCfg("receptive_object"),
+                "fixture_pose_range": mdp.RECEPTIVE_POSE_RANGE,
+                # No extra jitter on top of the stored partial-assembly relative pose -- the
+                # leg spawns exactly where a recorded partial-assembly sample puts it.
+                "pose_range_b": {},
+            },
+        )
+
+    if goal_at_spawn:
+        # -- Y3: the goal is the object's own spawn pose, not a fresh uniform draw. MUST be a
+        # command SUBCLASS -- see partial_assembly.py's docstring, "Y3" section: an event term
+        # cannot do this, because CommandManager.reset() always resamples afterward, in the same
+        # reset call, regardless of resampling_time_range. Independent of ``partial_assembly``:
+        # this block is reached whenever EITHER toggle asks for it.
+        env_cfg.commands.object_pose = mdp.upgrade_to_goal_at_spawn(env_cfg.commands.object_pose)
+
+        # -- G3: name every toggle that is live and where the goal is coming from, so a
+        # generation log states the configuration rather than leaving it to be inferred. A
+        # silently-unset toggle here is a plausible wrong number, not an obvious one.
+        reset_object_source = (
+            "SpawnPartialAssembly (partial_assemblies.pt)" if partial_assembly
+            else "reset_object_pose_with_clearance (DEXLIFT_SPAWN_CLEARANCE=1)" if spawn_clearance
+            else "reset_root_state_uniform (dexsuite default pose_range)"
+        )
+        print(
+            f"[dexlift] DEXLIFT_PARTIAL_ASSEMBLY={int(partial_assembly)}"
+            f" DEXLIFT_GOAL_AT_SPAWN={int(goal_at_spawn)}"
+            f" DEXLIFT_SPAWN_CLEARANCE={int(spawn_clearance)}:"
+            f" receptive_object {'ADDED' if partial_assembly else 'absent'}"
+            + (
+                f" at x={mdp.RECEPTIVE_POSE_RANGE['x']} y={mdp.RECEPTIVE_POSE_RANGE['y']}"
+                f" z={mdp.RECEPTIVE_POSE_RANGE['z'][0]}"
+                if partial_assembly else ""
+            )
+            + f"; reset_object -> {reset_object_source};"
+            " goal SOURCE = object spawn pose (pinned, not uniform-sampled)", flush=True,
+        )
+
+
 @configclass
 class DexLiftUR5eDeltoRelJointPosTableLegLiftEnvCfg(Ur5eDeltoTableLegRelJointPosMixinCfg, dexsuite.DexsuiteLiftEnvCfg):
     pass
@@ -295,72 +406,27 @@ class DexLiftUR5eDeltoOscTableLegLiftEnvCfg_PLAY(Ur5eDeltoTableLegOscMixinCfg, d
 class DexLiftUR5eDeltoRelJointPosTableLegReorientEnvCfg(
     Ur5eDeltoTableLegRelJointPosMixinCfg, dexsuite.DexsuiteReorientEnvCfg
 ):
-    # -- PARTIALLY-ASSEMBLED SPAWN + GOAL-AT-SPAWN, opt-in via the environment (bead
-    # UWLab-qiao.2/.6): "spawn partially assembled configuration, with table itself and table leg
-    # partially screwed. Pose goal is set exactly where table leg spawns. The idea policy just
-    # needs to grasp it" (user's words). Set ``DEXLIFT_PARTIAL_ASSEMBLY=1`` to spawn a receptive
-    # fixture, spawn the leg partially screwed into it (reusing the 525 poses already collected in
-    # ``partial_assemblies.pt`` for this exact pair), and pin the pose goal to the leg's own spawn
-    # pose. See ``dexlift.mdp.partial_assembly``'s module docstring for the full Y1/Y2/Y3 argument
-    # (where the fixture sits and why, why the fixture-placement + leg-composition is one event
-    # term and not two, and why the goal has to be a command subclass rather than an event).
-    #
-    # THIS TASK ONLY, NOT LIFT -- this override lives on the Reorient env class specifically and
-    # nothing above it in the MRO is touched, so Lift cannot see this toggle even if the same env
-    # var were set for a Lift run. See partial_assembly.py's docstring for why that separation
-    # matters: on Lift, ``rot_std`` is forced ``None``, which makes ``success_reward`` return before
-    # its contact gate, so an idle policy would collect reward the instant ``goal == spawn`` with no
-    # grasp required. Reorient's ``success_reward`` and ``rewards.position_tracking`` are both
-    # multiplied by ``contacts()`` (``dexlift/mdp/rewards.py:113-165``), which is what actually
-    # enforces "the policy just needs to grasp it".
-    #
-    # DEFAULT PATH IS BYTE-IDENTICAL WHEN THIS IS UNSET: nothing below runs unless the env var is
-    # "1", matching the ``DEXLIFT_REF_RESET`` / ``DEXLIFT_SPAWN_CLEARANCE`` idiom this mirrors.
+    # -- PARTIALLY-ASSEMBLED SPAWN / GOAL-AT-SPAWN toggles: see
+    # ``_apply_partial_assembly_and_goal_toggles``'s docstring above for the full argument (why two
+    # independent toggles, why a shared function rather than inline code, why Lift is excluded).
+    # Called from BOTH this class and its ``_PLAY`` sibling below -- they are NOT in an inheritance
+    # relationship with each other, so the call has to be written twice, once per class, or Play
+    # never sees it (bead UWLab-qiao.9/J -- this is precisely the bug being fixed here).
     def __post_init__(self):
         super().__post_init__()
-
-        if os.environ.get("DEXLIFT_PARTIAL_ASSEMBLY") == "1":
-            # -- Y1: the fixture. Never present in this scene before this toggle.
-            self.scene.receptive_object = mdp.make_dexlift_receptive_object_cfg()
-
-            # -- Y2: ONE event places the fixture, then composes+places the leg against it, in that
-            # order, inside one Python call -- see partial_assembly.py's docstring for why two
-            # separate EventTerms would race. REPLACES (does not add to) the inherited free-scatter
-            # ``reset_object``: the leg's spawn is now entirely the partial-assembly pose, not the
-            # old uniform pose_range.
-            self.events.reset_object = EventTerm(
-                func=mdp.SpawnPartialAssembly,
-                mode="reset",
-                params={
-                    "dataset_dir": mdp.DEXLIFT_PARTIAL_ASSEMBLY_DATASET_DIR,
-                    "insertive_object_cfg": SceneEntityCfg("object"),
-                    "receptive_object_cfg": SceneEntityCfg("receptive_object"),
-                    "fixture_pose_range": mdp.RECEPTIVE_POSE_RANGE,
-                    # No extra jitter on top of the stored partial-assembly relative pose -- the
-                    # leg spawns exactly where a recorded partial-assembly sample puts it.
-                    "pose_range_b": {},
-                },
-            )
-
-            # -- Y3: the goal is the object's own spawn pose, not a fresh uniform draw. MUST be a
-            # command SUBCLASS -- see partial_assembly.py's docstring, "Y3" section: an event term
-            # cannot do this, because CommandManager.reset() always resamples afterward, in the same
-            # reset call, regardless of resampling_time_range.
-            self.commands.object_pose = mdp.upgrade_to_goal_at_spawn(self.commands.object_pose)
-
-            print(
-                "[dexlift] DEXLIFT_PARTIAL_ASSEMBLY=1: receptive_object added at"
-                f" x={mdp.RECEPTIVE_POSE_RANGE['x']} y={mdp.RECEPTIVE_POSE_RANGE['y']}"
-                f" z={mdp.RECEPTIVE_POSE_RANGE['z'][0]}; reset_object -> SpawnPartialAssembly"
-                " (partial_assemblies.pt); goal pinned to leg spawn pose", flush=True,
-            )
+        _apply_partial_assembly_and_goal_toggles(self)
 
 
 @configclass
 class DexLiftUR5eDeltoRelJointPosTableLegReorientEnvCfg_PLAY(
     Ur5eDeltoTableLegRelJointPosMixinCfg, dexsuite.DexsuiteReorientEnvCfg_PLAY
 ):
-    pass
+    # -- Same toggles as the train class above, same reason, same function -- see its docstring.
+    # This class does NOT inherit from ``DexLiftUR5eDeltoRelJointPosTableLegReorientEnvCfg``, so the
+    # call above does not reach here on its own; it has to be repeated.
+    def __post_init__(self):
+        super().__post_init__()
+        _apply_partial_assembly_and_goal_toggles(self)
 
 
 @configclass
