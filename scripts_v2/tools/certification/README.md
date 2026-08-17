@@ -26,6 +26,7 @@ not the Stage-2 lift `pass@30mm 0.9219`, not the Stage-3 pose `pass@30mm 0.6953`
 | `checkrew.py`, `extract_ft_metrics.py` | reward / metric readers over training logs |
 | `closure_test.py` | measures reachable finger curl; **drive only the flexion joints** — driving the `_1` spread joints splays the fingers into each other, which inflated a measured cost 5x and flipped a shipping decision |
 | `cert_ft.sh` | 2026-08-17. Certifies the goal-at-spawn finetune against the base reorient task, with its parent re-certified in the same batch as an in-batch control |
+| `launch_task.sh` | the training launcher `RECIPE.md` calls. Same four plant axes as `run_certify.sh` and the same assertion block, generalized over the task id. Carries the minibatch rule: `updates/epoch = 5 * N * 36 / minibatch`, and the certified run does 20, so `minibatch = 9 * N` (2048→18432, 4096→36864, 8192→73728) |
 
 ## The two things that make a certified number mean anything
 
@@ -51,10 +52,22 @@ the unclamped 0.4 m drop under a bare `TILT=` scores it on a task it never saw.
 * **Reproducibility is ±2 points at 10 mm and ±3.5 at 30 mm** across bitwise-identical replays —
   roughly three episodes in 128 sitting on a decision boundary. Treat anything smaller as no
   difference, and prefer an in-batch control over comparing to a stored number.
-* **`launch_task.sh` does not exist.** `docs/dexlift_ur5e_delto_RECIPE.md` calls both it and
-  `run_certify.sh` in its code blocks. Only `run_certify.sh` was ever found, and it is now here;
-  the training-launch half of that recipe is still unreproducible and the recipe's commands cannot
-  be run as written.
+* **Minibatch must scale with `num_envs`.** `updates/epoch = mini_epochs * N * horizon / minibatch`.
+  The certified run does 20, so `minibatch = 9 * N`. Changing `num_envs` without changing
+  `minibatch` changes the update rate, and divisibility is not sufficiency: a run at 2048 envs
+  against minibatch 36864 divides cleanly and still does *half* the certified optimizer steps.
+  Two runs in this project differed only there, and the one doing 10 updates/epoch sat flat for
+  1200 epochs while the one doing 20 climbed.
+
+## A correction, recorded rather than quietly fixed
+
+The first version of this README stated that `launch_task.sh` "does not exist anywhere, local or
+remote", so the training-launch half of `RECIPE.md` was unreproducible. **That was wrong.** It sits
+at `/home/dom_iva/launch_task.sh` on DL_A6000 and is now vendored here alongside the rest. The claim
+came from a stored note rather than from looking, and the check that would have falsified it — one
+`ls` — is the same check that found it a minute later. Both halves of `RECIPE.md`'s commands are
+therefore recoverable, though their absolute paths remain unverified against a fresh checkout like
+everything else here.
 
 ## Provenance
 
