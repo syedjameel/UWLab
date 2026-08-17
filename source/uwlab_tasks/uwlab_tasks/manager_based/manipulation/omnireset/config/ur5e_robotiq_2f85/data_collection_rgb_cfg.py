@@ -22,7 +22,12 @@ from uwlab_assets import UWLAB_CLOUD_ASSETS_DIR
 
 from ... import mdp as task_mdp
 from .actions import Ur5eRobotiq2f85RelativeOSCEvalAction
-from .rl_state_cfg import FinetuneEvalEventCfg, RlStateSceneCfg, Ur5eRobotiq2f85RlStateCfg
+from .rl_state_cfg import (
+    RL_STATE_ASSUMED_STATIC_ASSETS,
+    FinetuneEvalEventCfg,
+    RlStateSceneCfg,
+    Ur5eRobotiq2f85RlStateCfg,
+)
 
 
 @configclass
@@ -108,6 +113,25 @@ class DataCollectionRGBObjectSceneCfg(RlStateSceneCfg):
         data_types=["rgb"],
         spawn=sim_utils.PinholeCameraCfg(focal_length=24.55),
     )
+
+
+# Rigid bodies in DataCollectionRGBObjectSceneCfg (above) whose own init_state is a real,
+# permanent, authored pose -- so MultiResetManager's coverage guard (omnireset/mdp/events.py,
+# _assert_reset_file_covers_scene) may silently skip them when a reset-state file omits them. See
+# that guard's own comment for why this must be an explicit claim, never inferred from
+# kinematic_enabled.
+#   - "table" / "ur5_metal_support": inherited unchanged from RlStateSceneCfg -- same authored
+#     poses documented at rl_state_cfg.py:79-86 / :91-98 (RL_STATE_ASSUMED_STATIC_ASSETS).
+#   - "curtain_left" / "curtain_back" / "curtain_right": fixed black backdrop cuboids for camera
+#     framing, defined above (:31-68) with explicit init_state; the randomize_curtain_*_appearance
+#     events below (OODRGBEventCfg) only randomize their TEXTURE on an interval, never their pose.
+# "receptive_object" is deliberately NOT in this list, for the same reason it is excluded in
+# rl_state_cfg.py: it is kinematic, but its init_state is a placeholder, not an authored pose.
+DATA_COLLECTION_RGB_ASSUMED_STATIC_ASSETS = RL_STATE_ASSUMED_STATIC_ASSETS + [
+    "curtain_left",
+    "curtain_back",
+    "curtain_right",
+]
 
 
 @configclass
@@ -364,6 +388,7 @@ class RGBEventCfg(BaseRGBEventCfg):
             "reset_types": ["ObjectAnywhereEEAnywhere"],
             "probs": [1.0],
             "success": "env.reward_manager.get_term_cfg('progress_context').func.success",
+            "assumed_static_assets": DATA_COLLECTION_RGB_ASSUMED_STATIC_ASSETS,
         },
     )
 
@@ -385,6 +410,7 @@ class DataCollectionRGBEventCfg(RGBEventCfg):
             ],
             "probs": [0.25, 0.25, 0.25, 0.25],
             "success": "env.reward_manager.get_term_cfg('progress_context').func.success",
+            "assumed_static_assets": DATA_COLLECTION_RGB_ASSUMED_STATIC_ASSETS,
         },
     )
 
@@ -798,6 +824,7 @@ class OODRGBEventCfg(BaseRGBEventCfg):
             "reset_types": ["ObjectAnywhereEEAnywhere"],
             "probs": [1.0],
             "success": "env.reward_manager.get_term_cfg('progress_context').func.success",
+            "assumed_static_assets": DATA_COLLECTION_RGB_ASSUMED_STATIC_ASSETS,
         },
     )
 
@@ -819,6 +846,7 @@ class DataCollectionOODRGBEventCfg(OODRGBEventCfg):
             ],
             "probs": [0.25, 0.25, 0.25, 0.25],
             "success": "env.reward_manager.get_term_cfg('progress_context').func.success",
+            "assumed_static_assets": DATA_COLLECTION_RGB_ASSUMED_STATIC_ASSETS,
         },
     )
 

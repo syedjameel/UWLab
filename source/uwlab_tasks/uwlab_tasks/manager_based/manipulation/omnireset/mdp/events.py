@@ -11,6 +11,7 @@ import numpy as np
 import os
 import random
 import scipy.stats as stats
+import time
 import torch
 import trimesh
 import trimesh.transformations as tra
@@ -94,9 +95,39 @@ class grasp_sampling_event(ManagerTermBase):
         # perpendicular to its closing axis (our linear gripper), which the antipodal sampler can
         # only orient side-on. Roll/pitch tilt magnitude (deg) is grasp_topdown_roll_pitch_deg.
         self.grasp_sample_mode = metadata.get("grasp_sample_mode", "antipodal")
-        self.topdown_roll_pitch_deg = float(metadata.get("grasp_topdown_roll_pitch_deg", 6.0))
-        self.topdown_position_fraction = float(metadata.get("grasp_topdown_position_fraction", 0.3))
-        self.topdown_height_fraction = float(metadata.get("grasp_topdown_height_fraction", 0.2))
+        # cfg.params, when the calling EventTermCfg sets these keys (per-object-variant, e.g.
+        # DeltoGraspSamplingCfg, or a Hydra override on env.events.grasp_sampling.params.<key>),
+        # take precedence over the gripper-level metadata.yaml default below. metadata.yaml is
+        # keyed by the GRIPPER's USD directory and shared by every object that gripper samples
+        # against, so it cannot carry a per-object tuning -- this is the only override path that
+        # can. Falling back to the same metadata.get(...) default when cfg.params doesn't set the
+        # key keeps every gripper that doesn't opt in byte-for-byte.
+        self.topdown_roll_pitch_deg = float(
+            cfg.params.get("grasp_topdown_roll_pitch_deg", metadata.get("grasp_topdown_roll_pitch_deg", 6.0))
+        )
+        self.topdown_position_fraction = float(
+            cfg.params.get("grasp_topdown_position_fraction", metadata.get("grasp_topdown_position_fraction", 0.3))
+        )
+        self.topdown_height_fraction = float(
+            cfg.params.get("grasp_topdown_height_fraction", metadata.get("grasp_topdown_height_fraction", 0.2))
+        )
+        # Yaw sweep about the approach axis, decoupled from the roll/pitch wobble above.
+        # grasp_topdown_roll_pitch_deg's dyaw/roll/pitch all share one scalar (rp) -- fine for small
+        # corner-alignment wobble on box-like objects, but a long prismatic object (e.g. leg200mm)
+        # needs dyaw to sweep tens of degrees to rotate the finger fan off the object's long axis,
+        # and doing that via topdown_roll_pitch_deg would also blow roll/pitch open by the same
+        # amount, breaking the "approach points straight down" assumption the sampler depends on.
+        # NOT hardcoded to 0.0: falls back to self.topdown_roll_pitch_deg (just resolved above), the
+        # SAME value dyaw always drew from before this knob existed. LinearGripper/metadata.yaml
+        # sets grasp_topdown_roll_pitch_deg=6.0 and documents that as covering yaw wobble too
+        # ("+/-6 deg roll/pitch/yaw wobble") -- a hardcoded-0.0 default would silently zero that
+        # gripper's yaw sweep, which is not "every existing gripper unchanged". Only a caller that
+        # explicitly sets grasp_topdown_yaw_deg (cfg.params or its own metadata.yaml) decouples it;
+        # everyone else keeps drawing dyaw from rp exactly as before. DELTO explicitly sets this key
+        # to 0.0 in DeltoGraspSamplingCfg (matching its own rp=0.0), so it is unchanged either way.
+        self.topdown_yaw_deg = float(
+            cfg.params.get("grasp_topdown_yaw_deg", metadata.get("grasp_topdown_yaw_deg", self.topdown_roll_pitch_deg))
+        )
         self.grasp_center_clearance = float(metadata.get("grasp_center_clearance", self.finger_clearance))
 
         # Store environment reference for later use
@@ -132,6 +163,15 @@ class grasp_sampling_event(ManagerTermBase):
         lateral_sigma: float,
         visualize_grasps: bool = False,
         visualization_scale: float = 0.01,
+        # Unused here, like num_candidates/num_standoff_samples/num_orientations/lateral_sigma
+        # above: the EventManager unpacks the full cfg.params dict as kwargs on every call
+        # (isaaclab EventManager.apply), so once __init__ opts a params dict into these keys they
+        # must appear in this signature too or the call raises TypeError. The effective value was
+        # already resolved once into self.topdown_* in __init__.
+        grasp_topdown_roll_pitch_deg: float = 6.0,
+        grasp_topdown_position_fraction: float = 0.3,
+        grasp_topdown_height_fraction: float = 0.2,
+        grasp_topdown_yaw_deg: float = 0.0,
     ) -> None:
         """Execute grasp sampling event - sample from pre-computed candidates."""
         # Get the gripper into the posture in which candidates will be placed before deriving the
@@ -142,11 +182,31 @@ class grasp_sampling_event(ManagerTermBase):
 
         # Generate grasp candidates if not already done
         if self.grasp_candidates is None:
+            # This whole branch runs exactly ONCE per process, on the very first reset (every env
+            # resets together at that point, so it is also the only point where they are actually
+            # synchronized -- see record_grasps.py's instrumentation comment for why later resets
+            # are not). It happens BEFORE record_grasps.py's rollout loop ever starts, so a stall
+            # here is invisible to that loop's own prints -- bracket it here instead (bead
+            # UWLab-z9j.11 follow-on: distinguishing "hung" from "just slow" for the grasp sampler).
+            generation_start = time.time()
+            print(f"[grasp sampler] {time.strftime('%H:%M:%S')} candidate generation START", flush=True)
             candidates_list = self._generate_grasp_candidates()
             candidates = torch.stack(
                 [torch.tensor(candidate, dtype=torch.float32, device=env.device) for candidate in candidates_list]
             )
+            print(
+                f"[grasp sampler] {time.strftime('%H:%M:%S')} candidate generation END "
+                f"({len(candidates_list)} raw candidates, {time.time() - generation_start:.1f}s); "
+                f"placement collision gate START",
+                flush=True,
+            )
+            gate_start = time.time()
             self.grasp_candidates = self._filter_placement_collisions(candidates, gripper_asset, int(env_ids[0].item()))
+            print(
+                f"[grasp sampler] {time.strftime('%H:%M:%S')} placement collision gate END "
+                f"({time.time() - gate_start:.1f}s)",
+                flush=True,
+            )
 
             # Visualize grasp poses if requested
             if self.visualize_grasps:
@@ -277,6 +337,10 @@ class grasp_sampling_event(ManagerTermBase):
         first_rejections: dict[str, int] = {}
         body_intersections: dict[str, int] = {}
         deepest_distance = float("inf")
+        deepest_body: str | None = None
+        deepest_candidate_index: int | None = None
+        example_rejections: list[dict] = []
+        _MAX_EXAMPLES_PER_BODY = 3
 
         for body_index, body_name in enumerate(body_names):
             points_body = self._placement_body_points[body_name]
@@ -290,6 +354,7 @@ class grasp_sampling_event(ManagerTermBase):
             )
 
             body_hits = torch.zeros(len(candidates), dtype=torch.bool, device=self._env.device)
+            body_min_distance = torch.full((len(candidates),), float("inf"), device=self._env.device)
             for start in range(0, len(candidates), self._PLACEMENT_QUERY_CHUNK):
                 stop = min(start + self._PLACEMENT_QUERY_CHUNK, len(candidates))
                 candidate_chunk = candidates[start:stop]
@@ -300,17 +365,38 @@ class grasp_sampling_event(ManagerTermBase):
                 signed_distances = self._query_object_signed_distance(points_object)
                 minimum_distance = signed_distances.amin(dim=1)
                 body_hits[start:stop] = minimum_distance < self._PLACEMENT_TOLERANCE
-                deepest_distance = min(deepest_distance, float(minimum_distance.amin().item()))
+                body_min_distance[start:stop] = minimum_distance
+                chunk_min_value, chunk_min_local_index = minimum_distance.min(dim=0)
+                chunk_min_value = float(chunk_min_value.item())
+                if chunk_min_value < deepest_distance:
+                    deepest_distance = chunk_min_value
+                    deepest_body = body_name
+                    deepest_candidate_index = start + int(chunk_min_local_index.item())
 
             first_hit = surviving & body_hits
             first_rejections[body_name] = int(first_hit.sum().item())
             body_intersections[body_name] = int(body_hits.sum().item())
+
+            example_indices = torch.nonzero(first_hit, as_tuple=False).flatten()[:_MAX_EXAMPLES_PER_BODY]
+            for candidate_index_tensor in example_indices:
+                candidate_index = int(candidate_index_tensor.item())
+                pose = candidates[candidate_index]
+                position_relative_to_object = pose[:3, 3].tolist()
+                quaternion_relative_to_object = math_utils.quat_from_matrix(pose[:3, :3]).tolist()
+                example_rejections.append(
+                    {
+                        "candidate_index": candidate_index,
+                        "body": body_name,
+                        "distance": float(body_min_distance[candidate_index].item()),
+                        "position_relative_to_object": position_relative_to_object,
+                        "quaternion_relative_to_object": quaternion_relative_to_object,
+                    }
+                )
+
             surviving &= ~body_hits
 
         rejected = int((~surviving).sum().item())
         kept = int(surviving.sum().item())
-        if kept == 0:
-            raise RuntimeError(f"placement collision gate rejected all {len(candidates)} grasp candidates")
 
         self.placement_collision_stats = {
             "total": len(candidates),
@@ -318,14 +404,20 @@ class grasp_sampling_event(ManagerTermBase):
             "surviving": kept,
             "tolerance": self._PLACEMENT_TOLERANCE,
             "deepest_distance": deepest_distance,
+            "deepest_body": deepest_body,
+            "deepest_candidate_index": deepest_candidate_index,
             "first_rejections": first_rejections,
             "body_intersections": body_intersections,
             "points_per_body": {body_name: len(self._placement_body_points[body_name]) for body_name in body_names},
+            "example_rejections": example_rejections,
         }
+        # Printed unconditionally (before the all-rejected raise below) so this diagnostic is
+        # never skipped in exactly the failure case it exists to explain.
         print(
             f"[grasp sampler] placement collision gate rejected {rejected}/{len(candidates)} "
             f"({100.0 * rejected / len(candidates):.1f}%); kept {kept}; tolerance "
-            f"{self._PLACEMENT_TOLERANCE:.4f} m; deepest {deepest_distance * 1000.0:.2f} mm"
+            f"{self._PLACEMENT_TOLERANCE:.4f} m; deepest {deepest_distance * 1000.0:.2f} mm "
+            f"(body={deepest_body}, candidate_index={deepest_candidate_index})"
         )
         for body_name in body_names:
             print(
@@ -333,6 +425,19 @@ class grasp_sampling_event(ManagerTermBase):
                 f"{first_rejections[body_name]}, all_intersections={body_intersections[body_name]}, "
                 f"points={len(self._placement_body_points[body_name])}"
             )
+        if example_rejections:
+            print(f"[grasp sampler] placement collision examples (up to {_MAX_EXAMPLES_PER_BODY} per body):")
+            for example in example_rejections:
+                print(
+                    f"[grasp sampler]   candidate={example['candidate_index']} body={example['body']} "
+                    f"distance={example['distance'] * 1000.0:.2f} mm "
+                    f"position_rel_object={example['position_relative_to_object']} "
+                    f"quat_rel_object={example['quaternion_relative_to_object']}"
+                )
+
+        if kept == 0:
+            raise RuntimeError(f"placement collision gate rejected all {len(candidates)} grasp candidates")
+
         return candidates[surviving]
 
     def _generate_grasp_candidates(self):
@@ -392,6 +497,7 @@ class grasp_sampling_event(ManagerTermBase):
             center_offsets = [self.grasp_center_offset + approach * value for value in clearance_offsets]
             standoffs = [float(offset @ approach) for offset in center_offsets]
         rp = np.radians(self.topdown_roll_pitch_deg)
+        yaw_amp = np.radians(self.topdown_yaw_deg)
 
         # Face-aligned closing directions: the object-FRAME horizontal axes X and Y (valid because
         # the task objects are modeled upright, so object X/Y are horizontal and Z is vertical).
@@ -406,7 +512,13 @@ class grasp_sampling_event(ManagerTermBase):
                 continue  # object too wide to grip flush on this face pair
             target_theta = 0.0 if close_idx == 0 else np.pi / 2.0  # align closing axis to object X or Y
             for _ in range(num_orient):
-                dyaw = np.random.uniform(-rp, rp)  # small yaw wobble around the face-aligned azimuth
+                # dyaw's range is yaw_amp (grasp_topdown_yaw_deg), NOT rp: yaw needs to sweep far
+                # wider than the roll/pitch wobble for an elongated object (tens of degrees, up to
+                # the full +/-90 the face-aligned azimuth allows), while roll/pitch must stay small
+                # so the approach axis keeps pointing straight down. yaw_amp falls back to rp (see
+                # __init__) when grasp_topdown_yaw_deg isn't set, so every gripper that predates this
+                # knob draws dyaw exactly as it always did; only an explicit override decouples it.
+                dyaw = np.random.uniform(-yaw_amp, yaw_amp)  # yaw sweep around the face-aligned azimuth
                 roll = np.random.uniform(-rp, rp)
                 pitch = np.random.uniform(-rp, rp)
                 R = (
@@ -458,7 +570,7 @@ class grasp_sampling_event(ManagerTermBase):
 
         from pxr import Usd
 
-        for child in Usd.PrimRange(prim):
+        for child in Usd.PrimRange(prim, Usd.TraverseInstanceProxies()):
             if child.IsA(UsdGeom.Mesh):
                 return UsdGeom.Mesh(child)
         return None
@@ -787,6 +899,25 @@ class global_physics_control_event(ManagerTermBase):
         )
         self.force_torque_asset_cfgs = cfg.params.get("force_torque_asset_cfgs", [])
         self.force_torque_magnitude = cfg.params.get("force_torque_magnitude", 0.005)
+        # If True, ``force_torque_magnitude`` is a target linear ACCELERATION (m/s^2): the applied
+        # force = accel * body_mass (torque = accel * mass * small lever). This keeps the grasp-sampling
+        # perturbation a CONSTANT disturbance-acceleration regardless of object mass -- a fixed force
+        # (0.01 N) is 10 m/s^2 on a 1 g part but a negligible 0.2 m/s^2 on a realistic 45 g part, so
+        # heavy parts stop being shaken and weak/edge grasps survive. Scaling re-arms the test.
+        #
+        # RESTORED, not new: this flag existed once (commit a589120, 2026-06-21, "grasp quality (WIP):
+        # mass-scaled sampling shake"), was later deleted from the tree along with the rest of that
+        # WIP commit, and the base default reverted to flat 0.01 N. Reimplemented here to MATCH that
+        # commit exactly (including its 0.02 lever-arm constant, which is crude but validated -- kept
+        # rather than redesigned; see bead UWLab-z9j.11 follow-on). This is a change to a VALIDATION
+        # TEST, not a training reward or threshold, and must not be tuned to make grasps pass: the flat
+        # 0.01 N was never a calibrated grasp-quality bar, just a constant that happened to be
+        # negligible in the linear channel (0.01 N against a ~0.3 N object weight) and catastrophic in
+        # the rotational one for a small light object (0.01 N*m against a 30 g cube's ~5.8e-6 kg*m^2
+        # inertia is ~1730 rad/s^2 of angular acceleration) -- an accident of scale, not a bar anyone
+        # set deliberately. Scaling by mass applies comparable stress across objects of different sizes,
+        # which the flat value provably does not; that is a MORE meaningful validation, not a laxer one.
+        self.force_torque_scale_by_mass = cfg.params.get("force_torque_scale_by_mass", False)
         self.physics_sim_view = sim_utils.SimulationContext.instance().physics_sim_view
 
     def reset(self, env_ids: torch.Tensor | None = None) -> None:
@@ -802,6 +933,7 @@ class global_physics_control_event(ManagerTermBase):
         force_torque_on_interval: tuple[float, float],
         force_torque_asset_cfgs: list[SceneEntityCfg],
         force_torque_magnitude: float,
+        force_torque_scale_by_mass: bool = False,
     ) -> None:
         """Control global gravity based on timesteps since reset."""
         should_enable_gravity = (
@@ -836,13 +968,25 @@ class global_physics_control_event(ManagerTermBase):
                 size = (len(env_ids), num_bodies, 3)
                 force_directions = torch.randn(size, device=asset.device)
                 force_directions = force_directions / torch.norm(force_directions, dim=-1, keepdim=True)
-                forces = force_directions * self.force_torque_magnitude
 
                 # Generate independent random torques (pure rotational moments)
                 # These represent direct angular impulses rather than forces at lever arms
                 torque_directions = torch.randn(size, device=asset.device)
                 torque_directions = torque_directions / torch.norm(torque_directions, dim=-1, keepdim=True)
-                torques = torque_directions * self.force_torque_magnitude
+
+                if self.force_torque_scale_by_mass:
+                    # force = accel * mass; torque = accel * mass * small lever (keeps rotational
+                    # disturbance modest so heavy/flat parts are tugged, not spun out).
+                    masses = asset.data.default_mass.to(asset.device)  # (num_instances, num_bodies)
+                    m = masses[env_ids]
+                    if isinstance(asset_cfg.body_ids, list):
+                        m = m[:, asset_cfg.body_ids]
+                    m = m.unsqueeze(-1)  # (len(env_ids), num_bodies, 1)
+                    forces = force_directions * (self.force_torque_magnitude * m)
+                    torques = torque_directions * (self.force_torque_magnitude * m * 0.02)
+                else:
+                    forces = force_directions * self.force_torque_magnitude
+                    torques = torque_directions * self.force_torque_magnitude
 
                 # set the forces and torques into the buffers
                 # note: these are only applied when you call: `asset.write_data_to_sim()`
@@ -1323,6 +1467,54 @@ class reset_end_effector_from_grasp_dataset(ManagerTermBase):
             env_ids=env_ids,
         )
 
+        # -- RECONCILE THE PD TARGETS to the state just written, for BOTH the arm and the gripper.
+        # apply_actions() (inside the loop above) sets the arm's PD POSITION TARGET to a fresh
+        # one-shot IK solution every iteration, but the manual loop only ever writes 25% of that gap
+        # to the raw joint POSITION each time -- and the gripper write two lines up has no target
+        # call at all. Left alone, both targets are whatever they were before this reset (the arm at
+        # the last iteration's un-walked-back one-shot solve; the gripper at whatever posture -- the
+        # open default, typically -- a prior term last commanded), while the ACTUAL joint positions
+        # are now the grasp-dataset's replayed values. ManagerBasedEnv.reset() flushes whatever target
+        # is buffered here to the simulation via scene.write_data_to_sim() right after every reset-mode
+        # event (including this one) finishes -- so a stale target does not sit inert, it reaches
+        # PhysX and the actuator drives toward it on the very first physics step.
+        #
+        # Measured, not assumed (scripts_v2/tools/diagnose_grasp_dataset_reset_velocity.py, bead:
+        # RestingEEGrasped velocity-explosion, 2026-08-17): the GRIPPER gap is large and UNIVERSAL --
+        # median ~11 rad summed across the 20 DELTO joints, present in every single reset measured,
+        # not a tail. The arm's own gap is much smaller and present only in a minority of envs. The
+        # robot's and the object's post-reset one-step velocities co-occur (Pearson ~0.5-0.6, 1024
+        # envs) -- the signature of a contact event (an uncommanded gripper motion catching an
+        # object already positioned inside it), not a smooth arm-only PD overshoot. Neither gap's
+        # raw MAGNITUDE cleanly predicts which envs get the worst velocity spike (correlations near
+        # zero) -- consistent with a nonlinear, contact-geometry-dependent threshold effect: the same
+        # near-constant disturbance every time, catastrophic only when the fingers happen to be
+        # already touching the object along a bad direction.
+        #
+        # Mirrors MultiResetManager._reset_to's own pattern (events.py, same FIXME-flagged
+        # PD-controller assumption) rather than inventing a new one. Placed AFTER the limit wrap and
+        # the gripper write, so the target matches the FINAL (post-wrap, post-gripper-write)
+        # positions -- a wrapped or just-written joint must not be immediately driven back out by a
+        # target left over from before either write.
+        self.robot.set_joint_position_target(
+            self.robot.data.joint_pos[env_ids][:, self.joint_ids], joint_ids=self.joint_ids, env_ids=env_ids
+        )
+        self.robot.set_joint_velocity_target(
+            torch.zeros((len(env_ids), self.n_joints), device=env.device), joint_ids=self.joint_ids, env_ids=env_ids
+        )
+        self.robot.set_joint_position_target(
+            sampled_gripper_positions, joint_ids=self.gripper_joint_ids, env_ids=env_ids
+        )
+        self.robot.set_joint_velocity_target(
+            torch.zeros_like(sampled_gripper_positions), joint_ids=self.gripper_joint_ids, env_ids=env_ids
+        )
+        # write_data_to_sim() again propagates these buffered targets immediately -- redundant with
+        # ManagerBasedEnv.reset()'s own post-event flush in the normal env.reset() path, but this
+        # event can also fire via other reset entry points, and MultiResetManager._reset_to's own
+        # explicit call (events.py) is the precedent this mirrors rather than relying on a caller we
+        # do not control.
+        env.scene.write_data_to_sim()
+
 
 class reset_insertive_object_from_partial_assembly_dataset(ManagerTermBase):
     """EventTerm class for resetting the insertive object from a partial assembly dataset."""
@@ -1512,20 +1704,14 @@ class assembly_sampling_event(ManagerTermBase):
         # Apply receptive assembled offset to get target position
         target_pos, target_quat = self.receptive_assembled_offset.combine(receptive_pos, receptive_quat)
 
-        # Handle position and orientation separately
-        # Offset quat is in insertive object's frame: target_quat = insertive_quat * offset_quat
-        offset_quat = (
-            torch.tensor(self.insertive_assembled_offset.quat).to(target_quat.device).repeat(target_quat.shape[0], 1)
-        )
-        insertive_quat = math_utils.quat_mul(target_quat, math_utils.quat_inv(offset_quat))
-
-        # Position offset is in insertive object's frame, but rotated by target_quat to keep it independent of offset_quat
-        # This ensures changing offset_quat doesn't change the position offset direction
-        offset_pos = (
-            torch.tensor(self.insertive_assembled_offset.pos).to(target_pos.device).repeat(target_pos.shape[0], 1)
-        )
-        offset_pos_world = math_utils.quat_apply(target_quat, offset_pos)
-        insertive_pos = target_pos - offset_pos_world
+        # target = insertive_pose o insertive_assembled_offset, so insertive_pose is the inverse
+        # composition: Offset.subtract (assembly_keypoints.py) is that inverse already derived from
+        # combine_frame_transforms -- insertive_quat = target_quat * inv(offset_quat), and
+        # insertive_pos = target_pos - quat_apply(insertive_quat, offset_pos), i.e. offset_pos must
+        # be rotated by the OUTPUT quat, not target_quat. UPSTREAM (fa08722, syedjameel, 2026-07-03)
+        # hand-rolled this and rotated offset_pos by target_quat instead of insertive_quat -- correct
+        # only when offset_quat is identity, off by |offset_pos| * sqrt(2) at a 90 deg offset_quat.
+        insertive_pos, insertive_quat = self.insertive_assembled_offset.subtract(target_pos, target_quat)
 
         # Set insertive object pose
         self.insertive_object.write_root_state_to_sim(
@@ -1534,6 +1720,49 @@ class assembly_sampling_event(ManagerTermBase):
                 dim=-1,
             ),
             env_ids=env_ids,
+        )
+
+
+def _assert_reset_file_covers_scene(
+    dataset_file: str,
+    recorded_rigid_objects: set[str],
+    scene_rigid_objects: dict,
+    assumed_static_assets: set[str],
+) -> None:
+    """Raise if a reset-state file silently drops a rigid_object this scene actually needs placed.
+
+    A missing entry is safe to skip ONLY when the config author has put that name in
+    ``assumed_static_assets`` -- a positive, explicit claim that the asset's own ``init_state`` IS
+    its permanent correct pose. This is deliberately NOT inferred from ``kinematic_enabled``: see
+    the call site in ``MultiResetManager.__init__`` for why that flag cannot distinguish a
+    genuinely-static body (``table``, ``ur5_metal_support``) from a kinematic body whose default
+    pose is a placeholder (``receptive_object``).
+
+    A name declared in ``assumed_static_assets`` is still cross-checked against the scene: if that
+    asset is not actually kinematic, the declaration itself is wrong (a body physics can move
+    cannot be assumed static at its default), so this raises for that too.
+    """
+    for asset_name, rigid_object in scene_rigid_objects.items():
+        if asset_name in recorded_rigid_objects:
+            continue
+        if asset_name in assumed_static_assets:
+            kinematic = getattr(getattr(rigid_object.cfg.spawn, "rigid_props", None), "kinematic_enabled", None)
+            if kinematic is not True:
+                raise ValueError(
+                    f"{asset_name!r} is listed in assumed_static_assets but is not actually kinematic"
+                    f" (kinematic_enabled={kinematic!r}). A body physics can move cannot be assumed"
+                    f" static at its default -- drop it from assumed_static_assets, or make it"
+                    f" kinematic if that is really intended."
+                )
+            continue
+        raise ValueError(
+            f"Reset-state file {dataset_file!r} has no rigid_object entry named {asset_name!r}, and"
+            f" that name is not declared in this event term's assumed_static_assets. A missing"
+            f" rigid_object entry is only ever safe to silently skip when the caller has explicitly"
+            f" claimed this asset's own init_state is its permanent correct pose -- being kinematic is"
+            f" NOT that claim (see this function's docstring). Either re-key this file to include"
+            f" {asset_name!r}, or if its default pose really is always correct, add {asset_name!r} to"
+            f" this event term's assumed_static_assets param."
         )
 
 
@@ -1571,6 +1800,40 @@ class MultiResetManager(ManagerTermBase):
                 raise FileNotFoundError(f"Dataset file {dataset_file} could not be accessed or downloaded.")
 
             dataset = torch.load(local_file_path)
+
+            # -- FAIL LOUDLY if this file is missing a rigid_object the consuming scene has, UNLESS
+            # the caller has explicitly claimed (via ``assumed_static_assets``, below) that the
+            # entity's own ``init_state`` IS its permanent, correct pose. ``_reset_to`` (below)
+            # matches rigid_object entries by NAME and SILENTLY SKIPS anything absent from the
+            # state -- correct only for a body whose default pose is authored and true, and never
+            # correct for one that actually needs placing: left at reset_scene_to_default's spawn
+            # pose while the rest of the SAME recorded state (e.g. the robot's arm+hand) IS
+            # restored, which can silently produce a hand posed as though holding an object that
+            # was never actually moved.
+            #
+            # THIS USED TO EXEMPT ANY KINEMATIC BODY. That was wrong: ``kinematic_enabled`` is a
+            # PhysX flag meaning "no forces are applied to this body" -- it says nothing about
+            # whether the body's default pose is authored or a placeholder. In this task's own
+            # scene, ``table`` and ``ur5_metal_support`` are kinematic AND their ``init_state`` is
+            # the real, documented, permanent pose (rl_state_cfg.py:79-86, :91-98) -- silently
+            # skipping them is fine. ``receptive_object`` is ALSO kinematic, but its ``init_state``
+            # is a bare placeholder ``(0,0,0)`` (rl_state_cfg.py:683) awaiting a placement event
+            # this task's TrainEventCfg does not have -- silently skipping it leaves the fixture
+            # embedded in the table. A physics flag cannot tell these two cases apart; only the
+            # config author can. This exact defect shipped once already with no exception and no
+            # warning (bead: RestingEEGrasped pre-flight, 2026-08-17 -- the dexlift-origin rekeyed
+            # leg200mm/onelegfixture reset file has no "receptive_object" entry, and the old
+            # kinematic-only exemption let it through silently; see rekey_dexlift_reset_states.py
+            # for the rekey that produced that file). Checked once here at construction time -- for
+            # every configured reset_type, not just whichever one random sampling happens to draw
+            # first -- so a bad file fails training launch instead of silently degrading a fraction
+            # of resets forever.
+            recorded_rigid_objects = set(dataset["initial_state"]["rigid_object"].keys())
+            assumed_static_assets = set(cfg.params.get("assumed_static_assets", []))
+            _assert_reset_file_covers_scene(
+                dataset_file, recorded_rigid_objects, env.scene._rigid_objects, assumed_static_assets
+            )
+
             num_states.append(len(dataset["initial_state"]["articulation"]["robot"]["joint_position"]))
             init_indices = torch.arange(num_states[-1], device=env.device)
             self.datasets.append(sample_state_data_set(dataset, init_indices, env.device))

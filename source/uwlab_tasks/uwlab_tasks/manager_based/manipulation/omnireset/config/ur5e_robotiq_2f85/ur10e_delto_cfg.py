@@ -44,7 +44,7 @@ from isaaclab.utils import configclass
 import uwlab_assets.robots.ur10e_delto as ur10e_delto
 
 from .actions import Ur10eDeltoRelativeOSCAction, Ur10eDeltoRelativeOSCEvalAction
-from .delto_cfg import _apply_delto
+from .delto_cfg import _apply_delto, _apply_delto_collision_stack_size
 from .reset_states_cfg import (
     ObjectAnywhereEEAnywhereResetStatesCfg,
     ObjectAnywhereEEGraspedResetStatesCfg,
@@ -119,6 +119,7 @@ class Ur10eDeltoObjectAnywhereEEAnywhereResetStatesCfg(ObjectAnywhereEEAnywhereR
     def __post_init__(self):
         super().__post_init__()
         _apply_delto(self, ur10e_delto.IMPLICIT_UR10E_DELTO, Ur10eDeltoRelativeOSCAction())
+        _apply_delto_collision_stack_size(self)
 
 
 @configclass
@@ -126,6 +127,7 @@ class Ur10eDeltoObjectRestingEEGraspedResetStatesCfg(ObjectRestingEEGraspedReset
     def __post_init__(self):
         super().__post_init__()
         _apply_delto(self, ur10e_delto.IMPLICIT_UR10E_DELTO, Ur10eDeltoRelativeOSCAction())
+        _apply_delto_collision_stack_size(self)
 
 
 @configclass
@@ -133,6 +135,7 @@ class Ur10eDeltoObjectAnywhereEEGraspedResetStatesCfg(ObjectAnywhereEEGraspedRes
     def __post_init__(self):
         super().__post_init__()
         _apply_delto(self, ur10e_delto.IMPLICIT_UR10E_DELTO, Ur10eDeltoRelativeOSCAction())
+        _apply_delto_collision_stack_size(self)
 
 
 @configclass
@@ -140,6 +143,7 @@ class Ur10eDeltoObjectPartiallyAssembledEEAnywhereResetStatesCfg(ObjectPartially
     def __post_init__(self):
         super().__post_init__()
         _apply_delto(self, ur10e_delto.IMPLICIT_UR10E_DELTO, Ur10eDeltoRelativeOSCAction())
+        _apply_delto_collision_stack_size(self)
 
 
 @configclass
@@ -147,6 +151,7 @@ class Ur10eDeltoObjectPartiallyAssembledEEGraspedResetStatesCfg(ObjectPartiallyA
     def __post_init__(self):
         super().__post_init__()
         _apply_delto(self, ur10e_delto.IMPLICIT_UR10E_DELTO, Ur10eDeltoRelativeOSCAction())
+        _apply_delto_collision_stack_size(self)
 
 
 # ---------------------------------------------------------------------------------------
@@ -159,6 +164,7 @@ class Ur10eDeltoRelCartesianOSCTrainCfg(Ur5eRobotiq2f85RelCartesianOSCTrainCfg):
     def __post_init__(self):
         super().__post_init__()
         _apply_delto(self, ur10e_delto.IMPLICIT_UR10E_DELTO, Ur10eDeltoRelativeOSCAction())
+        _apply_delto_collision_stack_size(self)
 
 
 @configclass
@@ -183,6 +189,7 @@ class Ur10eDeltoRelCartesianOSCFinetuneCfg(Ur5eRobotiq2f85RelCartesianOSCFinetun
         # max_delay sizes the DelayBuffers and must be >= delay_range[1]; kept at 2 as a harmless
         # margin so the buffers stay valid if delay_range is bumped back.
         _set_arm_max_delay(self, 2)
+        _apply_delto_collision_stack_size(self)
 
 
 @configclass
@@ -192,6 +199,7 @@ class Ur10eDeltoRelCartesianOSCEvalCfg(Ur5eRobotiq2f85RelCartesianOSCEvalCfg):
     def __post_init__(self):
         super().__post_init__()
         _apply_delto(self, ur10e_delto.IMPLICIT_UR10E_DELTO, Ur10eDeltoRelativeOSCAction())
+        _apply_delto_collision_stack_size(self)
 
 
 @configclass
@@ -204,3 +212,4 @@ class Ur10eDeltoRelCartesianOSCFinetuneEvalCfg(Ur5eRobotiq2f85RelCartesianOSCFin
         # Eval at the measured residual arm delay (0), mirroring the real robot rather than
         # drawing from the inherited range.
         self.events.randomize_arm_sysid.params["delay_range"] = (0, 0)
+        _apply_delto_collision_stack_size(self)

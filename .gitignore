@@ -26,6 +26,12 @@
 !source/uwlab_assets/uwlab_assets/local/Props/Mounts/CustomLabTable/custom_lab_table.usd
 !source/uwlab_assets/uwlab_assets/local/Props/Mounts/CustomLabTable/custom_mount_plate.usd
 
+# The FurnitureBench 200 mm table leg, copied byte-identical out of IsaacLabDexterous -- these are
+# the exact bytes behind the certified 92.87% table-leg result, so they are pinned rather than
+# re-converted. Both are needed: the top-level USD references ./Props/instanceable_meshes.usd.
+!source/uwlab_assets/uwlab_assets/local/Props/FurnitureBench/SquareTableLeg200mm/square_table_leg4_200mm.usd
+!source/uwlab_assets/uwlab_assets/local/Props/FurnitureBench/SquareTableLeg200mm/Props/instanceable_meshes.usd
+
 # Python
 .DS_Store
 **/*.egg-info/

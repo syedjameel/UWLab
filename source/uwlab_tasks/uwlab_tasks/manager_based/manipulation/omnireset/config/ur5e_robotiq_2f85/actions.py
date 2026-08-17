@@ -501,10 +501,40 @@ UR5E_DELTO_RELATIVE_OSC_EVAL = RelCartesianOSCActionCfg(
     calibration_dir=_UR5E_DELTO_CALIBRATION_DIR,
 )
 
-# NOTE there is deliberately no ``Ur5eDeltoRelativeOSC*Action`` GROUP here, unlike every other
-# robot in this module. The groups above exist because OmniReset environments mount them. The only
-# environment that mounts the two terms above is the dexlift task, so its group -- which is what
-# pairs this arm half with the hand half and is where the resulting action dimension is asserted --
-# lives with that task, in ``dexlift/dexlift_ur5e_delto_osc_actions.py``, exactly as the other
-# variant's group does. When an OmniReset UR5e+DELTO env is written, define its group here and
-# import these same two terms; do not restate the gains.
+# The OmniReset UR5e+DELTO env family (bead UWLab-zvd.1) mounts these two terms -- the arm half is
+# UR5E_DELTO_RELATIVE_OSC[_EVAL] above, unchanged; only the hand half is new here, and it is not
+# new either: DELTO_FULL_HAND_ACTIONS is the SAME fully-actuated 20-DOF relative-joint-position term
+# Ur10eDeltoRelativeOSCAction already uses a few dozen lines up (import at the top of this file), a
+# property of the HAND (relative to MEASURED position, scale 0.1 rad/step -- see that term's own
+# docstring for why measured-relative, not target-relative, matters: target-relative lets the
+# commanded target run ahead of the force-limited fingers and the backlog discharges as an impulse
+# that flings the object). Nothing about the arm swap changes which joints the hand exposes, so the
+# same term is reused verbatim rather than re-declared. Action dimension is 6 + 20 = 26, same as the
+# UR10e+DELTO groups.
+#
+# There is deliberately no Ur5eDeltoSysidOSCAction here, unlike the UR10e+DELTO family: no
+# UR5E_DELTO_RELATIVE_OSC_UNSCALED term exists above (only the train and eval gains were derived;
+# see the docstring above UR5E_DELTO_RELATIVE_OSC_EVAL for why the eval pair is not yet trustworthy
+# either). Add the unscaled term first, with its own derivation, if a UR5e+DELTO sysid script is
+# ever written -- do not synthesize one by guessing a scale.
+
+
+@configclass
+class Ur5eDeltoRelativeOSCAction:
+    """Pre-train / train gains: UR5e analytical OSC + fully actuated DELTO hand. Dim 6 + 20 = 26."""
+
+    arm = UR5E_DELTO_RELATIVE_OSC
+    gripper = DELTO_FULL_HAND_ACTIONS
+
+
+@configclass
+class Ur5eDeltoRelativeOSCEvalAction:
+    """Eval / sim2real gains: high-Kp UR5e OSC + fully actuated DELTO hand. Dim 6 + 20 = 26.
+
+    Inherits the same caveat as UR5E_DELTO_RELATIVE_OSC_EVAL itself: known to fail the
+    kd*dt/I <= 2 stability bound by 12-21x (see that term's docstring). Registered so the id family
+    is complete, but re-derive the eval rotational gains before trusting eval/finetune runs on it.
+    """
+
+    arm = UR5E_DELTO_RELATIVE_OSC_EVAL
+    gripper = DELTO_FULL_HAND_ACTIONS

@@ -307,6 +307,82 @@ def _apply_delto(cfg, robot, action) -> None:
         ee.params["ik_iterations"] = 25
 
 
+def _apply_delto_collision_stack_size(cfg) -> None:
+    """Widen the PhysX GPU collision-stack pool for the DELTO insertion task's plant.
+
+    Lives here, not in ``ur10e_delto_cfg.py`` or ``ur5e_delto_cfg.py``, because the issue this
+    fixes is a property of the DELTO HAND's contact profile (23 collider bodies, self-collisions
+    ON, 5 fingertip sensors), not of either arm -- exactly the same reason ``_apply_delto`` itself
+    is written generically over ``(cfg, robot, action)`` and shared by both arm files rather than
+    duplicated. Call explicitly from a DELTO RL-state (insertion) task's ``__post_init__``, after
+    ``_apply_delto``, the same way ``_set_arm_max_delay`` (arm-specific, so it correctly stays in
+    ``ur10e_delto_cfg.py``) is called ad hoc from the one config that needs it.
+
+    ``Ur5eRobotiq2f85RlStateCfg.__post_init__`` (rl_state_cfg.py:748) sets
+    ``sim.physx.gpu_collision_stack_size = 2**31`` (2 GiB) for every gripper that base serves --
+    DELTO included, on EITHER arm, via ``_apply_delto`` -- but that value was only ever proven
+    sufficient for dexlift's plant and task, never for insertion's. Both certified dexlift runs
+    (2026-08-16) use 4026531840 (3.75 GiB, env.yaml:48) instead: the MAXIMUM LEGAL value, since the
+    USD attribute ``physxScene:gpuCollisionStackSize`` is an unsigned int and exactly 4 GiB
+    (4294967296) dies at ``gym.make`` with a type mismatch. Different task family, so 3.75 GiB is
+    not evidence 2 GiB (or 3.75 GiB) is enough here -- classic verified-here-applied-there (bead
+    UWLab-z9j.11; first applied only to the UR10e+DELTO family and missed the UR5e+DELTO one this
+    campaign actually trains, which is why this now lives in the shared, arm-independent file).
+
+    An undersized stack does not crash: PhysX logs "collisionStackSize buffer overflow detected ...
+    Contacts have been dropped" and the run keeps going. Reward and success on this task are gated
+    on PER-FINGERTIP CONTACT FORCE, so a dropped contact is indistinguishable from a finger that
+    never touched -- invisible in training metrics, the run just learns worse for no visible
+    reason. It already bit once at 4096 envs with a constant that had worked at 2048.
+
+    Set to the SAME maximum-legal value the certified dexlift runs use. The pool is FIXED-SIZE, not
+    per-env, so there is no VRAM saving from a smaller value that would justify risking a silent
+    contact drop, and the DELTO hand's contact profile is strictly heavier than whatever the 2f85
+    precedent rl_state_cfg's 2 GiB was presumably sized against -- go straight to the ceiling rather
+    than guess a number in between.
+
+    NOT edited in rl_state_cfg.py: that base is shared by every gripper variant (Robotiq included);
+    widening it there would silently change every OTHER gripper's resolved value too, which is not
+    this bead's call. ``reset_states_cfg.py``'s own shared ``2**31`` default (line 675) is likewise
+    untouched -- every DELTO class (reset-state, RL-state, and grasp sampling) opts in explicitly by
+    calling this function instead.
+    """
+    cfg.sim.physx.gpu_collision_stack_size = 4026531840
+
+
+def _apply_delto_dataset_dir(cfg, dataset_dir: str) -> None:
+    """Repoint EVERY dataset_dir-bearing event term on ``cfg.events`` to ``dataset_dir``.
+
+    Datasets (reset states, grasps, partial-assembly poses) are keyed by OBJECT PAIR ONLY --
+    ``compute_pair_dir`` (mdp/utils.py:391-400) is ``"__".join(sorted(object_name_from_usd(p) for p
+    in usd_paths))``, no gripper or arm discriminator anywhere, in either the ``Resets/{pair}/`` or
+    the ``Grasps/{obj}/`` layout. Every gripper/arm variant that doesn't opt out of the shared
+    default therefore reads and writes the SAME path. A UR5e+DELTO env left on that default reads a
+    12-joint Robotiq dataset into a 26-DOF DELTO articulation and dies at reset with a shape
+    mismatch -- proven live, not hypothetical (bead UWLab-z9j.11 follow-on).
+
+    Iterates rather than hand-wires one term by name, DELIBERATELY: multiple terms across the five
+    reset-state classes and the RL-state classes carry ``dataset_dir`` independently --
+    ``reset_insertive_object_pose_from_reset_states``, ``reset_end_effector_pose_from_grasp_dataset``,
+    ``reset_insertive_object_pose_from_partial_assembly_dataset``, ``reset_from_reset_states`` -- and
+    which of them are even present varies by class (``ObjectAnywhereEEAnywhereEventCfg`` has none;
+    ``ObjectRestingEEGraspedEventCfg`` and ``ObjectPartiallyAssembledEEGraspedEventCfg`` each carry
+    two). A per-term hand-wiring is exactly the shape of bug this function exists to rule out: it
+    silently stops covering a term the day someone adds a sixth reset-state variant, where iterating
+    `cfg.events`'s own attributes for a ``"dataset_dir"`` params key does not.
+
+    Repoints ALL of them uniformly to the SAME ``dataset_dir``, including the grasp-dataset term --
+    even though ``grasps.pt`` is hand-only and, unlike a full articulation reset-state snapshot,
+    would in principle be shareable across arms mounting the same hand. Uniform namespacing is
+    simpler to reason about and audit than a per-term exception, and the storage cost of one more
+    copy of a grasp dataset is not a real constraint.
+    """
+    for term_name, term_cfg in vars(cfg.events).items():
+        params = getattr(term_cfg, "params", None)
+        if isinstance(params, dict) and "dataset_dir" in params:
+            params["dataset_dir"] = dataset_dir
+
+
 # ---------------------------------------------------------------------------------------
 # Grasp sampling (hand-only, like ROBOTIQ_2F85 / LINEAR_GRIPPER)
 # ---------------------------------------------------------------------------------------
@@ -348,6 +424,41 @@ class DeltoGraspSamplingCfg(Robotiq2f85GraspSamplingCfg):
 
     def __post_init__(self):
         # Swap the hand-only robot and its fully actuated action before the base configures sim.
+        #
+        # SAMPLER-LOCAL SEGMENT-4 STIFFNESS, and this is what makes the sampler produce grasps at
+        # all. ur10e_delto.py:90-94 already records that the distal ``_4`` joints at their authored
+        # 0.0957 N.m/rad "cannot overcome the reference actuator friction during this small
+        # commanded stroke", and raises them to 0.30 -- but ONLY for rj_dg_2_4/3_4/4_4. rj_dg_1_4
+        # (0.1698) and rj_dg_5_4 (0.1694) were left out, and those two are the distal joints of the
+        # THUMB-SIDE pair the held-check opposes against fingers 2/3/4. With them stuck there is no
+        # opposing jaw, so every candidate is a one-sided pinch and nothing is ever held.
+        #
+        # MEASURED, and exact: the relative action caps PD error at 0.1 rad per control step
+        # regardless of distance to target, so realised torque is bounded by stiffness * 0.1. At
+        # 0.1698 that is 0.0170 N.m -- matching the measured applied torque to four decimals --
+        # against a 0.01 N.m friction floor and a 0.06 N.m effort limit that is never reached. The
+        # joint sat frozen at ~1.05 rad, velocity exactly 0.000, in EVERY velocity/deadband/stiffness
+        # combination swept. Joint limits are not the cause (target 1.495991 rad is inside the
+        # authored 0-1.5708 range); friction is uniform at 0.01 across all hand joints.
+        #
+        # WHY NOT SIMPLY 0.30 LIKE ITS SIBLINGS: tested, and it is a measurable half-step, not a fix.
+        # rj_dg_5_4 closes fully at 0.30, but rj_dg_1_4 only reaches 0.364 rad short of target by
+        # episode end and 0/180 results. The strokes are unequal -- rj_dg_1_4 travels 1.337 rad
+        # against rj_dg_5_4's 0.944, 42 percent further -- so the value chosen for the shorter-stroke
+        # siblings was never sized for the thumb.
+        #
+        # EVIDENCE FOR 10x, and its limits: 10x reproduces across three seeds (2/12, 1/12, 1/12 --
+        # roughly 11 percent per-episode) with the thumb gap collapsing 1.267 -> 0.006 rad and
+        # holding through gravity AND shake, 7 bodies in contact, no limit cycle. 20x is WORSE
+        # (0/180, fewer bodies, lower peak force), so this is NOT monotonic and the value must not be
+        # raised casually. 11 percent is well below the 60 percent acceptance bar; an asymmetric
+        # value (the thumb wanting more than finger 5) is the untested next step, not a settled one.
+        # Scoped to THIS sampler cfg via an actuators-dict rebind: the shared DELTO_HAND_ACTUATOR
+        # instance that IMPLICIT_UR10E_DELTO and EXPLICIT_UR10E_DELTO use is deliberately untouched.
+        # The segment-4 stiffness and velocity_limit_sim overrides this comment describes are
+        # applied AFTER super().__post_init__() below, together with the deadband opt-out, so all
+        # three parts of the working configuration sit in one block rather than being split either
+        # side of the base call. Search for _sampler_hand_stiffness.
         self.scene.robot = ur10e_delto.DELTO_HAND.replace(prim_path="{ENV_REGEX_NS}/Robot")
         self.actions = ur10e_delto.DeltoFullHandAction()
         super().__post_init__()
@@ -357,6 +468,53 @@ class DeltoGraspSamplingCfg(Robotiq2f85GraspSamplingCfg):
             body_names=DELTO_EE_BODY
         )
         self.events.grasp_sampling.params["num_orientations"] = 16
+        # Topdown sweep knobs (roll/pitch tilt, lateral offset fraction, height offset fraction).
+        # DeltoHand/metadata.yaml:48-51 zeroes all three -- a single fixed candidate pose, measured
+        # (grasp_center_offset, same file) by direct PhysX replay against the 34 mm DeltoBlock cube,
+        # where that fixed spot is clear of the part. Against a 200 mm bar ("leg200mm") the same
+        # fixed spot lands fingers 2/3 inside the part on EVERY candidate, unconditionally -- a
+        # structural 100% placement-gate rejection, not a threshold problem (see events.py
+        # _filter_placement_collisions; that gate and _PLACEMENT_TOLERANCE are untouched by this).
+        #
+        # metadata.yaml is keyed by the GRIPPER's USD directory and is shared by every object this
+        # sampler touches -- deltoblock included -- so it cannot carry a per-object tuning without
+        # breaking deltoblock. Mirrors override_mass in grasp_sampling_cfg.make_object: a per-
+        # object-variant knob that lives in config, not in the shared metadata file. Defaulted here
+        # to TODAY's metadata value via the same _hand_metadata() read _delto_pitch_shift and
+        # _delto_roll_offset use (single source of truth, not a copied literal), so deltoblock -- and
+        # every other object that doesn't override this dict -- is bit-for-bit unchanged.
+        #
+        # The keys must be SET here, not merely reachable via the metadata fallback in events.py:
+        # update_class_from_dict raises KeyError on any params key absent from the default cfg
+        # (isaaclab/utils/dict.py:95,164), so a Hydra override can only ever touch a key that
+        # already exists in this dict. With the keys present, tune leg200mm from the command line,
+        # e.g.:
+        #   ... env.scene.object=leg200mm \
+        #       env.events.grasp_sampling.params.grasp_topdown_roll_pitch_deg=15.0 \
+        #       env.events.grasp_sampling.params.grasp_topdown_position_fraction=0.3 \
+        #       env.events.grasp_sampling.params.grasp_topdown_height_fraction=0.2 \
+        #       env.events.grasp_sampling.params.grasp_topdown_yaw_deg=45.0
+        # No numeric values are picked here for leg200mm -- that needs empirical iteration against
+        # the bar's real geometry under Isaac, which is intentionally not done in this change.
+        hand_metadata = _hand_metadata()
+        self.events.grasp_sampling.params["grasp_topdown_roll_pitch_deg"] = float(
+            hand_metadata.get("grasp_topdown_roll_pitch_deg", 6.0)
+        )
+        self.events.grasp_sampling.params["grasp_topdown_position_fraction"] = float(
+            hand_metadata.get("grasp_topdown_position_fraction", 0.3)
+        )
+        self.events.grasp_sampling.params["grasp_topdown_height_fraction"] = float(
+            hand_metadata.get("grasp_topdown_height_fraction", 0.2)
+        )
+        # Yaw sweep about the approach axis (decoupled from the roll/pitch wobble above -- see
+        # events.py's _sample_topdown_grasps). Defaulted to 0.0 here for the same reason as the
+        # three knobs above: DeltoHand/metadata.yaml doesn't carry this key, so hand_metadata.get
+        # falls back to 0.0 and deltoblock (and everything else that doesn't override this dict) is
+        # bit-for-bit unchanged. No numeric value is picked here for leg200mm -- that needs
+        # empirical iteration against the bar's real geometry under Isaac, same as the other three.
+        self.events.grasp_sampling.params["grasp_topdown_yaw_deg"] = float(
+            hand_metadata.get("grasp_topdown_yaw_deg", 0.0)
+        )
         # The scripted close has a 1.34 rad maximum stroke and the force-limited hand needs about
         # 10 s to close and settle. The inherited 4 s episode enables gravity after 1 s, while the
         # pads are still more than a radian from their target, and rejects valid candidates as
@@ -366,6 +524,21 @@ class DeltoGraspSamplingCfg(Robotiq2f85GraspSamplingCfg):
         physics = self.events.global_physics_control_event.params
         physics["gravity_on_interval"] = (10.0, float("inf"))
         physics["force_torque_on_interval"] = (11.0, 13.0)
+        # Mass-scaled shake, DELTO only -- restores commit a589120 (2026-06-21, "grasp quality (WIP):
+        # mass-scaled sampling shake"), deleted from the tree along with the rest of that WIP commit.
+        # See events.py::global_physics_control_event for the mechanism and the full arithmetic this
+        # restores (flat 0.01 N is ~3% of a 30 g object's weight linearly -- negligible -- but ~1730
+        # rad/s^2 of angular acceleration against that same object's inertia -- the mechanism behind
+        # every violent sampling tumble this campaign has measured). 5.0 m/s^2 is the value that
+        # commit chose ("a firm, mass-independent tug"); kept, not re-derived, because we are
+        # restoring a validated mechanism, not designing a new one. THIS IS A CHANGE TO A VALIDATION
+        # TEST and must not be tuned to make grasps pass -- see the fuller argument on
+        # force_torque_scale_by_mass in events.py for why mass-scaling is a MORE meaningful bar, not
+        # a laxer one. Unlike a589120, which set this on the SHARED base (grasp_sampling_cfg.py,
+        # every gripper), it is applied here, DELTO-only, so 2F-85 and the linear gripper keep
+        # today's flat-Newton behaviour bit-for-bit.
+        physics["force_torque_magnitude"] = 5.0
+        physics["force_torque_scale_by_mass"] = True
         # Finite soft-pad contacts retain small harmless rolling motion after the shake.  Keep the
         # generic parallel-jaw thresholds unchanged; DELTO accepts motion below 15 cm/s summed
         # linear and 3 rad/s summed angular velocity, still far below an ejection trajectory.
@@ -374,3 +547,81 @@ class DeltoGraspSamplingCfg(Robotiq2f85GraspSamplingCfg):
         success["max_object_angular_velocity_sum"] = 3.0
         success["max_gripper_joint_velocity_sum"] = 10.0
         success["consecutive_stability_steps"] = 3
+        # Widen the collision-stack pool here too: this is the ROOT of the dependency tree, not a
+        # leaf. The sampler validates each candidate by SHAKING the held object and re-reading the
+        # same per-fingertip contact channel a dropped-contact overflow corrupts elsewhere -- so a
+        # silent drop here does not merely corrupt one reset state, it CERTIFIES a grasp that never
+        # actually held. That grasp is then replayed by differential IK into every downstream
+        # reset-state and RL-state dataset built on it (see this class's own docstring for the
+        # chain: Grasps/<object>/grasps.pt -> reset_end_effector_from_grasp_dataset ->
+        # Resets/<pair>/resets_*.pt -> reset_from_reset_states -> the RL-state TRAINING env). Same
+        # value, same reasoning, as every other DELTO class -- see _apply_delto_collision_stack_size.
+        _apply_delto_collision_stack_size(self)
+
+        # Segment-4 stiffness + velocity_limit_sim, a SAMPLER-ONLY hand-actuator copy (bead
+        # UWLab-z9j.11 follow-on). Same defensive pattern as _set_arm_max_delay
+        # (ur10e_delto_cfg.py) and _apply_delto_collision_stack_size above: rebind .actuators to a
+        # NEW dict holding a .replace()'d ImplicitActuatorCfg, never writing through the shared
+        # _DELTO_HAND_ACTUATOR / DELTO_HAND_ACTUATOR object IMPLICIT_UR10E_DELTO, EXPLICIT_UR10E_
+        # DELTO and DELTO_HAND itself all point at. The certified training plant is untouched by
+        # construction here, not by convention -- confirm by grep, not by inspection, if in doubt.
+        #
+        # RESULT THIS LANDS (first grasps of the campaign): check_grasp_success fired 2/12, after
+        # 1620+ prior episodes at 0. The thumb joint (rj_dg_1_4), frozen at ~1.05 rad in every
+        # earlier configuration, closed cleanly: 1.267 rad at t=0.5 s decaying monotonically to
+        # 0.009 by t=11.0 s and holding flat at 0.006 through the entire shake. Seven bodies in
+        # contact, peak 0.75 N, no limit cycle. REPRODUCIBILITY RESEEDS WERE RUNNING IN PARALLEL
+        # when this landed -- if x10 does not replicate, these values may not survive; read this as
+        # a record of the evidence that produced them, not a settled, re-derivable-from-first-
+        # -principles answer.
+        #
+        # ROOT CAUSE: ur10e_delto.py:90-94 already documents that distal _4 joints at their authored
+        # 0.0957 N*m/rad "cannot overcome the reference actuator friction during this small
+        # commanded stroke", and raises rj_dg_2_4/3_4/4_4 to 0.30 -- but OMITS rj_dg_1_4/5_4 (the
+        # thumb-side pair), which stayed at the authored 0.1698/0.1694. This completes that partial
+        # fix; it does not invent a new value out of nothing.
+        #
+        # TORQUE ARITHMETIC AT STOCK (rj_dg_1_4), matching the measured applied torque to four
+        # decimals: peak commanded torque = stiffness * max step-error = 0.1698 N*m/rad * 0.1 rad
+        # (DELTO_HAND_ACTION_SCALE, one action unit) = 0.0170 N*m. Against the 0.01 N*m friction
+        # floor for this joint class, that is only 0.0070 N*m of margin -- and nowhere near the
+        # 0.06 N*m effort_limit_sim ceiling for the same class, which is never reached at stock.
+        # That is why it was frozen: barely enough torque to move at all, not zero.
+        #
+        # WHY THE OMISSION WAS WORSE THAN A FLAT OVERSIGHT: the two thumb-side strokes are NOT
+        # equal. rj_dg_1_4 travels 1.337 rad open-to-closed; rj_dg_5_4 travels 0.944 rad -- rj_dg_1_4
+        # needs MORE torque than its sibling, not the same. Measured directly: at exactly 0.30
+        # (matching the already-fixed siblings), rj_dg_5_4 closed fully but rj_dg_1_4 was still
+        # 0.364 rad short at episode end, and 0/180 grasps succeeded. The value must sit above 0.30.
+        #
+        # WHY x10 (~1.70) AND NOT MORE: at x10, peak commanded torque rises to 1.698 * 0.1 = 0.1698
+        # N*m, which EXCEEDS the 0.06 N*m effort_limit_sim ceiling -- so the torque actually
+        # delivered for a large position error is capped at 0.06 N*m, not literally 10x the stock
+        # torque; x10 is what makes the joint able to use its full existing 0.06 N*m effort budget
+        # rather than a fraction of it. A stiffness of x20 (~3.40) was ALSO tested and is WORSE --
+        # 0/180, fewer bodies in contact, lower peak force -- so this relationship is NOT monotonic
+        # and the value should not be raised casually on the assumption that more stiffness is
+        # strictly better; x20's own failure mode was not substep-traced the way x10's success was.
+        #
+        # VELOCITY_LIMIT_SIM 1.0 (down from the shared actuator's 3.0), same class of reasoning as
+        # the deadband fix earlier in this file: at 3.0 rad/s the actuator can travel
+        # velocity_limit_sim * control_dt = 3.0 * 0.1 s = 0.3 rad within one control step, against
+        # the SAME 0.1 rad commanded delta -- a 3x overshoot that was a standing cause of the
+        # permanent limit cycle the deadband alone had to absorb. At 1.0 rad/s, one control step's
+        # maximum travel (0.1 rad) matches the commanded delta exactly, so there is nothing left to
+        # oscillate about even before the deadband intervenes.
+        _sampler_hand_stiffness = dict(ur10e_delto.DELTO_HAND_ACTUATOR.stiffness)
+        _sampler_hand_stiffness["rj_dg_1_4"] = 1.698  # 10x the authored 0.1698
+        _sampler_hand_stiffness["rj_dg_5_4"] = 1.694  # 10x the authored 0.1694
+        self.scene.robot.actuators = {
+            **self.scene.robot.actuators,
+            "hand": self.scene.robot.actuators["hand"].replace(
+                stiffness=_sampler_hand_stiffness,
+                velocity_limit_sim={r"rj_dg_[1-5]_[1-4]": 1.0},
+            ),
+        }
+        # Deadband OFF for the sampler: at velocity_limit_sim 1.0 and this stiffness, the standing
+        # limit cycle the deadband exists to break was not observed in the result above -- see
+        # scripted_gripper.py's own comment on scripted_gripper_deadband_rad for the mechanism and
+        # why this must not become the shared default.
+        self.scripted_gripper_deadband_rad = 0.0

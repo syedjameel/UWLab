@@ -14,6 +14,7 @@ from uwlab_rl.rsl_rl.rl_cfg import (
 )
 
 UR10E_DELTO_EXPERIMENT_NAME = "ur10e_delto_omnireset_agent"
+UR5E_DELTO_EXPERIMENT_NAME = "ur5e_delto_omnireset_agent"
 
 
 def my_experts_observation_func(env):
@@ -60,6 +61,29 @@ class UR10eDelto_PPORunnerCfg(Base_PPORunnerCfg):
     """PPO runner isolated from the linear-gripper checkpoint namespace."""
 
     experiment_name = UR10E_DELTO_EXPERIMENT_NAME
+
+
+@configclass
+class UR5eDelto_PPORunnerCfg(Base_PPORunnerCfg):
+    """PPO runner isolated from the linear-gripper / 2F-85 checkpoint namespace.
+
+    Structural twin of ``UR10eDelto_PPORunnerCfg``: only ``experiment_name`` changes, all
+    hyperparameters are inherited from ``Base_PPORunnerCfg`` unchanged -- the same PPO settings
+    every OmniReset variant on this arm family (2F-85, linear gripper, UR10e+DELTO) already trains
+    with. This is a DELIBERATE choice, not an oversight: the certified dexlift checkpoints train
+    under a different framework (rl_games, not RSL-RL) with its own schema, and its hyperparameters
+    do not map onto ``RslRlPpoAlgorithmCfg`` one-for-one. For the record, dexlift's certified
+    rl_games PPO values (``dexlift/agents/rl_games_ppo_ur5e_delto_reljointpos_tableleg_lift_cfg.yaml``)
+    are gamma=0.99, tau(lam)=0.95, e_clip=0.2, mini_epochs=5, kl_threshold=0.01 -- all IDENTICAL to
+    ``Base_PPORunnerCfg``'s gamma/lam/clip_param/num_learning_epochs/desired_kl -- while
+    learning_rate (1e-3 vs 1e-4) and entropy_coef (0.001 vs 0.006) differ; both algorithms use an
+    adaptive/KL-based schedule, so the starting learning rate matters less than the target KL they
+    already agree on. Reusing this family's own already-tuned config is the minimal-deviation
+    choice; if OmniReset UR5e+DELTO training turns out to need the dexlift entropy/LR specifically,
+    change these two fields here with a note, rather than diverging from the family silently.
+    """
+
+    experiment_name = UR5E_DELTO_EXPERIMENT_NAME
 
 
 @configclass

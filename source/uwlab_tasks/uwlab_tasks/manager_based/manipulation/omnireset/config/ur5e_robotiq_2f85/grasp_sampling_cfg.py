@@ -106,6 +106,12 @@ class GraspSamplingEventCfg:
             "force_torque_on_interval": (1.0, 2.0),
             "force_torque_asset_cfgs": [SceneEntityCfg("object")],
             "force_torque_magnitude": 0.01,
+            # Key must exist here, defaulted OFF, for a Hydra override to be reachable at all
+            # (update_class_from_dict raises KeyError on any params key absent from the default
+            # cfg) -- see events.py::global_physics_control_event for what this does when True.
+            # False keeps every existing gripper (this base, 2F-85, linear gripper) at today's
+            # flat-Newton behaviour, bit-for-bit; DeltoGraspSamplingCfg turns it on for itself only.
+            "force_torque_scale_by_mass": False,
         },
     )
 
@@ -188,6 +194,17 @@ variants = {
         # authored mass is what keeps the recorded grasps meaningful for the hand's force budget.
         "deltoblock": make_object(
             f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/DeltoBlock/delto_block.usd", override_mass=False
+        ),
+        # Our table-leg pair (bead UWLab-zvd.8), for the DELTO thread-insertion task. SAME shipped
+        # USD as reset_states_cfg's "leg200mm" -- SquareTableLeg200mmDecomp, not the plain
+        # SquareTableLeg200mm sibling (that one carries only PhysicsCollisionAPI with no
+        # approximation attribute, so PhysX silently falls back to convexHull approximation).
+        # override_mass=False keeps the root prim's authored MassAPI value (0.12 kg, verified
+        # directly off the USD with pxr) instead of the 1 g default -- see the deltoblock comment
+        # above and reset_states_cfg.py:589-595 for why that default is a trap here.
+        "leg200mm": make_object(
+            f"{UWLAB_LOCAL_ASSETS_DIR}/Props/FurnitureBench/SquareTableLeg200mmDecomp/square_table_leg4_200mm.usd",
+            override_mass=False,
         ),
     }
 }

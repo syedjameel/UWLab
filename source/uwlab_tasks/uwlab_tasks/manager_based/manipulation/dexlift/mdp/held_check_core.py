@@ -1,0 +1,134 @@
+# Copyright (c) 2024-2026, The UW Lab Project Developers. (https://github.com/uw-lab/UWLab/blob/main/CONTRIBUTORS.md).
+# All Rights Reserved.
+#
+# SPDX-License-Identifier: BSD-3-Clause
+
+"""Pure-tensor core of the policy-driven generator's HELD check (bead UWLab-dwx.2).
+
+Deliberately has NO isaaclab / omni import anywhere in this file. Every quantity the decision
+needs is passed in as a plain tensor, so :func:`held_decision` can be, and is, unit-tested with
+synthetic data and no Isaac process -- see ``test_held_check_core.py`` in this directory.
+:mod:`held_check` (a sibling module) is the thin IsaacLab ``ManagerTermBase`` wrapper that reads
+these tensors off ``env.scene`` each step and calls this function; nothing decision-relevant lives
+there that isn't here.
+
+WHY A FOURTH GATE. Three gates -- settled, opposed contact, co-moving velocity -- are ALL satisfied
+by the adversarial case this check exists to reject: an object already sitting at (or near) its
+target pose, with the hand resting nearby but not actually gripping it. Settled is trivially true
+(nothing is moving). Co-move is trivially true (relative velocity ~0 when both are at rest). Contact
+can ALSO be true: an idle hand posed near an object can have a thumb pad and a fingertip pad both
+resting against the surface with light residual normal force above a naive threshold, without any
+real opposed squeeze holding it. Only the fourth gate -- does the object's displacement TRACK the
+gripper's own commanded displacement during a probe -- distinguishes "resting against" from "held
+by". See :func:`held_decision`'s docstring for the exact adversarial construction this catches.
+"""
+
+from __future__ import annotations
+
+import torch
+
+# Shared between held_check.py (the stateful term) and the generator script, so the two cannot
+# drift apart on when the probe happens. Torch-only file, so both a plain unit test and the
+# Isaac-side term import the SAME constants rather than each restating them.
+SETTLE_STEPS = 60
+"""Episode steps before anything is trusted -- kills the ballistic post-reset-drop false-positive
+bucket (same idea as probe_grasp.py's SETTLE_STEPS)."""
+
+PROBE_STEPS = 10
+"""Duration (env steps) of the probe jog, starting the step after SETTLE_STEPS."""
+
+PROBE_ARM_ACTION_BIAS = 0.15
+"""Constant relative-joint-position bias the generator adds to all six arm action dims (on top of
+whatever the policy commands) during the probe window, in units of the arm action term's own scale
+(|action| <= 1 post-clip, see dexlift_ur5e_delto_actions.py's UR5E_ARM_ACTION_CLIP).
+
+MEASURED, not guessed: the first value tried here was 0.5 (half the clip ceiling), on the theory
+that it needed to be "large enough to produce a measurable palm displacement without saturating the
+clip". Logged with HELD_CHECK_DEBUG_PROBE=1 against the certified Stage-2 lift checkpoint, that bias
+over PROBE_STEPS=10 steps produced 11-130 mm of actual palm displacement -- one to two orders of
+magnitude past "jog the gripper a few mm" (dwx.2's own bead notes), because RelativeJointPositionAction
+integrates a SUSTAINED per-step command over multiple steps, not a single delta. 0.15 was chosen to
+bring that back toward a few-mm-to-low-tens-of-mm regime; PROBE_TRACK_TOL_FRAC below is the primary
+robustness fix regardless (a relative criterion tolerates whatever the jog size turns out to be in
+practice), but an excessively large jog is still worth avoiding on its own terms: it risks yanking a
+marginal-but-real grasp apart with the probe itself, which is not what "measure, don't disturb" means."""
+
+
+def held_decision(
+    steps_since_reset: torch.Tensor,
+    thumb_loaded: torch.Tensor,
+    tip_loaded: torch.Tensor,
+    relative_speed: torch.Tensor,
+    obj_vz: torch.Tensor,
+    probe_ready: torch.Tensor,
+    obj_disp_probe: torch.Tensor,
+    gripper_disp_probe: torch.Tensor,
+    settle_steps: int = 60,
+    comove_speed_thresh: float = 0.05,
+    comove_vz_thresh: float = 0.1,
+    probe_min_disp: float = 0.003,
+    probe_track_tol: float = 0.003,
+    probe_track_tol_frac: float = 0.3,
+) -> torch.Tensor:
+    """AND of four gates. Returns a ``(num_envs,)`` bool tensor.
+
+    Args:
+        steps_since_reset: ``(N,)`` int/float, e.g. ``env.episode_length_buf``.
+        thumb_loaded: ``(N,)`` bool, >=1 thumb-side fingertip above the force threshold.
+        tip_loaded: ``(N,)`` bool, >=1 non-thumb fingertip above the force threshold. Combined with
+            ``thumb_loaded`` this is dexlift's own opposition gate (``mdp.rewards.contacts``) --
+            reused, not reimplemented; see ``held_check.py``.
+        relative_speed: ``(N,)`` ``|v_obj - v_palm|`` (m/s), the ``held_lift_stability`` term's own
+            quantity (``table_leg.py:460-496``), reused the same way.
+        obj_vz: ``(N,)`` object world-frame z linear velocity (m/s).
+        probe_ready: ``(N,)`` bool, whether a probe window has completed for this env since the
+            last reset (False before the first probe finishes -- held is undecided, not true).
+        obj_disp_probe: ``(N, 3)`` object position delta measured over the most recent probe
+            window.
+        gripper_disp_probe: ``(N, 3)`` COMMANDED (or measured) gripper displacement over that same
+            window -- the perturbation the generator's rollout loop injected on top of the policy's
+            own actions. See ``held_check.py`` / the generator script for how this is produced.
+        settle_steps: episode-length threshold before anything is trusted (kills the ballistic
+            post-reset-drop false-positive bucket, same idea as ``probe_grasp.py``'s SETTLE_STEPS).
+        comove_speed_thresh: m/s, ceiling on ``relative_speed`` for the co-move gate.
+        comove_vz_thresh: m/s, ceiling on ``|obj_vz|`` for the co-move gate.
+        probe_min_disp: m, the gripper must actually have moved at least this much during the probe
+            for the probe to be considered meaningful -- guards against a degenerate near-zero jog
+            making ``obj_disp ~= gripper_disp`` trivially true because both are ~zero.
+        probe_track_tol: m, ABSOLUTE floor on the allowed ``|obj_disp_probe - gripper_disp_probe|``
+            mismatch, for small jogs.
+        probe_track_tol_frac: fraction of ``|gripper_disp_probe|`` ALSO allowed as mismatch,
+            whichever of the two is larger. Real jog magnitude varies with how hard the arm has to
+            work against whatever it's carrying (measured 11-130mm for a jog "intended" to be a few
+            mm -- RelativeJointPositionAction integrates a sustained command over multiple steps,
+            not a single delta), so a fixed absolute tolerance calibrated for a small jog rejects
+            genuinely-tracking objects whenever the realised jog is larger: a 1-2mm gap on a 40mm
+            jog is normal actuation/compliance slack, not evidence of a loose grip, but the SAME
+            1-2mm gap would be everything on a 3mm jog. The floor (``probe_track_tol``) is what
+            still catches a non-tracking object on however small a jog actually occurs.
+
+    Returns:
+        ``(N,)`` bool: held := settled & opposed_contact & co_move & probe_tracks.
+
+    THE ADVERSARIAL CASE THIS MUST REJECT (Option-B, per bead notes): construct an env where the
+    object is already at/near its target pose, the hand is posed nearby with light incidental
+    contact (thumb_loaded=True, tip_loaded=True from residual touch, not a real pinch), nothing is
+    moving (steps_since_reset large, relative_speed~0, obj_vz~0) -- i.e. gates 1-3 all pass -- but
+    the object is NOT actually attached to the hand. When the generator's probe jogs the gripper by
+    ``gripper_disp_probe``, an untouched-but-nearby object does not move with it:
+    ``obj_disp_probe`` stays near zero while ``gripper_disp_probe`` does not, so
+    ``|obj_disp_probe - gripper_disp_probe| >= probe_track_tol`` and gate 4 -- and therefore the
+    whole AND -- is False. See ``test_held_check_core.py::test_adversarial_case_rejected``.
+    """
+    settled = steps_since_reset > settle_steps
+    opposed_contact = thumb_loaded & tip_loaded
+    co_move = (relative_speed < comove_speed_thresh) & (obj_vz.abs() < comove_vz_thresh)
+
+    gripper_disp_norm = torch.linalg.norm(gripper_disp_probe, dim=-1)
+    gripper_moved = gripper_disp_norm > probe_min_disp
+    mismatch = torch.linalg.norm(obj_disp_probe - gripper_disp_probe, dim=-1)
+    tol = torch.clamp(probe_track_tol_frac * gripper_disp_norm, min=probe_track_tol)
+    tracks = mismatch < tol
+    probe_pass = probe_ready & gripper_moved & tracks
+
+    return settled & opposed_contact & co_move & probe_pass

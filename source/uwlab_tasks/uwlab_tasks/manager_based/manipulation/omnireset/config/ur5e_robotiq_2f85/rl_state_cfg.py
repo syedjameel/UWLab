@@ -21,7 +21,7 @@ from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.utils import configclass
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 
-from uwlab_assets import UWLAB_CLOUD_ASSETS_DIR, UWLAB_LOCAL_ASSETS_DIR
+from uwlab_assets import UWLAB_ASSETS_DATA_DIR, UWLAB_CLOUD_ASSETS_DIR, UWLAB_LOCAL_ASSETS_DIR
 from uwlab_assets.robots.ur5e_robotiq_gripper import EXPLICIT_UR5E_ROBOTIQ_2F85, IMPLICIT_UR5E_ROBOTIQ_2F85
 
 from uwlab_tasks.manager_based.manipulation.omnireset.config.ur5e_robotiq_2f85.actions import (
@@ -250,6 +250,22 @@ class BaseEventCfg:
     reset_everything = EventTerm(func=task_mdp.reset_scene_to_default, mode="reset", params={})
 
 
+# Rigid bodies in THIS scene whose own ``init_state`` is a real, permanent, authored pose --
+# never a placeholder -- so MultiResetManager's coverage guard (omnireset/mdp/events.py,
+# ``_assert_reset_file_covers_scene``) may silently skip them when a reset-state file omits them.
+# Both are kinematic, but that is NOT why they are exempt: kinematic only means "PhysX applies no
+# forces here," and says nothing about whether the default pose is correct.
+#   - "table": init_state.pos=(0,0,0) -- "Asset frame == robot base frame ... so the table spawns
+#     AT the robot's default root" (this file, RlStateSceneCfg.table, ~:79-86).
+#   - "ur5_metal_support": init_state.pos=(0,0,0.004) -- "ROOT z = the WORK SURFACE ... the
+#     object-reset placement datum" (this file, RlStateSceneCfg.ur5_metal_support, ~:91-98).
+# "receptive_object" is deliberately NOT in this list: it is also kinematic, but its init_state is
+# a bare placeholder (0,0,0) with no such claim -- its real pose was always meant to come from a
+# placement event (reset_states_cfg.py's reset_receptive_object_pose) or the reset-state file
+# itself, and none of the event classes below run that placement event.
+RL_STATE_ASSUMED_STATIC_ASSETS = ["table", "ur5_metal_support"]
+
+
 @configclass
 class TrainEventCfg(BaseEventCfg):
     """Training events: material/mass randomization + 4-path resets. No sysid or OSC gain randomization."""
@@ -267,6 +283,7 @@ class TrainEventCfg(BaseEventCfg):
             ],
             "probs": [0.25, 0.25, 0.25, 0.25],
             "success": "env.reward_manager.get_term_cfg('progress_context').func.success",
+            "assumed_static_assets": RL_STATE_ASSUMED_STATIC_ASSETS,
         },
     )
 
@@ -283,6 +300,7 @@ class TrainEvalEventCfg(BaseEventCfg):
             "reset_types": ["ObjectAnywhereEEAnywhere"],
             "probs": [1.0],
             "success": "env.reward_manager.get_term_cfg('progress_context').func.success",
+            "assumed_static_assets": RL_STATE_ASSUMED_STATIC_ASSETS,
         },
     )
 
@@ -327,6 +345,7 @@ class FinetuneEvalEventCfg(BaseEventCfg):
             "reset_types": ["ObjectAnywhereEEAnywhere"],
             "probs": [1.0],
             "success": "env.reward_manager.get_term_cfg('progress_context').func.success",
+            "assumed_static_assets": RL_STATE_ASSUMED_STATIC_ASSETS,
         },
     )
 
@@ -651,7 +670,17 @@ def make_insertive_object(usd_path: str, override_mass: bool = True):
     )
 
 
-def make_receptive_object(usd_path: str):
+def make_receptive_object(usd_path: str, disable_articulation_root: bool = False):
+    """Build a receptive-object config, optionally disabling a baked-in articulation root.
+
+    ``disable_articulation_root``: mirrors reset_states_cfg.py's identical parameter (added there
+    for "onelegfixture"). An asset run through ``isaaclab.sim.converters.UrdfConverter`` with
+    ``fix_base=True`` gets an ArticulationRootAPI + a fixed ``root_joint`` to the world baked into
+    the USD by the converter, even for a single-link fixture with no moving joints. ``RigidObjectCfg``
+    construction hard-fails against that ("Found an articulation root when resolving ... for rigid
+    objects") -- the fix is ``ArticulationRootPropertiesCfg.articulation_enabled = False`` in the
+    spawn config, not a USD edit. Off by default so every existing variant is byte-for-byte unaffected.
+    """
     return RigidObjectCfg(
         prim_path="{ENV_REGEX_NS}/ReceptiveObject",
         spawn=sim_utils.UsdFileCfg(
@@ -664,6 +693,11 @@ def make_receptive_object(usd_path: str):
                 kinematic_enabled=True,
             ),
             mass_props=sim_utils.MassPropertiesCfg(mass=0.5),
+            articulation_props=(
+                sim_utils.ArticulationRootPropertiesCfg(articulation_enabled=False)
+                if disable_articulation_root
+                else None
+            ),
         ),
         init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, 0.0), rot=(1.0, 0.0, 0.0, 0.0)),
     )
@@ -690,6 +724,18 @@ variants = {
         "deltoblock": make_insertive_object(
             f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/DeltoBlock/delto_block.usd", override_mass=False
         ),
+        # Our table-leg pair (bead UWLab-zvd.8), for the DELTO thread-insertion task. Was registered
+        # in grasp_sampling_cfg.py and reset_states_cfg.py but missing here -- the RL-STATE task's
+        # OWN registry -- which meant env.scene.insertive_object=leg200mm on the actual training env
+        # (Ur5eDeltoRelCartesianOSC{Train,Finetune,Eval,FinetuneEval}Cfg, which inherit this dict
+        # unchanged) would fail with an unknown variant key. Same asset, same override_mass=False
+        # reasoning, as reset_states_cfg.py's identical entry: the leg's authored 0.12 kg MassAPI
+        # must survive; the make_insertive_object default (override_mass=True) would rewrite it to
+        # 1 g and every subsequent contact-force-gated check would validate a part 120x too light.
+        "leg200mm": make_insertive_object(
+            f"{UWLAB_LOCAL_ASSETS_DIR}/Props/FurnitureBench/SquareTableLeg200mmDecomp/square_table_leg4_200mm.usd",
+            override_mass=False,
+        ),
     },
     "scene.receptive_object": {
         "fbtabletop": make_receptive_object(
@@ -710,6 +756,17 @@ variants = {
         # success_thresholds, which a receptive object REQUIRES -- commands.TaskCommand reads
         # position/orientation from it with no default.
         "deltoslot": make_receptive_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/DeltoSlot/delto_slot.usd"),
+        # Receptive fixture for "leg200mm" (bead UWLab-zvd.8): the one-leg insertion fixture built in
+        # UWLab-3o5.3 (source/uwlab_assets/data/Props/FurnitureBench/OneLegInsertionFixture/), hence
+        # UWLAB_ASSETS_DATA_DIR rather than UWLAB_LOCAL_ASSETS_DIR -- a different asset root than
+        # every other entry in this dict, matching reset_states_cfg.py's identical entry exactly.
+        # disable_articulation_root=True: this fixture was run through UrdfConverter with
+        # fix_base=True, which bakes an ArticulationRootAPI into the USD that RigidObjectCfg
+        # construction hard-fails against otherwise -- see make_receptive_object's docstring above.
+        "onelegfixture": make_receptive_object(
+            f"{UWLAB_ASSETS_DATA_DIR}/Props/FurnitureBench/OneLegInsertionFixture/one_leg_insertion_fixture.usd",
+            disable_articulation_root=True,
+        ),
     },
 }
 

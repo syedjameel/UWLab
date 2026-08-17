@@ -123,6 +123,41 @@ def main(env_cfg, agent_cfg) -> None:
 
     start_time = time.time()
 
+    # --- stall-vs-slow instrumentation (bead UWLab-z9j.11 follow-on) -----------------------------
+    # The pbar above counts SUCCESSES (exported_successful_episode_count), so it stays at zero for
+    # arbitrarily long stretches whenever every attempt in that stretch fails -- indistinguishable
+    # from outside between "the rollout is hung" and "it is running fine and just has not produced
+    # a success yet". These prints exist to tell those two apart without guessing.
+    #
+    # NOTE ON "BATCH": the loop below is a flat while/env.step() -- there is no batch object
+    # anywhere in this file or in grasp_sampling_event. Each reset draws its candidate via
+    # torch.randint (WITH replacement) from the precomputed pool (events.py, _generate_grasp_
+    # candidates / _filter_placement_collisions run once, lazily, inside the FIRST call), not a
+    # sweep through it in order, and per-env episodes desync over the run as some finish early and
+    # restart before others -- only the very first reset (line ~115, above this loop) has every env
+    # synchronized. "Batch" here is therefore DEFINED, not observed: a fixed-size accounting window
+    # of ``env.max_episode_length`` env-steps (the nominal per-episode step count). Treat the
+    # batch_end/batch_start pair below as a coarse round-number marker, not a real synchronization
+    # boundary -- by the last few batches of a run, individual envs can be anywhere in their own
+    # episode. Candidate counts reported as "consumed" are cumulative ATTEMPTS (dones), not pool
+    # depletion -- the same candidate can be (and typically will be) redrawn.
+    max_episode_length = env.max_episode_length
+    total_candidate_pool = len(env.grasp_candidates) if hasattr(env, "grasp_candidates") else None
+    coarse_interval = 30  # env-steps; within the 30-60 range requested
+
+    env_step_index = 0
+    batch_index = 0
+    batch_start_time = start_time
+    batch_start_attempts = 0
+    batch_start_successes = 0
+
+    print(
+        f"[grasp record] {time.strftime('%H:%M:%S')} START env-step=0 batch=0 "
+        f"candidate_pool={total_candidate_pool} num_envs={env.num_envs} "
+        f"max_episode_length={max_episode_length} target_successes={args_cli.num_grasps}",
+        flush=True,
+    )
+
     while current_successful_grasps < args_cli.num_grasps:
         # The scripted CLOSE, asked of the env's own action terms rather than assumed.
         #
@@ -135,6 +170,7 @@ def main(env_cfg, agent_cfg) -> None:
         actions = task_mdp.scripted_gripper_actions(env, close=True)
         _, _, terminated, truncated, _ = env.step(actions)
         dones = terminated | truncated
+        env_step_index += 1
 
         # Update progress based on successful grasps
         new_successful_count = env.recorder_manager.exported_successful_episode_count
@@ -145,6 +181,46 @@ def main(env_cfg, agent_cfg) -> None:
 
         # Count total grasps evaluated (sum across all environments)
         num_grasps_evaluated += dones.sum().item()
+
+        # Coarse per-batch physics-step progress: proves env.step() is still advancing (env-step
+        # index and elapsed time both increasing) even while successes sit at zero, and shows where
+        # individual envs currently sit within their own episode (episode_length_buf), which is
+        # where a genuinely stuck batch would show up -- a min/mean/max that stops changing.
+        if env_step_index % coarse_interval == 0:
+            elapsed = time.time() - start_time
+            print(
+                f"[grasp record] {time.strftime('%H:%M:%S')} PROGRESS env-step={env_step_index} "
+                f"batch={batch_index} step_in_batch={env_step_index - batch_index * max_episode_length} "
+                f"elapsed={elapsed:.1f}s attempts={num_grasps_evaluated} successes={current_successful_grasps} "
+                f"episode_len_buf(min/mean/max)="
+                f"{env.episode_length_buf.min().item()}/{env.episode_length_buf.float().mean().item():.1f}/"
+                f"{env.episode_length_buf.max().item()}",
+                flush=True,
+            )
+
+        # Batch end/start markers, on the fixed-size accounting window defined above.
+        if env_step_index % max_episode_length == 0:
+            batch_wall_clock = time.time() - batch_start_time
+            batch_attempts = num_grasps_evaluated - batch_start_attempts
+            batch_successes = current_successful_grasps - batch_start_successes
+            pool_str = "?" if total_candidate_pool is None else str(total_candidate_pool)
+            print(
+                f"[grasp record] {time.strftime('%H:%M:%S')} BATCH_END batch={batch_index} "
+                f"batch_size={env.num_envs} attempts_in_batch={batch_attempts} "
+                f"attempts_consumed_so_far={num_grasps_evaluated}/{pool_str} "
+                f"wall_clock_for_batch={batch_wall_clock:.1f}s successes_in_batch={batch_successes} "
+                f"cumulative_successes={current_successful_grasps}",
+                flush=True,
+            )
+            batch_index += 1
+            batch_start_time = time.time()
+            batch_start_attempts = num_grasps_evaluated
+            batch_start_successes = current_successful_grasps
+            print(
+                f"[grasp record] {time.strftime('%H:%M:%S')} BATCH_START batch={batch_index} "
+                f"batch_size={env.num_envs}",
+                flush=True,
+            )
 
         # Check if simulation should stop
         if env.sim.is_stopped():

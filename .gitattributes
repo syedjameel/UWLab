@@ -19,5 +19,9 @@ source/uwlab_assets/uwlab_assets/local/Props/Custom/DeltoBlock/delto_block.usd -
 source/uwlab_assets/uwlab_assets/local/Props/Custom/DeltoSlot/delto_slot.usd -filter -diff -merge
 source/uwlab_assets/uwlab_assets/local/Props/Mounts/CustomLabTable/custom_lab_table.usd -filter -diff -merge
 source/uwlab_assets/uwlab_assets/local/Props/Mounts/CustomLabTable/custom_mount_plate.usd -filter -diff -merge
+# The FurnitureBench table leg. Both files or neither: the top-level USD references
+# ./Props/instanceable_meshes.usd and is useless without it.
+source/uwlab_assets/uwlab_assets/local/Props/FurnitureBench/SquareTableLeg200mm/square_table_leg4_200mm.usd -filter -diff -merge
+source/uwlab_assets/uwlab_assets/local/Props/FurnitureBench/SquareTableLeg200mm/Props/instanceable_meshes.usd -filter -diff -merge
 
 *.bat text eol=crlf

@@ -12,7 +12,7 @@ import omni.kit.commands
 from isaaclab.sim.converters.asset_converter_base import AssetConverterBase
 from isaaclab.sim.schemas import schemas
 from isaaclab.sim.utils import clone, export_prim_to_file, get_all_matching_child_prims, safe_set_attribute_on_usd_prim
-from isaacsim.coreutils.extensions import enable_extension
+from isaacsim.core.utils.extensions import enable_extension
 from pxr import Sdf, Usd, UsdGeom, UsdPhysics, UsdShade, UsdUtils
 
 from .mesh_converter_cfg import MeshConverterCfg

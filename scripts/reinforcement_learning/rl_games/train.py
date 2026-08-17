@@ -30,13 +30,20 @@ parser.add_argument(
 parser.add_argument("--checkpoint", type=str, default=None, help="Path to model checkpoint.")
 parser.add_argument("--sigma", type=str, default=None, help="The policy's initial standard deviation.")
 parser.add_argument("--max_iterations", type=int, default=None, help="RL Policy training iterations.")
-parser.add_argument("--wandb-project-name", type=str, default=None, help="the wandb's project name")
-parser.add_argument("--wandb-entity", type=str, default=None, help="the entity (team) of wandb's project")
+parser.add_argument(
+    "--wandb-project-name", type=str, default="uwlab-dexinsertion", help="the wandb's project name"
+)
+parser.add_argument(
+    "--wandb-entity",
+    type=str,
+    default="i_domrachev-interactive-robotic-systems-lab-kaist",
+    help="the entity (team) of wandb's project",
+)
 parser.add_argument("--wandb-name", type=str, default=None, help="the name of wandb's run")
 parser.add_argument(
     "--track",
     type=lambda x: bool(strtobool(x)),
-    default=False,
+    default=True,
     nargs="?",
     const=True,
     help="if toggled, this experiment will be tracked with Weights and Biases",
@@ -230,8 +237,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     global_rank = int(os.getenv("RANK", "0"))
     if args_cli.track and global_rank == 0:
-        if args_cli.wandb_entity is None:
-            raise ValueError("Weights and Biases entity must be specified for tracking.")
+        if not args_cli.wandb_entity:
+            raise ValueError("Weights and Biases entity must be specified for tracking (got empty --wandb-entity).")
         import wandb
 
         wandb.init(

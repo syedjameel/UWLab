@@ -460,8 +460,8 @@ def matches_certified_recorder_predicate(pos_tol: float, rot_tol: float | None, 
     ON THE REORIENTATION TASK THEY DO NOT. There ``rot_tol`` is ``rot_std / 2`` = 0.25 while the
     recorder's constant is 0.5, so the recorder counts successes this package's predicate rejects.
     A number logged under :data:`EPISODE_SUCCESS_RATE_KEY` for that task would silently overlay two
-    different tests, which is worse than having no line at all -- so the caller
-    (``_attach_certified_success_rate_metric`` in the env config) leaves the metric off instead.
+    different tests, so the metric is published under a self-describing name instead -- see
+    :func:`episode_success_rate_keys`, which is this function's only caller outside the env config.
 
     ``rot_tol`` is tested for TRUTHINESS because that is how :func:`within_success_tolerance` tests
     it: ``None`` and ``0.0`` both drop the orientation gate.
@@ -473,6 +473,40 @@ def matches_certified_recorder_predicate(pos_tol: float, rot_tol: float | None, 
         return not rot_tol
     # Otherwise the recorder applies its own 0.5 rad gate, and only that exact value agrees.
     return bool(rot_tol) and float(rot_tol) == DEXSUITE_RECORDER_ORIENTATION_THRESHOLD
+
+
+def episode_success_rate_keys(pos_tol: float, rot_tol: float | None, position_only: bool) -> tuple[str, str]:
+    """The log keys a success rate at THESE tolerances is allowed to be published under.
+
+    A success rate is meaningless without the test that produced it, and the certified names carry
+    that test implicitly -- :data:`EPISODE_SUCCESS_RATE_KEY` means ``pos_dist < 0.05`` (plus a 0.5
+    rad gate when the goal is not ``position_only``) because that is what the reference recorder
+    computed. So those names are reserved for exactly that test, checked by
+    :func:`matches_certified_recorder_predicate` rather than assumed, and every other tolerance gets
+    a name that states itself:
+
+        Success_Rate/Episode/success_rate_p10mm            (Lift scored at 1 cm)
+        Success_Rate/Episode/success_rate_p50mm_r250mrad   (Reorient at the dexsuite tolerances)
+
+    THIS IS THE FIX FOR TWO SEPARATE FAILURES, and the reason the naming is computed rather than
+    configured. Reorient previously logged NO success rate at all, because the only implementation
+    was withheld to protect the certified name -- leaving ``Curriculum/adr`` as the sole signal, and
+    that reads 0.0 both for "never succeeds" and for "curriculum stalled". And once ``pos_tol`` is
+    moved to 0.01, the withholding decision no longer protects anything: it is taken once at
+    ``__post_init__`` against the tolerance in force THEN, while
+    :class:`EpisodeSuccessRateLogger` resolves the tolerance lazily from the LIVE curriculum term,
+    so a hydra override would have published a 1 cm number under the 5 cm name. Deriving the key
+    from the same lazily-resolved spec closes that gap by construction.
+
+    Millimetres and milliradians because they make the common tolerances integers, and an integer in
+    a wandb tag is a tag you can still read six weeks later.
+    """
+    if matches_certified_recorder_predicate(pos_tol, rot_tol, position_only):
+        return EPISODE_SUCCESS_RATE_KEY, CUMULATIVE_SUCCESS_RATE_KEY
+    stamp = f"_p{round(float(pos_tol) * 1000)}mm"
+    if rot_tol:
+        stamp += f"_r{round(float(rot_tol) * 1000)}mrad"
+    return EPISODE_SUCCESS_RATE_KEY + stamp, CUMULATIVE_SUCCESS_RATE_KEY + stamp
 
 
 class EpisodeSuccessRateLogger(EpisodeSuccessProbe):
@@ -528,6 +562,7 @@ class EpisodeSuccessRateLogger(EpisodeSuccessProbe):
         self._episode_success = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
         self._total_success = 0
         self._total_attempts = 0
+        self._keys: tuple[str, str] | None = None
 
     def __call__(
         self,
@@ -566,10 +601,26 @@ class EpisodeSuccessRateLogger(EpisodeSuccessProbe):
         successes = int((flags & ran).sum().item())
         self._total_success += successes
         self._total_attempts += attempts
+        # Resolved from the LIVE curriculum term, and only here -- after the ``attempts == 0`` return
+        # above, so the construction-time reset never reaches a curriculum manager that does not
+        # exist yet. The key therefore always names the tolerance the number was actually computed
+        # at, including after a hydra override that ``__post_init__`` could not have seen.
+        episode_key, cumulative_key = self._resolved_keys()
         log = self._env.extras.setdefault("log", {})
-        log[self._log_key_prefix + EPISODE_SUCCESS_RATE_KEY] = successes / attempts
-        log[self._log_key_prefix + CUMULATIVE_SUCCESS_RATE_KEY] = self._total_success / self._total_attempts
+        log[self._log_key_prefix + episode_key] = successes / attempts
+        log[self._log_key_prefix + cumulative_key] = self._total_success / self._total_attempts
         self._episode_success[env_ids] = False
+
+    def _resolved_keys(self) -> tuple[str, str]:
+        """Cache the key pair; the tolerances cannot change within a run, but resolving is not free."""
+        if self._keys is None:
+            spec = self.spec
+            position_only = bool(
+                getattr(self._env.command_manager.cfg, spec.command_name, None)
+                and getattr(getattr(self._env.command_manager.cfg, spec.command_name), "position_only", False)
+            )
+            self._keys = episode_success_rate_keys(spec.pos_tol, spec.rot_tol, position_only)
+        return self._keys
 
 
 def success_rate_log_term_cfg(

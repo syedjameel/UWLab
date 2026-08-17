@@ -63,6 +63,29 @@ _PER_JOINT_POSTURES: dict[str, tuple[float, float]] = {
     for name in DELTO_HAND_SCRIPTED_CLOSE_JOINT_POS
 }
 
+# Position deadband for the per-joint servo below (bead UWLab-z9j.11 follow-on). Without one,
+# _per_joint_command recomputes (target - measured) / scale EVERY step with no tolerance, so a
+# joint that has already reached its target keeps issuing a nonzero correction -- measured pinned
+# at exactly +-3.000 rad/s (the actuator's velocity_limit_sim ceiling) with the sign flipping every
+# 5-10 steps, for the WHOLE 18 s episode, in free space, touching nothing.
+#
+# DERIVATION, from the same measurement, not guessed: the actuator can travel
+# velocity_limit_sim * control_dt = 3.0 rad/s * 0.1 s = 0.3 rad within a single control step,
+# against a 0.1 rad commanded delta (one action unit at this term's scale) -- a 3x overshoot ratio.
+# Any error still eliciting a "small" correction near that 0.1 rad unit gets overshot by up to 0.3
+# rad and lands on the opposite side next step, which is the cycle. The measured commanded-vs-
+# measured gap WHILE oscillating sits in the 0.06-0.20 rad band -- i.e. errors up to 0.20 rad are
+# still triggering full-throttle corrective moves that overshoot and re-trigger. Deadbanding at the
+# TOP of that observed band (rather than its middle or bottom) guarantees the joint stops receiving
+# any correction once it enters the region that was empirically sustaining the cycle.
+#
+# THE DEFAULT, not a global. scripted_gripper_actions is shared by grasp sampling, reset-state
+# generation and reset-state visualisation, across every gripper -- see its own comment for why a
+# caller-specific override (env.cfg.scripted_gripper_deadband_rad, set by DeltoGraspSamplingCfg to
+# 0.0 once segment-4 stiffness made the deadband itself measurably unnecessary for the sampler)
+# lives there rather than here. This constant stays the answer for every caller that doesn't opt out.
+_POSITION_DEADBAND_RAD = 0.20
+
 
 def _term_scale(term, num_joints: int, device) -> torch.Tensor:
     """Per-joint action scale of a joint action term, as a (num_envs, num_joints) tensor."""
@@ -81,8 +104,13 @@ def _clip_bounds(term, num_joints: int, device) -> tuple[torch.Tensor, torch.Ten
     return -inf, inf
 
 
-def _per_joint_command(term, close: bool, device) -> torch.Tensor:
-    """Servo command driving every joint of ``term`` toward its open or closed posture."""
+def _per_joint_command(term, close: bool, device, deadband_rad: float = _POSITION_DEADBAND_RAD) -> torch.Tensor:
+    """Servo command driving every joint of ``term`` toward its open or closed posture.
+
+    ``deadband_rad`` defaults to the shared ``_POSITION_DEADBAND_RAD`` -- every caller that doesn't
+    pass its own value gets today's behaviour unchanged. See ``scripted_gripper_actions`` for where
+    a caller-specific value comes from and why it must not be the module-level constant itself.
+    """
     joint_names: list[str] = list(getattr(term, "_joint_names", []))
     unknown = [name for name in joint_names if name not in _PER_JOINT_POSTURES]
     if unknown:
@@ -99,9 +127,15 @@ def _per_joint_command(term, close: bool, device) -> torch.Tensor:
     measured = term._asset.data.joint_pos[:, term._joint_ids]
     scale = _term_scale(term, len(joint_names), device)
     lo, hi = _clip_bounds(term, len(joint_names), device)
+    error = target.unsqueeze(0) - measured
     # Recomputed from the MEASURED position every step, so the command saturates against contact
     # and keeps a standing position error -- a sustained squeeze rather than a one-shot target.
-    return torch.clamp((target.unsqueeze(0) - measured) / scale, lo, hi)
+    command = torch.clamp(error / scale, lo, hi)
+    # Deadband: a joint already within deadband_rad of its target holds (zero command) instead of
+    # issuing a correction the actuator would overshoot -- see _POSITION_DEADBAND_RAD's derivation.
+    # A relative joint action reads zero as "hold the measured position", so this is a genuine hold,
+    # not a stall: it stops the perpetual oscillation without moving the joint away from its target.
+    return torch.where(error.abs() < deadband_rad, torch.zeros_like(command), command)
 
 
 def scripted_gripper_actions(env, close: bool) -> torch.Tensor:
@@ -118,6 +152,16 @@ def scripted_gripper_actions(env, close: bool) -> torch.Tensor:
     Raises:
         ValueError: if no gripper term is found, or a per-joint gripper has no declared posture.
     """
+    # Per-joint deadband, resolved PER CALLER rather than as one shared module constant. This
+    # helper is shared by all three offline recorder scripts (grasp sampling, reset-state
+    # generation, reset-state visualisation) across every gripper, so a plain constant change here
+    # would silently retune reset-state generation's servo behaviour along with the sampler's --
+    # exactly the class of cross-registry defect this project keeps hitting. ``env.cfg`` is read
+    # instead of ``env.cfg.events.*.params`` because this function is a plain helper called
+    # directly by a script's main loop, not an EventTerm with its own params dict to read from.
+    # Absent on every cfg except DeltoGraspSamplingCfg (which sets it explicitly), so every other
+    # caller/gripper/task falls back to the same _POSITION_DEADBAND_RAD every prior caller used.
+    deadband_rad = getattr(env.cfg, "scripted_gripper_deadband_rad", _POSITION_DEADBAND_RAD)
     actions = torch.zeros(env.num_envs, env.action_manager.total_action_dim, device=env.device)
     offset = 0
     found = False
@@ -130,7 +174,7 @@ def scripted_gripper_actions(env, close: bool) -> torch.Tensor:
             actions[:, offset : offset + width] = -1.0 if close else 1.0
             found = True
         elif joint_names and width == len(joint_names) and joint_names[0] in _PER_JOINT_POSTURES:
-            actions[:, offset : offset + width] = _per_joint_command(term, close, env.device)
+            actions[:, offset : offset + width] = _per_joint_command(term, close, env.device, deadband_rad)
             found = True
         offset += width
     if not found:

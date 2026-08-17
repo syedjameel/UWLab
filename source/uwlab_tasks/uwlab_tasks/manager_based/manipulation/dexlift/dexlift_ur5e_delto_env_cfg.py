@@ -53,6 +53,10 @@ joint as having NO action term that names it.
 
 from __future__ import annotations
 
+import math
+import os
+import pathlib
+
 import isaaclab.sim as sim_utils
 from isaaclab.assets import RigidObjectCfg
 from isaaclab.managers import CurriculumTermCfg as CurrTerm
@@ -351,8 +355,106 @@ STATUS_PAD_SIZE = (
     STATUS_PAD_THICKNESS,
 )
 
-SELF_COLLISIONS_ENABLED = False
-"""⚠ TEMPORARY, FOR THROUGHPUT TESTING ONLY. RESTORE TO ``True`` BEFORE ANY RESULT IS BELIEVED. ⚠
+_ARM_START_DEG = (0.0, -90.0, 100.0, -10.0, 90.0, 270.0)
+"""Arm home posture, in degrees, in UR joint order (pan, lift, elbow, wrist 1-3).
+
+REPLACES the posture inherited from ``UR5E_DEFAULT_JOINT_POS``, which is the OmniReset UR5e home
+pose for the Robotiq/linear grippers: wrists at (-90, -90, -90) leave the palm off vertical, while
+DexSuite's task assumes a top-down approach and the reference (IsaacLabDexterous
+``ur_tessolo.py:48-55``) holds all three wrists at exactly 0.0 so the palm looks at the table. The
+constant was right where it was authored and wrong where this port consumed it.
+"""
+
+_HAND_START_RAD_BY_JOINT = (
+    # One row per JOINT LEVEL, five fingers across. NOT the order of ``DELTO_HAND_JOINT_NAMES``,
+    # which is finger-major -- the mapping is written out joint-major on purpose.
+    #
+    # THESE ARE THE REFERENCE'S OWN LITERALS, copied from the certified asset config
+    # (IsaacLabDexterous ``ur_tessolo.py`` init_state.joint_pos at fork commit 6fee5b9f, which
+    # predates every edit of mine in that tree), in RADIANS rather than degrees so no conversion sits
+    # between the reference and what we spawn.
+    #
+    # WHY THIS REPLACED THE EARLIER HAND-AUTHORED POSE, which read
+    #   _1 (30, 0, 0, 0, 0) / _2 (-50, 30, 30, 30, 0) / _3 (0, 30, 30, 30, 30) / _4 (0, 30, 30, 30, 30) deg:
+    # that pose curls fingers 2-4 and the thumb TO THE SAME SIDE, so the hand can satisfy the contact
+    # gate -- which needs thumb-group AND tip-group but never checks that they OPPOSE -- by laying
+    # every fingertip on one face of the object. Contact was acquired ~4x faster than the reference
+    # and the object was never lifted. The reference instead throws the two thumb-group members to
+    # OPPOSITE sides (finger 1 to -1.5707, finger 5 to +1.0472 at the ``_2`` level) and splays 2 and 4
+    # apart (-0.348, +0.261), which is a pre-grasp with force closure available from the first step.
+    (0.0, -0.348, 0.0, 0.261, 0.5236),      # _1  splay / abduction
+    (-1.5707, 0.0, 0.0, 0.0, 1.0472),       # _2  proximal flexion  <- the opposition
+    (0.0, 1.0472, 1.0472, 1.0472, 0.5236),  # _3  middle flexion
+    (0.0, 0.5236, 0.5236, 0.5236, 0.5236),  # _4  distal flexion
+)
+
+_ARM_START = tuple(math.radians(d) for d in _ARM_START_DEG)
+"""The arm home posture this robot actually uses. One value, set here, no switch.
+
+THE REFERENCE'S POSTURE IS NOT USED, and the reason is measured rather than aesthetic. The reference
+(IsaacLabDexterous ``ur_tessolo.py`` at 6fee5b9f) holds shoulder_lift -1.712, elbow +1.712 and ALL
+THREE WRISTS AT EXACTLY 0.0. On this UR5e that puts wrist_2 90 degrees and wrist_3 270 degrees away
+from :data:`_ARM_START_DEG`, and the wrists are what set hand orientation -- so the palm no longer
+looks at the table. An earlier environment inspection fixed exactly this: at the reference wrists the
+hand does not spawn over the bench palm-down, which is the geometry DexSuite's task assumes.
+
+The shoulder and elbow barely differ between the two (8.1 and 1.9 degrees). The whole disagreement is
+the wrist, and this posture is the one that was chosen after looking at renders of both.
+"""
+
+DEXSUITE_START_JOINT_POS = {
+    **{name: rad for name, rad in zip(ARM_JOINT_NAMES, _ARM_START)},
+    **{
+        f"rj_dg_{finger}_{joint}": row[finger - 1]
+        for joint, row in enumerate(_HAND_START_RAD_BY_JOINT, start=1)
+        for finger in range(1, 6)
+    },
+}
+"""The full 26-joint home posture this task spawns in, keyed by joint NAME so the tuple ordering
+above cannot silently mis-assign a value."""
+
+if len(DEXSUITE_START_JOINT_POS) != 26:
+    raise ValueError(
+        f"{__name__}: DEXSUITE_START_JOINT_POS must cover 6 arm + 20 hand joints, got"
+        f" {len(DEXSUITE_START_JOINT_POS)}. A missing key spawns that joint at the USD default"
+        " rather than raising, so this is checked at import."
+    )
+
+START_JITTER_RAD = math.radians(10.0)
+"""Spawn jitter applied to every one of the 26 joints, as an offset from
+:data:`DEXSUITE_START_JOINT_POS`. Replaces dexsuite's +-0.50 rad (+-28.6 degrees) base range."""
+
+SELF_COLLISIONS_ENABLED = True
+"""Matches the certified reference, VERIFIED AGAINST THE ASSET rather than inferred.
+
+Not a toggle. It was one (``DEXLIFT_NO_SELFCOLL=1``), and turning it off is how a 94.9 percent
+policy was produced that drove finger 3 through finger 4 on 92.5 percent of steps -- median 6.18 mm
+of non-adjacent interpenetration, scored a success by a predicate that cannot see geometry. Any
+number measured with these off is a pipeline test, not a result, so the switch is gone.
+Surveyed from the three assets:
+
+    OURS  ur5e_delto.usd     23 sdf + 5 convexHull   selfCollisions True   28 bodies, min body 5 g
+    REF   URTessoloAlik      25 hull + 1 cvxDecomp   selfCollisions True   26 bodies, min body 25 g
+    VALIK ur10e_delto.usd    26 convexHull           selfCollisions FALSE  26 bodies
+
+All twenty hand joint limits are IDENTICAL across ours and the reference (1717 degrees of total
+travel, zero differences), so limits are not what lets the reference survive hulls. What differs is
+that VALIK pairs hulls with self-collisions OFF, while the reference pairs hulls with a 26-body
+decomposition authored for them. Our 28-body hand took hulls WITH self-collisions on and the
+articulation exploded at reset -- joints to 1,062,181 degrees under zero actions.
+
+``ur10e_delto_optimized_separate_tips_limited_jnts_self_collision.usd`` (10,925,903 bytes, dated
+2026-01-05, i.e. before the fork at 6fee5b9f) authors ``physxArticulation:enabledSelfCollisions =
+True`` on its ``/ur10`` articulation-root prim, and ``ur_tessolo.py``'s
+``ArticulationRootPropertiesCfg`` never sets ``enabled_self_collisions``, so the field stays ``None``
+and the USD's ``True`` stands.
+
+This was ``False`` for ~2.2x throughput during pipeline testing, on the strength of a note claiming
+the reference did not enable them either. That note was an INFERENCE from the throughput measurement
+(if disabling is 2.2x faster, surely the reference paid no such cost) and it was wrong. With
+self-collisions off the fingers pass through one another and through the palm, and nothing in the
+reward or the success predicate looks at finger-finger interpenetration, so a policy can learn a
+geometrically impossible grasp and still be scored a success.
 
 The asset asks for self-collisions and means it: ``ur5e_delto.usd`` inherits them from the
 reference's ``..._self_collision.usd`` variant, which authors
@@ -376,6 +478,27 @@ THE PLAN, agreed with the user: run the setup fast while the pipeline is being d
 this back to ``True`` for fine-tuning and for anything reported as a result. A policy certified with
 this ``False`` is a pipeline test, not a result.
 """
+
+def ref_actuators(part: str) -> bool:
+    """Is the reference actuator block used for this half of the robot?
+
+    ``DEXLIFT_REF_ACTUATORS`` used to be one switch over FOUR separable things -- hand actuators, arm
+    actuators, solver/rigid-body properties, and whether ``randomize_arm_sysid`` runs -- so the only
+    two reachable configurations were "all of the reference's plant" and "all of ours". That is what
+    made the ``alik_hull_ouract`` control uninterpretable: it was meant to ask whether our identified
+    UR5e ARM dynamics can carry the task, and it silently also reverted the HAND to actuators that
+    cannot perform the task at all. Our hand caps at ``velocity_limit_sim`` 3.0 rad/s while the policy
+    commands 6 rad/s of closure at action scale 0.1 and 60 Hz, and at 0.06-0.17 N.m a distal joint
+    delivers ~2.4 N to an object of up to 0.40 kg. A run cannot answer a question about the arm while
+    its fingers are physically unable to close.
+
+    ``DEXLIFT_REF_ARM_ACT`` and ``DEXLIFT_REF_HAND_ACT`` override the master per half. Unset means
+    "follow the master", so every existing launch script keeps its exact meaning.
+    """
+    master = os.environ.get("DEXLIFT_REF_ACTUATORS") == "1"
+    override = os.environ.get(f"DEXLIFT_REF_{part}_ACT")
+    return master if override is None else override == "1"
+
 
 TABLE_SLAB_THICKNESS = 0.030
 """Thickness of the collision slab that replaced the lab-table MESH. See :func:`_lab_table_cfg`."""
@@ -528,12 +651,28 @@ class Ur5eDeltoEventCfg(dexsuite.EventCfg):
         params={"required_joints": list(DELTO_HAND_JOINT_NAMES), "context": "dexlift UR5e+DELTO"},
     )
 
+    reset_robot_joints = EventTerm(
+        func=mdp.reset_joints_by_offset,
+        mode="reset",
+        params={
+            "position_range": [-START_JITTER_RAD, START_JITTER_RAD],
+            "velocity_range": [0.0, 0.0],
+        },
+    )
+    """Tighten the base class's spawn jitter from +-0.50 rad to +-10 degrees on every joint.
+
+    dexsuite ships ``position_range`` [-0.50, 0.50] (``dexsuite_env_cfg.py:366-373``), i.e. +-28.6
+    degrees on all 26 joints. That is wide enough to scatter the authored home posture -- which for
+    this port is the whole point of DEXSUITE_START_JOINT_POS -- so the jitter is narrowed to a band
+    around it rather than removed.
+    """
+
     reset_robot_elbow_joint = EventTerm(
         func=mdp.reset_joints_by_offset,
         mode="reset",
         params={
             "asset_cfg": SceneEntityCfg("robot", joint_names="elbow_joint"),
-            "position_range": [-0.2, 0.2],
+            "position_range": [-START_JITTER_RAD, START_JITTER_RAD],
             "velocity_range": [0.0, 0.0],
         },
     )
@@ -565,7 +704,13 @@ class Ur5eDeltoEventCfg(dexsuite.EventCfg):
         mode="reset",
         params={
             "asset_cfg": SceneEntityCfg("robot", joint_names=r"rj_dg_(1|2|3|4|5)_(1)"),
-            "position_range": [0.0, 0.0],
+            # DELIBERATE DEVIATION FROM THE REFERENCE, on explicit instruction to randomize every
+            # angle by +-10 degrees. The reference pins these five abduction joints at [0, 0]
+            # because the BASE term's +-28.6 degrees of splay destroys the thumb-opposition geometry
+            # that the contacts() gate scores. At +-10 degrees that objection is much weaker, but it
+            # is not zero -- if thumb/tip contact regresses against the previous run, this is the
+            # first term to put back to [0.0, 0.0].
+            "position_range": [-START_JITTER_RAD, START_JITTER_RAD],
             "velocity_range": [0.0, 0.0],
         },
     )
@@ -708,11 +853,93 @@ def _drop_unreachable_abnormal_robot_cut(env_cfg) -> None:
     also spawns), so it is a deliberate decision and not a config tweak.
 
     A named function rather than two lines in ``__post_init__``, so the decision is greppable.
+
+    THE PAIRED REWARD GOES WITH IT, AND MUST GO FROM HERE. ``rewards.early_termination`` is
+    ``is_terminated_term(term_keys="abnormal_robot")``, i.e. a reward that names this termination by
+    string. Removing the termination without removing the reward does not degrade gracefully: it
+    fails construction outright, because ``is_terminated_term.__init__`` resolves the key through
+    ``TerminationManager.find_terms`` and ``isaaclab/utils/string.py:267`` raises on a regex that
+    matches nothing, and ``ManagerBasedRLEnv`` builds the termination manager BEFORE the reward
+    manager. Measured, not argued -- ``DexLift-UR5eDelto-RelJointPos-Reorient-v0``::
+
+        ValueError: Not all regular expressions are matched! ...
+            abnormal_robot: []
+            Available strings: ['time_out', 'object_out_of_bound']
+
+    The nulling previously lived at the END of :func:`_attach_success_rate_metric`, behind
+    that function's two early returns. So it ran only for configs whose scored tolerances happened
+    to equal the certified recorder's 0.05 m / 0.5 rad -- true for Lift, false for Reorient, and
+    false for ANY tightened tolerance. A coupling between a termination and the reward that names it
+    was gated on a question about metric naming, which is why Reorient had never once constructed.
     """
     env_cfg.terminations.abnormal_robot = None
+    env_cfg.rewards.early_termination = None
 
 
-def _attach_certified_success_rate_metric(env_cfg) -> None:
+def _apply_pose_tilt_stage(env_cfg) -> None:
+    """Optionally shrink BOTH sampled orientations, so the DEMANDED ROTATION is bounded.
+
+    Off unless ``DEXLIFT_POSE_TILT`` is set to a value in radians. It is a task-definition change and
+    it is printed, because any result obtained under it describes a narrower task than the one the
+    class name implies.
+
+    WHY IT EXISTS, measured rather than supposed. On the Reorient task the goal samples roll and pitch
+    over +-pi (``dexsuite_env_cfg.py:111-113``) while ``reset_object`` samples the object's roll, pitch
+    AND yaw over +-pi (``:268-270``). The demanded rotation is therefore random-to-random, whose mean
+    magnitude is ~2.2 rad. Certifying a Reorient policy at epoch 1700 over 128 episodes at full
+    difficulty measured the per-episode CLOSEST approach as::
+
+        min orientation error   p50 1.824 rad (104 deg)   best of 128  0.307 rad (17.6 deg)
+        min position error      p50 0.026 m               best of 128  0.002 m
+
+    against a scored gate of 0.25 rad. Not one episode in 128 ever entered it, and the terminal error
+    (p50 2.374) is WORSE than the mid-episode minimum, i.e. the object tumbles past and drifts on
+    rather than being held. Position is close; orientation is not in the neighbourhood.
+
+    WHY NARROWING THE GOAL ALONE WOULD NOT HAVE WORKED, which is the part that is easy to get wrong:
+    the required rotation is the angle BETWEEN the object's reset orientation and the goal. With the
+    object still reset over the full range, pinning the goal to identity leaves the demanded rotation
+    at the magnitude of a uniformly random orientation -- still ~2.2 rad on average. Both ends have to
+    move, so this helper narrows ``reset_object``'s roll/pitch/yaw and the goal's roll/pitch together,
+    which bounds the demand at roughly twice the tilt.
+
+    Yaw is included on the OBJECT because ``reset_object`` randomizes it, and excluded on the GOAL
+    because dexsuite pins goal yaw to 0 already.
+    """
+    raw = os.environ.get("DEXLIFT_POSE_TILT")
+    if raw is None:
+        return
+    tilt = float(raw)
+    if not 0.0 <= tilt <= math.pi:
+        raise ValueError(f"DEXLIFT_POSE_TILT must be in [0, pi] radians; got {tilt}")
+    for axis in ("roll", "pitch", "yaw"):
+        env_cfg.events.reset_object.params["pose_range"][axis] = [-tilt, tilt]
+    env_cfg.commands.object_pose.ranges.roll = (-tilt, tilt)
+    env_cfg.commands.object_pose.ranges.pitch = (-tilt, tilt)
+    # THE DROP HAS TO BE CLAMPED TOO, OR THE ORIENTATION STAGING IS MOSTLY DECORATIVE. ``reset_object``
+    # samples z over [0.0, 0.4], i.e. the object is released from up to 40 cm and TUMBLES ON LANDING,
+    # so its resting orientation is whatever the bounce produced and not the roll/pitch/yaw just
+    # sampled. Measured: with tilt staged to 0.3 rad but the drop left alone, the episode-mean
+    # orientation error settled at 1.746 rad -- far above the ~0.4 rad the staging implies, though
+    # still below the 2.16 of the unstaged control, so the staging was working and being partly undone.
+    #
+    # Separable on purpose: DEXLIFT_DROP_Z overrides the clamp, so "did the tilt help" and "did the
+    # drop clamp help" can be asked as two experiments rather than one confounded change.
+    drop = float(os.environ.get("DEXLIFT_DROP_Z", "0.05"))
+    if drop < 0.0:
+        raise ValueError(f"DEXLIFT_DROP_Z must be >= 0; got {drop}")
+    env_cfg.events.reset_object.params["pose_range"]["z"] = [0.0, drop]
+    print(
+        f"[dexlift] POSE_TILT staged: object reset roll/pitch/yaw and goal roll/pitch limited to"
+        f" +-{tilt:.4f} rad (+-{math.degrees(tilt):.1f} deg); reset drop height clamped to"
+        f" [0, {drop:.3f}] m so the sampled orientation survives to the first policy step."
+        " THIS IS A NARROWER TASK than the unstaged +-pi configuration and any number measured"
+        " under it must say so.",
+        flush=True,
+    )
+
+
+def _attach_success_rate_metric(env_cfg) -> None:
     """Log an episode success rate, under the metric name the certified rl_games runs used.
 
     THE PROBLEM THIS SOLVES IS NOT A MISSING NUMBER, IT IS TWO INCOMPARABLE DASHBOARDS. The runs
@@ -729,14 +956,24 @@ def _attach_certified_success_rate_metric(env_cfg) -> None:
     here; nothing about the task, the rewards or the terminations changes, and the term cannot end
     an episode.
 
-    WHY IT IS CONDITIONAL. The name means a specific test -- the reference recorder's
-    ``pos_dist < 0.05`` with its orientation gate dropped by ``position_only``. On the Lift task
-    this port's own scored tolerances reduce to exactly that (see
-    :func:`~.mdp.success.matches_certified_recorder_predicate`, which checks it rather than
-    assuming it). On the Reorient task they do not -- the scored rotation tolerance is
-    ``rot_std / 2`` = 0.25 against the recorder's 0.5 -- and a line drawn under this name would put
-    two different tests on one axis. The metric is then left off, deliberately and visibly: the
-    series is simply absent for that task rather than present and wrong.
+    THE NAME IS CONDITIONAL; THE METRIC IS NOT. The certified name means a specific test -- the
+    reference recorder's ``pos_dist < 0.05`` with its orientation gate dropped by ``position_only``.
+    On the Lift task this port's own scored tolerances reduce to exactly that (see
+    :func:`~.mdp.success.matches_certified_recorder_predicate`, which checks it rather than assuming
+    it). On the Reorient task they do not -- the scored rotation tolerance is ``rot_std / 2`` = 0.25
+    against the recorder's 0.5 -- and a line drawn under the certified name would put two different
+    tests on one axis.
+
+    THIS USED TO BE RESOLVED BY WITHHOLDING THE METRIC, and that was the wrong half to give up.
+    Reorient then logged no success rate at all, leaving ``Curriculum/adr`` as the only signal --
+    and that reads 0.0 both for "never succeeds" and for "curriculum stalled", a conflation that has
+    already cost this campaign real time. The term is now always attached and
+    :func:`~.mdp.success.episode_success_rate_keys` decides the NAME from the tolerances resolved off
+    the live curriculum term, so a non-certified test gets a self-describing series
+    (``..._p50mm_r250mrad``) instead of no series, and the certified name still means exactly one
+    thing. That also removes a trap in the other direction: the withholding decision was taken here,
+    at ``__post_init__``, while the logger resolves its tolerances lazily at runtime, so a hydra
+    override of ``pos_tol`` used to publish the new number under the old name.
 
     The tolerances are read the same way everything else in this module reads them -- out of the
     LIVE ``curriculum.adr`` term via ``mdp.adr_param``, after ``super().__post_init__()`` has
@@ -749,14 +986,7 @@ def _attach_certified_success_rate_metric(env_cfg) -> None:
         # would raise at the first step rather than invent one.
         env_cfg.terminations.success_rate_log = None
         return
-    pos_tol = mdp.adr_param(adr_term, "pos_tol")
-    rot_tol = mdp.adr_param(adr_term, "rot_tol")
-    position_only = bool(getattr(env_cfg.commands.object_pose, "position_only", False))
-    if not mdp.matches_certified_recorder_predicate(pos_tol, rot_tol, position_only):
-        env_cfg.terminations.success_rate_log = None
-        return
     env_cfg.terminations.success_rate_log = mdp.success_rate_log_term_cfg()
-    env_cfg.rewards.early_termination = None
 
 
 def _assert_root_pin_is_a_pin(env_cfg) -> None:
@@ -925,11 +1155,145 @@ class Ur5eDeltoMixinCfg:
                 enabled_self_collisions=SELF_COLLISIONS_ENABLED
             ),
         )
+
+        # -- THE HAND COLLIDER SET. Not a toggle: this is the only one that trains.
+        #
+        # ur5e_delto_hullfix3.usd is 25 convexHull finger bodies + convexDecomposition on the three
+        # palm-shell bodies + FilteredPairsAPI on {rl_dg_base, rl_dg_palm} x the 25 finger bodies.
+        #
+        # WHY IT HAS TO BE THIS AND NOT A PLAIN convexHull. Our graft splits the DELTO palm assembly
+        # into three bodies welded by fixed joints, where the reference USD has ONE:
+        #
+        #     wrist_3_link --fixed--> rl_dg_mount --fixed--> rl_dg_base --fixed--> rl_dg_palm
+        #     rl_dg_mount  --revolute--> rl_dg_{1..5}_1
+        #
+        # PhysX auto-filters phalanx-vs-mount because they are jointed, but phalanx-vs-palm and
+        # phalanx-vs-base are two joints away and actively collided -- pairs the reference cannot
+        # even express. The palm shell is CONCAVE and the finger roots sit in recesses, so a convex
+        # hull fills them and swallows the roots: scratchpad/probe_pairs.py measured 7 interpenetrating
+        # non-adjacent pairs at the authored spawn posture (1_1/palm 38.5%, 1_1/base 28.4%, 4_1/palm
+        # 23.6%, ...), and with self-collisions on the depenetration impulses blow the articulation
+        # apart at reset -- 8045 deg of hand deviation against a +-28.6 deg reset jitter band.
+        # convexDecomposition restores the concavity; the filtered pairs are reference-faithful rather
+        # than a cheat, because base and palm are rigidly welded to the phalanx's own joint parent,
+        # making those pairs kinematically identical to mount-vs-N_1 which PhysX already filters.
+        # rl_dg_mount vs finger and finger vs finger both stay LIVE, exactly as the reference has them.
+        #
+        # The cost, measured curl-only (levels _2.._4, spread held at zero, scratchpad/closure_test.py):
+        #   convexHull, self-collisions OFF  83.98 deg      this asset, self-collisions ON  73.64 deg
+        # i.e. 17.8 percent of reachable curl, of which 31 percent is those two extra shells and 69
+        # percent is fingers genuinely blocking fingers -- the constraint the whole exercise is about.
+        #
+        # Two earlier variants were deleted rather than kept as options: a plain convexHull hand
+        # (untrainable -- the explosion above) and hullfix2, which additionally filtered rl_dg_mount
+        # and existed only to attribute that 17.8 percent between the two mechanisms. Both have served
+        # their purpose; leaving them selectable only widens the space of silently-wrong plants.
+        _HULLFIX_USD = str(pathlib.Path(robot_cfg.spawn.usd_path).with_name("ur5e_delto_hullfix3.usd"))
+        if not pathlib.Path(_HULLFIX_USD).is_file():
+            raise FileNotFoundError(
+                f"{_HULLFIX_USD} does not exist. Generate it with scratchpad/reauthor_hullfix.py,"
+                " which verifies the saved layer by re-reading it."
+            )
+        robot_cfg.spawn = robot_cfg.spawn.replace(usd_path=_HULLFIX_USD)
+        print(
+            "[dexlift] hand colliders: 25 convexHull + 3 convexDecomposition (mount/base/palm)"
+            f" + 10 filtered welded pairs ({_HULLFIX_USD})",
+            flush=True,
+        )
+
+        # -- REFERENCE ACTUATOR AND SOLVER PARITY, opt-in via ``DEXLIFT_REF_ACTUATORS=1``.
+        #
+        # An exhaustive 322-parameter diff against IsaacLabDexterous found the actuators to be the
+        # largest un-audited divergence in the port, and the one whose predicted signature matches
+        # what five training runs actually produced:
+        #
+        #   hand effort_limit_sim    0.06-0.17 N.m  vs  30.0     (176x-500x)
+        #   hand velocity_limit_sim  3.0 rad/s      vs  10000.0
+        #   hand stiffness (distal)  0.17-0.30      vs  3.0       (10x-18x on the joints that close)
+        #   hand damping (distal)    0.0025         vs  0.1       (40x)
+        #   arm  effort_limit_sim    150 / 28 N.m   vs  870.0     (5.8x / 31x)
+        #   arm  velocity_limit_sim  1.5708 rad/s   vs  2.094 / 3.1416 (USD-authored on both sides)
+        #
+        # THE MECHANISM, which survives the fact that gravity is zero for most of the curriculum: at
+        # action scale 0.1 and 60 Hz the policy commands 6 rad/s of finger closure against a 3.0 rad/s
+        # ceiling, so the fingers cannot track a closing command at all. They still cross the 0.2 N
+        # contact gate trivially -- which is why good_finger_contact saturates near the reference's own
+        # value -- while a distal joint capped at 0.06 N.m delivers ~2.4 N to an object of up to 0.40
+        # kg. Squeezing hard enough to move an object is not the same problem as holding one up, so
+        # zero gravity does not excuse a 500x torque deficit.
+        #
+        # WHY THIS IS A SWITCH: these values are the identified DELTO hand, tuned for an OFFLINE grasp
+        # recorder that holds a fixed posture on 30-52 g parts. Reference parity and sysid fidelity are
+        # mutually exclusive here, and the honest framing is that this run measures the reference's
+        # plant, not our robot's. Do NOT edit ur10e_delto.py -- that actuator object is shared with
+        # IMPLICIT/EXPLICIT_UR10E_DELTO, DELTO_HAND and the grasp recorder.
+        if ref_actuators("HAND") or ref_actuators("ARM"):
+            # Solver and rigid-body properties are plant-wide, not per-half, so they follow either.
+            robot_cfg.spawn = robot_cfg.spawn.replace(
+                articulation_props=robot_cfg.spawn.articulation_props.replace(
+                    enabled_self_collisions=SELF_COLLISIONS_ENABLED,
+                    solver_position_iteration_count=32,
+                    solver_velocity_iteration_count=1,
+                ),
+                rigid_props=robot_cfg.spawn.rigid_props.replace(
+                    retain_accelerations=True,
+                    linear_damping=0.0,
+                    angular_damping=0.0,
+                    max_depenetration_velocity=1000.0,
+                ),
+            )
+        if ref_actuators("HAND"):
+            _HAND_RE = r"rj_dg_[1-5]_[1-4]"
+            robot_cfg.actuators = dict(robot_cfg.actuators)
+            robot_cfg.actuators["hand"] = robot_cfg.actuators["hand"].replace(
+                effort_limit_sim={_HAND_RE: 30.0},
+                velocity_limit_sim={_HAND_RE: 10000.0},
+                stiffness={_HAND_RE: 3.0},
+                damping={_HAND_RE: 0.1},
+            )
+            print("[dexlift] reference HAND actuators (30 N.m / 10000 rad/s / kp 3.0 / kd 0.1)", flush=True)
+        else:
+            print("[dexlift] identified DELTO hand actuators (0.06-0.17 N.m / 3.0 rad/s)", flush=True)
+        # The DexSuite home posture, overridden HERE rather than on the asset: IMPLICIT_UR5E_DELTO's
+        # default comes from UR5E_DEFAULT_JOINT_POS, which is the OmniReset UR5e+Robotiq/linear
+        # posture, and moving it on the asset would reach every OmniReset environment.
+        robot_cfg.init_state = robot_cfg.init_state.replace(joint_pos=dict(DEXSUITE_START_JOINT_POS))
         # position targets need PD gains; see ARM_STIFFNESS
         robot_cfg.actuators = dict(robot_cfg.actuators)
         robot_cfg.actuators["arm"] = robot_cfg.actuators["arm"].replace(stiffness=ARM_STIFFNESS, damping=ARM_DAMPING)
+        if ref_actuators("ARM"):
+            # The reference's flat 870 N.m and the USD-authored arm velocity limits. 870 is NOT a
+            # hardware rating on either side -- it is 15.5x the UR10e's own 56 N.m wrist rating,
+            # inherited from IsaacLab's UR10_CFG. Copying it buys parity by making both sides equally
+            # unphysical, and a policy trained under it will not transfer to a real UR5e without a
+            # torque-limited fine-tune. That is the deliberate price of the comparison.
+            robot_cfg.actuators["arm"] = robot_cfg.actuators["arm"].replace(
+                effort_limit_sim=870.0,
+                velocity_limit_sim={
+                    "shoulder_pan_joint": 2.0940,
+                    "shoulder_lift_joint": 2.0940,
+                    "elbow_joint": 3.1416,
+                    "wrist_1_joint": 3.1416,
+                    "wrist_2_joint": 3.1416,
+                    "wrist_3_joint": 3.1416,
+                },
+            )
         if FLIP_BASE_YAW:  # never; see the constant's docstring
             robot_cfg.init_state = robot_cfg.init_state.replace(rot=(0.0, 0.0, 0.0, 1.0))
+
+        # ONE UNCONDITIONAL LINE NAMING EVERY AXIS OF THE PLANT, so a launcher can assert the run it
+        # actually got rather than the run it asked for. Colliders and self-collisions are no longer
+        # switchable -- only the two actuator halves are -- but the line still prints all four,
+        # because a launcher assertion that stops naming a value stops noticing when it changes.
+        print(
+            "[dexlift] PLANT"
+            " colliders=hullfix3"
+            f" self_collisions={'ON' if SELF_COLLISIONS_ENABLED else 'OFF'}"
+            f" hand_act={'reference' if ref_actuators('HAND') else 'identified'}"
+            f" arm_act={'reference' if ref_actuators('ARM') else 'identified'}"
+            f" usd={pathlib.Path(robot_cfg.spawn.usd_path).name}",
+            flush=True,
+        )
         self.scene.robot = robot_cfg
 
         # -- scene: OmniReset's UR5e rig, as ``syedjameel/main`` defines it. The robot base stays at
@@ -963,6 +1327,23 @@ class Ur5eDeltoMixinCfg:
         # rest of the task already assumes: the goal box ``ranges.pos_y`` is (-0.25, +0.25), i.e.
         # symmetric about the robot's own plane of symmetry, and so is the table.
         self.scene.object.init_state.pos = (WORKSPACE_X, 0.0, 0.35 + WORKSPACE_Z_SHIFT)
+        # -- SPAWN THE OBJECT IN THE FAR HALF OF THE JITTER BOX ONLY.
+        #
+        # A DELIBERATE DEVIATION FROM THE REFERENCE, requested after watching rollouts: the inherited
+        # ``reset_object`` jitters x over [-0.2, +0.2] about WORKSPACE_X, and the near half puts the
+        # object close enough to the base that the arm has to fold back on itself to reach it. +x is
+        # away from the robot here (the base sits at x = 0 and TABLE_TOP_X runs to +1.05), so the far
+        # half is [0.0, +0.2].
+        #
+        # WHY IT MATTERS MORE NOW THAN IT DID BEFORE: with SELF_COLLISIONS_ENABLED back to True a
+        # folded-back approach is genuinely BLOCKED rather than silently interpenetrating, so the
+        # near-half spawns become unreachable rather than merely ugly. y is left untouched -- it is
+        # already symmetric about the robot's own plane and re-centred to keep objects over the table.
+        #
+        # REVISIT THIS if the run succeeds: it narrows the task relative to the certified 92.87 percent
+        # configuration, so a result obtained with it is not strictly comparable to that number until
+        # the full range is restored and re-measured.
+        self.events.reset_object.params["pose_range"]["x"] = [0.0, 0.2]
         # THE TWO LINES BELOW ARE IN A DIFFERENT FRAME FROM THE ONE ABOVE, and that is worth one
         # sentence because it is what the base-frame defect was made of. ``init_state.pos`` is
         # resolved in the ENV frame; ``ObjectUniformPoseCommand`` samples in the ROBOT ROOT frame
@@ -971,6 +1352,7 @@ class Ur5eDeltoMixinCfg:
         # which is what ``events.reset_root`` buys -- see BASE_LINK_AUTHORED_YAW.
         self.commands.object_pose.ranges.pos_x = (0.3, 0.7)
         self.commands.object_pose.ranges.pos_z = (0.55 + WORKSPACE_Z_SHIFT, 0.95 + WORKSPACE_Z_SHIFT)
+        _apply_pose_tilt_stage(self)
         # The inherited bound box is written for the -x, table-at-0.235 workspace. Left alone, an
         # object at +0.55 is out of bounds on the first frame and every episode terminates
         # immediately.
@@ -1084,7 +1466,136 @@ class Ur5eDeltoMixinCfg:
         )
         self.events.joint_friction.params["asset_cfg"] = SceneEntityCfg("robot", joint_names=[HAND_JOINT_REGEX])
         # The base term names the reference robot's own wrist joint (``iiwa7_joint_7``).
-        self.events.reset_robot_wrist_joint.params["asset_cfg"] = SceneEntityCfg("robot", joint_names=["wrist_3_joint"])
+        # -- ``reset_robot_wrist_joint`` IS REMOVED, not re-targeted. dexsuite writes +-3 rad
+        # (+-171.9 degrees) to its last wrist joint every reset to scramble tool roll, and this port
+        # used to point that at ``wrist_3_joint``. Measured consequence: wrist_3 spawned at +271.76
+        # degrees against a +180 target while every other joint sat inside the +-10 degree band, so
+        # the authored home posture was true of 25 joints out of 26. The term is dropped so
+        # ``reset_robot_joints`` is the ONLY thing writing wrist_3.
+        #
+        # This is a DELIBERATE DEVIATION from the reference, on instruction. If tool-roll invariance
+        # turns out to matter, restore it here rather than widening START_JITTER_RAD -- the roll axis
+        # is the only joint it was ever meant to cover.
+        self.events.reset_robot_wrist_joint = None
+
+        # -- FULL-PARITY RESET, opt-in via the environment.
+        #
+        # Set ``DEXLIFT_REF_RESET=1`` to restore dexsuite's OWN start distribution wholesale: base
+        # +-0.50 rad, elbow +-0.20, finger roots pinned, the +-3 rad tool-roll scramble on wrist_3,
+        # and the object jitter back to the full +-0.2 m in x.
+        #
+        # WHY THIS IS A SWITCH AND NOT AN EDIT: it is the last structural deviation from the config
+        # that produced 92.87 percent, and it is the one variable that tracks whether a run on this
+        # plant ever climbs. Three runs with the NARROW reset (+-10 deg, no roll scramble) plateaued
+        # at object_upward_motion ~0.003 regardless of hand posture, self-collisions or optimizer
+        # step rate; the single run that reached adr 3.96e-3 and success 0.082 (axn28939) had the
+        # wide one. Keeping both reachable from one tree means the two can be run side by side
+        # without maintaining a fork, and the launch command records which was used.
+        if os.environ.get("DEXLIFT_REF_RESET") == "1":
+            self.events.reset_robot_joints.params["position_range"] = [-0.5, 0.5]
+            self.events.reset_robot_elbow_joint.params["position_range"] = [-0.2, 0.2]
+            self.events.reset_finger_root_joints.params["position_range"] = [0.0, 0.0]
+            # WRIST ROLL IS JITTERED LIKE ANY OTHER JOINT, NOT SCRAMBLED. dexsuite writes +-3.0 rad
+            # (+-171.9 degrees) here to make the policy invariant to tool roll. On instruction this
+            # port uses +-0.5 rad instead -- the same band ``reset_robot_joints`` gives every other
+            # arm joint above -- because a near-uniform roll is a large extra invariance to learn and
+            # nothing in this task rewards it: the goal is a POSITION (``position_only`` is true and
+            # ``rot_tol`` is None), so tool roll never enters the success test.
+            #
+            # THIS IS A DELIBERATE DEVIATION from the config that produced 92.87 percent, and it is
+            # the last one left in the reset distribution. If a run with the colliders fixed still
+            # fails to lift, this is a candidate to restore -- put 3.0 back here, not elsewhere.
+            self.events.reset_robot_wrist_joint = EventTerm(
+                func=mdp.reset_joints_by_offset,
+                mode="reset",
+                params={
+                    "asset_cfg": SceneEntityCfg("robot", joint_names="wrist_3_joint"),
+                    "position_range": [-0.5, 0.5],
+                    "velocity_range": [0.0, 0.0],
+                },
+            )
+            # OBJECT STAYS IN THE FAR HALF. dexsuite jitters x over the full [-0.2, 0.2]; on this
+            # UR5e a near-half spawn puts the object where the arm cannot approach it without
+            # folding into itself. Kept as a deliberate deviation, on instruction.
+            self.events.reset_object.params["pose_range"]["x"] = [0.0, 0.2]
+            print("[dexlift] DEXLIFT_REF_RESET=1: dexsuite start distribution restored"
+                  " (base +-0.5 rad, elbow +-0.2, wrist_3 +-0.5 rad [NOT dexsuite's +-3.0],"
+                  " object x [0.0, 0.2] far half [NOT dexsuite's +-0.2])", flush=True)
+
+        # -- CLEARANCE-AWARE LOW SPAWN, opt-in via the environment (bead UWLab-qiao.1).
+        #
+        # Set ``DEXLIFT_SPAWN_CLEARANCE=1`` to let the leg spawn NEAR THE TABLE, down to 1 cm of
+        # clearance, at ANY orientation, in ADDITION to the existing high spawns (clearance range
+        # goes up to 0.40 m, matching the old z pose_range's ceiling).
+        #
+        # WHY z CANNOT BE A FIXED OFFSET HERE: the leg's lowest point depends on its orientation.
+        # A fixed origin height that is "1 cm above the table" for a flat leg (half-thickness
+        # 0.015 m) is 85 mm INSIDE the table for a vertical one (half-length 0.100 m). ``reset_object``
+        # therefore switches to ``mdp.reset_object_pose_with_clearance``, which samples x/y/roll/
+        # pitch/yaw exactly as ``reset_root_state_uniform`` does and DERIVES z from the sampled
+        # orientation; see that function's docstring in ``mdp/spawn.py`` for the corner geometry.
+        #
+        # x/y/roll/pitch/yaw ranges are carried over UNCHANGED from the term this replaces, i.e.
+        # dexsuite's y [-0.2, 0.2] / roll,pitch,yaw [-3.14, 3.14] plus the far-half x [0.0, 0.2]
+        # override two blocks above (and, under DEXLIFT_REF_RESET=1, that override is already
+        # applied by the time this line runs, so this reads it back rather than re-stating it).
+        #
+        # DEFAULT PATH IS BYTE-IDENTICAL WHEN THIS IS UNSET: nothing above this block touches
+        # ``self.events.reset_object``, and this block does not execute unless the env var is "1".
+        if os.environ.get("DEXLIFT_SPAWN_CLEARANCE") == "1":
+            existing_pose_range = self.events.reset_object.params["pose_range"]
+            clearance_range = (0.01, 0.40)
+            half_extents = (0.100, 0.015, 0.015)
+            surface_z = 0.0
+            # LOCAL BOUNDING-BOX CENTRE, relative to the leg's own prim origin. The leg is NOT
+            # centred on its origin -- half_extents alone assumes it is, and gets the lowest-corner
+            # depth wrong by up to 6.2 mm depending on orientation (found by adversarial review,
+            # bead UWLab-qiao.1 follow-on). MEASURED with pxr's ComputeLocalBound on the default
+            # prim /square_table_leg4_200mm_merged of square_table_leg4_200mm.usd:
+            #   size = (0.19999999, 0.03000100, 0.03000000) m -> half_extents above, confirmed
+            #   local bbox centre offset from the prim origin = (-0.0062028, +0.0000042, -0.0000006) m
+            # y and z are sub-micron (4.2 um, 0.6 um) and zeroed deliberately; only x is real.
+            local_centre_offset = (-0.0062028, 0.0, 0.0)
+            self.events.reset_object = EventTerm(
+                func=mdp.reset_object_pose_with_clearance,
+                mode="reset",
+                params={
+                    "pose_range": {
+                        "x": existing_pose_range["x"],
+                        "y": existing_pose_range["y"],
+                        "roll": existing_pose_range["roll"],
+                        "pitch": existing_pose_range["pitch"],
+                        "yaw": existing_pose_range["yaw"],
+                    },
+                    "clearance_range": clearance_range,
+                    "half_extents": half_extents,
+                    "surface_z": surface_z,
+                    "local_centre_offset": local_centre_offset,
+                    "asset_cfg": SceneEntityCfg("object"),
+                },
+            )
+            print(f"[dexlift] DEXLIFT_SPAWN_CLEARANCE=1: reset_object switched to clearance-aware"
+                  f" low spawn (clearance_range={clearance_range} m, half_extents={half_extents} m,"
+                  f" surface_z={surface_z} m, local_centre_offset={local_centre_offset} m)", flush=True)
+
+        # The arm half of DEXLIFT_REF_ACTUATORS. ``randomize_arm_sysid`` writes, every reset, the
+        # OmniReset UR5e identification: armature [3.00, 1.22, 1.39, 0.18, 0.08, 0.38] kg.m^2, static
+        # friction [11.0, 9.4, 13.1, 3.0, 2.8, 3.5] N.m and viscous [32.3, 17.8, 21.8, 3.4, 2.9, 3.5]
+        # N.m.s/rad. The reference arm has ZERO of all three -- confirmed by pxr probe of its USD,
+        # which authors physxJoint:jointFriction = 0.0 on all six arm joints and no armature at all.
+        # Shoulder stiction alone eats 7-9 percent of our torque ceiling before the joint moves, and
+        # shoulder_pan viscous drag reaches 50.8 N.m at our own velocity cap.
+        #
+        # The identification was also run with the 2F-85 + D415 wrist assembly mounted, NOT the 1.77 kg
+        # DELTO hand, so these are not validated numbers for this robot in the first place.
+        if ref_actuators("ARM"):
+            self.events.randomize_arm_sysid = None
+            print("[dexlift] reference ARM plant: 870 N.m, randomize_arm_sysid DISABLED"
+                  " (reference arm has zero armature and zero joint friction)", flush=True)
+        else:
+            print("[dexlift] identified UR5e ARM plant: 150/28 N.m, randomize_arm_sysid LIVE"
+                  " (armature 3.00-0.08 kg.m^2, stiction 11.0-2.8 N.m, viscous 32.3-2.9 N.m.s/rad)",
+                  flush=True)
         # -- ``events.reset_root`` IS KEPT, exactly as dexsuite writes it. An earlier revision of
         # this module nulled it, next to ``reset_table``, on the argument that "the reference robot
         # floats and needs its root pinned every reset; ours is bolted to the table through a fixed
@@ -1202,7 +1713,7 @@ class Ur5eDeltoMixinCfg:
         # name, so the rl_games baseline and this rsl_rl port land on ONE wandb series instead of
         # two. Runs last because it reads the tolerances the ADR curriculum ended up with, which
         # ``super().__post_init__()`` derives and the Lift subclass then trims. See the function.
-        _attach_certified_success_rate_metric(self)
+        _attach_success_rate_metric(self)
 
 
 @configclass

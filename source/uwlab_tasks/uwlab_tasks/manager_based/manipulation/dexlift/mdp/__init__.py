@@ -31,12 +31,23 @@ from isaaclab_tasks.manager_based.manipulation.dexsuite.mdp import *  # noqa: F4
 from .frame_guards import *  # noqa: F401, F403
 from .rewards import *  # noqa: F401, F403
 
+# The policy-driven generator's HELD check (bead UWLab-dwx.2): settled & opposed-contact & co-move
+# & probe-displacement-tracks. held_check_core.py (the pure-tensor decision function, unit-tested
+# without Isaac) is imported directly by callers that want it standalone; only the stateful
+# ManagerTermBase wrapper is re-exported here, same convention as every other mdp submodule.
+from .held_check import *  # noqa: F401, F403
+
 # The one thresholded success test of the task family -- the predicate the ADR curriculum promotes
 # on -- extracted so the curriculum and the evaluation harness call one rule instead of two copies.
 # It shadows nothing upstream: every name it exports is new, and it subclasses ``DifficultyScheduler``
 # rather than replacing it.
 from .success import *  # noqa: F401, F403
 from .table_leg import *  # noqa: F401, F403
+
+# The clearance-aware low-spawn reset (bead UWLab-qiao.1): a table-leg spawn whose z is DERIVED
+# from clearance-above-surface and the sampled orientation, instead of sampled independently like
+# ``reset_root_state_uniform``'s z. See ``dexlift_ur5e_delto_env_cfg.DEXLIFT_SPAWN_CLEARANCE``.
+from .spawn import *  # noqa: F401, F403
 
 # The goal / red-green task-state markers. This module SUBCLASSES the dexsuite pose command rather
 # than replacing it -- upstream already owns all three visualizers -- so the star-import above must

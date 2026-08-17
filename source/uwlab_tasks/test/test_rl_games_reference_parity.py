@@ -5,7 +5,7 @@
 
 """The dexlift rl_games configs are a copy of a reference; this is what keeps them one.
 
-There are four of them and they are meant to differ from the reference DexSuite config -- and from
+There are six of them and they are meant to differ from the reference DexSuite config -- and from
 each other -- in exactly ONE value: ``params.config.name``. Nothing in YAML enforces that. Copies
 drift, and a drifted copy still trains: it just stops being the setup that reached 88%, and the
 number it produces is then not comparable to anything.
@@ -16,7 +16,7 @@ So this test pins two things:
   ``IsaacLabDexterous @ 2208576f``:
   ``source/isaaclab_tasks/isaaclab_tasks/manager_based/manipulation/dexsuite/config/ur10_tessolo/
   agents/rl_games_ppo_cfg.yaml``;
-* the four files are byte-identical to one another apart from the ``name:`` line and the comment
+* the files are byte-identical to one another apart from the ``name:`` line and the comment
   block above it.
 
 It needs only PyYAML -- no Isaac Sim, no GPU -- so it runs in any environment.
@@ -38,12 +38,18 @@ AGENTS_DIR = (
 )
 
 # filename -> the ``params.config.name`` it is required to carry. One per task-id family; the Play
-# id of each family shares its sibling's file, which is why there are four and not eight.
+# id of each family shares its sibling's file, which is why there are six and not twelve.
 EXPECTED_NAMES = {
     "rl_games_ppo_ur5e_delto_reljointpos_lift_cfg.yaml": "dexlift_ur5e_delto_reljointpos_lift",
     "rl_games_ppo_ur5e_delto_reljointpos_reorient_cfg.yaml": "dexlift_ur5e_delto_reljointpos_reorient",
+    "rl_games_ppo_ur5e_delto_reljointpos_tableleg_lift_cfg.yaml": "dexlift_ur5e_delto_reljointpos_tableleg_lift",
     "rl_games_ppo_ur5e_delto_osc_lift_cfg.yaml": "dexlift_ur5e_delto_osc_lift",
     "rl_games_ppo_ur5e_delto_osc_reorient_cfg.yaml": "dexlift_ur5e_delto_osc_reorient",
+    "rl_games_ppo_ur5e_delto_osc_tableleg_lift_cfg.yaml": "dexlift_ur5e_delto_osc_tableleg_lift",
+    "rl_games_ppo_ur5e_delto_reljointpos_tableleg_reorient_cfg.yaml": (
+        "dexlift_ur5e_delto_reljointpos_tableleg_reorient"
+    ),
+    "rl_games_ppo_ur5e_delto_osc_tableleg_reorient_cfg.yaml": "dexlift_ur5e_delto_osc_tableleg_reorient",
 }
 
 # Every one of these is quoted from the reference file. The six marked (*) are the ones the rsl_rl
@@ -54,7 +60,23 @@ REFERENCE_CONFIG = {
     "entropy_coef": 0.001,  # (*) rsl_rl was 0.005
     "bounds_loss_coef": 0.0001,  # (*) rsl_rl has no bounds loss at all
     "horizon_length": 36,  # (*) rsl_rl num_steps_per_env was 32
-    "minibatch_size": 36864,  # (*) rsl_rl expressed this as num_mini_batches=4
+    # (*) rsl_rl expressed this as num_mini_batches=4.
+    #
+    # 18432, NOT the 36864 that the reference's own ur10_tessolo yaml carries at 6fee5b9f. This is the
+    # one place where the checked-in reference SOURCE and the run that produced the certified result
+    # disagree, and the run wins: in3kt4m6 (r2a_stock_gate1p0_e2048_s42, the 88 percent primitives run
+    # the table-leg policy was warm-started from) has ``minibatch_size: 18432`` in its own serialized
+    # W&B config, alongside num_actors 2048 and horizon_length 36. A serialized run config cannot be
+    # retro-fitted by a later source edit, so it is the stronger evidence.
+    #
+    # WHY IT MATTERS, and it is not cosmetic: rl_games does ``mini_epochs`` passes over
+    # ``batch = num_actors * horizon_length`` in ``minibatch_size`` chunks, so the OPTIMIZER STEPS PER
+    # EPOCH are ``mini_epochs * batch / minibatch_size``. At the reference's 2048 envs that is
+    # 5 * 73728 / 18432 = 20 updates/epoch, against 5 * 73728 / 36864 = 10 at the value this constant
+    # used to hold. Run idodkymb sat flat for 1200 epochs at 10 updates/epoch while run axn28939 -- same
+    # plant, same rewards, but 4096 envs, which restores 20 -- climbed. Matching the reference's
+    # ENVIRONMENT COUNT while keeping a minibatch tuned for twice that count silently halves training.
+    "minibatch_size": 18432,
     "gamma": 0.99,
     "tau": 0.95,
     # NOT ``1e-3``: YAML 1.1 needs a decimal point and a signed exponent to recognise scientific
@@ -121,13 +143,13 @@ def test_config_matches_reference_hyperparameters(filename: str):
 def test_each_task_family_has_its_own_name(filename: str, expected_name: str):
     """``name`` is the only thing separating these runs' logs and .pth basenames.
 
-    All four task ids present the same 26 actions over the same three observation groups, so a
-    checkpoint of one loads into another with no shape error and no meaning.
+    Every one of these task ids presents the same 26 actions over the same three observation
+    groups, so a checkpoint of one loads into another with no shape error and no meaning.
     """
     assert _load(filename)["params"]["config"]["name"] == expected_name
 
 
-def test_the_four_files_differ_only_in_the_name_line():
+def test_the_files_differ_only_in_the_name_line():
     def strip_name_block(filename: str) -> list[str]:
         lines = (AGENTS_DIR / filename).read_text(encoding="utf-8").splitlines()
         return [ln for ln in lines if not ln.lstrip().startswith("#") and not ln.strip().startswith("name:")]

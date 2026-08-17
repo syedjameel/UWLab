@@ -86,6 +86,48 @@ class DexLiftUR5eDeltoOscPPORunnerCfg(DexLiftUR5eDeltoPPORunnerCfg):
 
 
 @configclass
+class DexLiftUR5eDeltoRelJointPosTableLegPPORunnerCfg(DexLiftUR5eDeltoRelJointPosPPORunnerCfg):
+    """Variant 1 on the FurnitureBench table leg. ``experiment_name`` is the ONLY field it sets.
+
+    The reference reuses its primitives runner on the leg bit-identically -- same network, same
+    algorithm, same iteration budget -- so every hyperparameter is inherited rather than retuned.
+    A separate name is still required, because this repository's runners are per-VARIANT and not
+    per-TASK: without it a leg run would resume the primitives Lift checkpoint of the same variant,
+    which has the same 26 actions and the same three observation groups and therefore loads with
+    no shape error and no meaning.
+    """
+
+    experiment_name = "dexlift_ur5e_delto_reljointpos_tableleg"
+
+
+@configclass
+class DexLiftUR5eDeltoOscTableLegPPORunnerCfg(DexLiftUR5eDeltoOscPPORunnerCfg):
+    """Variant 2 on the FurnitureBench table leg. Same argument, one directory further apart."""
+
+    experiment_name = "dexlift_ur5e_delto_osc_tableleg"
+
+
+@configclass
+class DexLiftUR5eDeltoRelJointPosTableLegReorientPPORunnerCfg(DexLiftUR5eDeltoRelJointPosPPORunnerCfg):
+    """Variant 1 on the table leg, scoring ORIENTATION as well as position.
+
+    The name has to separate it from its Lift sibling for the same reason the leg had to be
+    separated from the primitives: Lift and Reorient share the 26 actions and all three observation
+    groups, so a Reorient run pointed at the Lift experiment directory resumes that checkpoint
+    cleanly and silently trains the wrong task from it.
+    """
+
+    experiment_name = "dexlift_ur5e_delto_reljointpos_tableleg_reorient"
+
+
+@configclass
+class DexLiftUR5eDeltoOscTableLegReorientPPORunnerCfg(DexLiftUR5eDeltoOscPPORunnerCfg):
+    """Variant 2 on the table leg, scoring orientation as well. Same argument."""
+
+    experiment_name = "dexlift_ur5e_delto_osc_tableleg_reorient"
+
+
+@configclass
 class TableLegGraspLiftPPORunnerCfg(DexLiftUR10eDeltoPPORunnerCfg):
     """State-based PPO for the fixed-geometry FurnitureBench leg task."""
 

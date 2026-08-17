@@ -390,6 +390,98 @@ gym.register(
     },
 )
 
+# =======================================================================================
+# UR5e + Tesollo DELTO DG-5F hand (bead UWLab-zvd.3). New ids only -- every id above keeps its
+# entry point and its cfg class. Same naming convention as the UR10e+DELTO block:
+# OmniReset-{Robot}-{Task}-v0.
+#
+# NOT registered here: ``OmniReset-Delto-GraspSampling-v0`` and ``OmniReset-PartialAssemblies-v0``.
+# Both already exist above and are arm-independent (grasp sampling and partial-assembly placement
+# never put an arm in the scene), so they already serve this variant -- see ur5e_delto_cfg.py's
+# module docstring.
+# =======================================================================================
+
+# ---- UR5e + DELTO RESET STATES variants ----
+gym.register(
+    id="OmniReset-UR5eDelto-ObjectAnywhereEEAnywhere-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={"env_cfg_entry_point": f"{__name__}.ur5e_delto_cfg:Ur5eDeltoObjectAnywhereEEAnywhereResetStatesCfg"},
+)
+
+gym.register(
+    id="OmniReset-UR5eDelto-ObjectRestingEEGrasped-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={"env_cfg_entry_point": f"{__name__}.ur5e_delto_cfg:Ur5eDeltoObjectRestingEEGraspedResetStatesCfg"},
+)
+
+gym.register(
+    id="OmniReset-UR5eDelto-ObjectAnywhereEEGrasped-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={"env_cfg_entry_point": f"{__name__}.ur5e_delto_cfg:Ur5eDeltoObjectAnywhereEEGraspedResetStatesCfg"},
+)
+
+gym.register(
+    id="OmniReset-UR5eDelto-ObjectPartiallyAssembledEEAnywhere-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.ur5e_delto_cfg:Ur5eDeltoObjectPartiallyAssembledEEAnywhereResetStatesCfg"
+    },
+)
+
+gym.register(
+    id="OmniReset-UR5eDelto-ObjectPartiallyAssembledEEGrasped-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.ur5e_delto_cfg:Ur5eDeltoObjectPartiallyAssembledEEGraspedResetStatesCfg"
+    },
+)
+
+# ---- UR5e + DELTO RL STATE variants ----
+gym.register(
+    id="OmniReset-UR5eDelto-RelCartesianOSC-State-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.ur5e_delto_cfg:Ur5eDeltoRelCartesianOSCTrainCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_cfg:UR5eDelto_PPORunnerCfg",
+    },
+)
+
+gym.register(
+    id="OmniReset-UR5eDelto-RelCartesianOSC-State-Finetune-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.ur5e_delto_cfg:Ur5eDeltoRelCartesianOSCFinetuneCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_cfg:UR5eDelto_PPORunnerCfg",
+    },
+)
+
+gym.register(
+    id="OmniReset-UR5eDelto-RelCartesianOSC-State-Play-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.ur5e_delto_cfg:Ur5eDeltoRelCartesianOSCEvalCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_cfg:UR5eDelto_PPORunnerCfg",
+    },
+)
+
+gym.register(
+    id="OmniReset-UR5eDelto-RelCartesianOSC-State-Finetune-Play-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.ur5e_delto_cfg:Ur5eDeltoRelCartesianOSCFinetuneEvalCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_cfg:UR5eDelto_PPORunnerCfg",
+    },
+)
+
 # Register reset states environments
 gym.register(
     id="OmniReset-UR5eRobotiq2f85-ObjectAnywhereEEAnywhere-v0",

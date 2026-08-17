@@ -18,7 +18,7 @@ from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.utils import configclass
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 
-from uwlab_assets import UWLAB_CLOUD_ASSETS_DIR, UWLAB_LOCAL_ASSETS_DIR
+from uwlab_assets import UWLAB_ASSETS_DATA_DIR, UWLAB_CLOUD_ASSETS_DIR, UWLAB_LOCAL_ASSETS_DIR
 from uwlab_assets.robots.ur5e_robotiq_gripper import IMPLICIT_UR5E_ROBOTIQ_2F85
 
 from uwlab_tasks.manager_based.manipulation.omnireset.config.ur5e_robotiq_2f85.actions import (
@@ -281,6 +281,17 @@ class ObjectRestingEEGraspedEventCfg(ResetStatesBaseEventCfg):
             "dataset_dir": f"{UWLAB_CLOUD_ASSETS_DIR}/Datasets/OmniReset",
             "reset_types": ["ObjectAnywhereEEAnywhere"],
             "probs": [1.0],
+            # "table"/"ur5_metal_support" are kinematic AND their own init_state IS their real,
+            # permanent pose here too -- ResetStatesSceneCfg.table (:77-84) and .ur5_metal_support
+            # (:87-94) above, explicitly "duplicated [from rl_state_cfg.py] -- keep both in sync"
+            # (:73-76). See MultiResetManager's coverage guard (omnireset/mdp/events.py,
+            # _assert_reset_file_covers_scene) for why this must be an explicit claim, not inferred
+            # from kinematic_enabled. In practice the "ObjectAnywhereEEAnywhere" files loaded here
+            # are recorded by StableStateRecorder off THIS SAME ResetStatesSceneCfg (scene.get_state,
+            # recorders.py:23), which dumps every rigid_object including untouched ones -- so both
+            # names are already present in every such file today; this declaration is defense in
+            # depth for a future dataset that drops one, not a fix for a currently-missing key.
+            "assumed_static_assets": ["table", "ur5_metal_support"],
         },
     )
 
@@ -522,7 +533,19 @@ def make_insertive_object(usd_path: str, override_mass: bool = True):
     )
 
 
-def make_receptive_object(usd_path: str):
+def make_receptive_object(usd_path: str, disable_articulation_root: bool = False):
+    """Build a receptive-object config, optionally disabling a baked-in articulation root.
+
+    ``disable_articulation_root``: every receptive asset up to this one was authored directly as a
+    plain rigid-body USD. An asset run through ``isaaclab.sim.converters.UrdfConverter`` with
+    ``fix_base=True`` (as ``OneLegInsertionFixture`` was, see UWLab-3o5.3) gets an
+    ArticulationRootAPI + a fixed ``root_joint`` to the world baked into the USD BY THE CONVERTER,
+    even for a single-link fixture with no moving joints. ``RigidObjectCfg`` construction hard-fails
+    against that ("Found an articulation root when resolving ... for rigid objects") -- IsaacLab's
+    own error message names the fix: ``ArticulationRootPropertiesCfg.articulation_enabled = False``
+    in the SPAWN CONFIG, not a USD edit. This parameter is that opt-in, off by default so every
+    existing variant is byte-for-byte unaffected.
+    """
     return RigidObjectCfg(
         prim_path="{ENV_REGEX_NS}/ReceptiveObject",
         spawn=sim_utils.UsdFileCfg(
@@ -535,6 +558,11 @@ def make_receptive_object(usd_path: str):
                 kinematic_enabled=True,
             ),
             mass_props=sim_utils.MassPropertiesCfg(mass=0.5),
+            articulation_props=(
+                sim_utils.ArticulationRootPropertiesCfg(articulation_enabled=False)
+                if disable_articulation_root
+                else None
+            ),
         ),
         init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, 0.0), rot=(1.0, 0.0, 0.0, 0.0)),
     )
@@ -563,6 +591,25 @@ variants = {
         "deltoblock": make_insertive_object(
             f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/DeltoBlock/delto_block.usd", override_mass=False
         ),
+        # Our table-leg pair (bead UWLab-zvd.8), for the DELTO thread-insertion task. Pairs with the
+        # "onelegfixture" receptive entry below. SAME shipped USD dexlift spawns
+        # (dexlift_ur5e_delto_tableleg_env_cfg.py:TABLE_LEG_USD_PATH) -- SquareTableLeg200mmDecomp,
+        # not the plain SquareTableLeg200mm sibling directory (that one is unused; do not swap it in
+        # by mistake, the "Decomp" one is the certified-checkpoint one).
+        #
+        # override_mass=False IS THE TRAP THIS BEAD WAS FILED TO CATCH. The default
+        # (override_mass=True, matching upstream's un-parameterized make_insertive_object) forces
+        # mass_props to 0.001 kg regardless of what the USD authors -- a 1 g leg is flung by
+        # ordinary contact, and a policy "grasping" it can look successful while holding nothing.
+        # This leg's root prim (/square_table_leg4_200mm_merged) carries its own MassAPI at
+        # 0.02275 kg (measured directly off the USD with pxr, not inferred from a script or a
+        # config file); override_mass=False is what keeps that number instead of overwriting it.
+        # disable_gravity is NOT set here or anywhere in make_insertive_object (it is hard-False,
+        # same as every other variant) -- no gravity override applies to this object.
+        "leg200mm": make_insertive_object(
+            f"{UWLAB_LOCAL_ASSETS_DIR}/Props/FurnitureBench/SquareTableLeg200mmDecomp/square_table_leg4_200mm.usd",
+            override_mass=False,
+        ),
     },
     "scene.receptive_object": {
         "fbtabletop": make_receptive_object(
@@ -583,6 +630,24 @@ variants = {
         # success_thresholds, which a receptive object REQUIRES -- commands.TaskCommand reads
         # position/orientation from it with no default.
         "deltoslot": make_receptive_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/DeltoSlot/delto_slot.usd"),
+        # Receptive fixture for "leg200mm" (bead UWLab-zvd.8): the one-leg insertion fixture built
+        # in UWLab-3o5.3 (source/uwlab_assets/data/Props/FurnitureBench/OneLegInsertionFixture/),
+        # hence UWLAB_ASSETS_DATA_DIR rather than UWLAB_LOCAL_ASSETS_DIR -- a different asset root
+        # than every other entry in this dict. Kinematic by construction (make_receptive_object
+        # always sets kinematic_enabled=True), matching how upstream spawns its own tabletop.
+        # metadata.yaml (authored separately, not by this bead) carries success_thresholds, which a
+        # receptive object requires the same way "deltoslot" does.
+        #
+        # disable_articulation_root=True IS REQUIRED, NOT COSMETIC: the fixture was produced by
+        # UrdfConverter with fix_base=True (UWLab-3o5.3), which bakes an ArticulationRootAPI +
+        # fixed root_joint into the USD even for a single-link fixture. Without this flag,
+        # RigidObjectCfg construction hard-fails ("Found an articulation root when resolving ...
+        # for rigid objects") -- reproduced and confirmed while wiring this variant. See
+        # make_receptive_object's docstring; the fix is a spawn-config parameter, not a USD edit.
+        "onelegfixture": make_receptive_object(
+            f"{UWLAB_ASSETS_DATA_DIR}/Props/FurnitureBench/OneLegInsertionFixture/one_leg_insertion_fixture.usd",
+            disable_articulation_root=True,
+        ),
     },
 }
 

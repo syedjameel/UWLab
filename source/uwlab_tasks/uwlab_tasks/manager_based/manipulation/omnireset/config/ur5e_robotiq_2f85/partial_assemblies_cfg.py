@@ -16,7 +16,7 @@ from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.utils import configclass
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 
-from uwlab_assets import UWLAB_CLOUD_ASSETS_DIR, UWLAB_LOCAL_ASSETS_DIR
+from uwlab_assets import UWLAB_ASSETS_DATA_DIR, UWLAB_CLOUD_ASSETS_DIR, UWLAB_LOCAL_ASSETS_DIR
 
 from ... import mdp as task_mdp
 
@@ -208,7 +208,17 @@ def make_insertive_object(usd_path: str, override_mass: bool = True):
     )
 
 
-def make_receptive_object(usd_path: str):
+def make_receptive_object(usd_path: str, disable_articulation_root: bool = False):
+    """Build a receptive-object config, optionally disabling a baked-in articulation root.
+
+    ``disable_articulation_root``: mirrors reset_states_cfg.py's identical parameter (added there
+    for "onelegfixture"). An asset run through ``isaaclab.sim.converters.UrdfConverter`` with
+    ``fix_base=True`` gets an ArticulationRootAPI + a fixed ``root_joint`` to the world baked into
+    the USD by the converter, even for a single-link fixture with no moving joints. ``RigidObjectCfg``
+    construction hard-fails against that ("Found an articulation root when resolving ... for rigid
+    objects") -- the fix is ``ArticulationRootPropertiesCfg.articulation_enabled = False`` in the
+    spawn config, not a USD edit. Off by default so every existing variant is byte-for-byte unaffected.
+    """
     return RigidObjectCfg(
         prim_path="{ENV_REGEX_NS}/ReceptiveObject",
         spawn=sim_utils.UsdFileCfg(
@@ -221,6 +231,11 @@ def make_receptive_object(usd_path: str):
                 kinematic_enabled=True,
             ),
             mass_props=sim_utils.MassPropertiesCfg(mass=0.5),
+            articulation_props=(
+                sim_utils.ArticulationRootPropertiesCfg(articulation_enabled=False)
+                if disable_articulation_root
+                else None
+            ),
         ),
         init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, OBJECT_SPAWN_HEIGHT), rot=(1.0, 0.0, 0.0, 0.0)),
     )
@@ -248,6 +263,17 @@ variants = {
         "deltoblock": make_insertive_object(
             f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/DeltoBlock/delto_block.usd", override_mass=False
         ),
+        # Our table-leg pair (bead UWLab-zvd.8), for the DELTO thread-insertion task. Was registered
+        # in grasp_sampling_cfg.py and reset_states_cfg.py but missing here, which meant the
+        # ObjectPartiallyAssembled* reset tasks had no partial-assembly dataset they could ever
+        # generate for this pair. Same asset, same override_mass=False reasoning as the deltoblock
+        # entry above and reset_states_cfg.py's identical leg200mm entry: the leg's authored 0.12 kg
+        # MassAPI must survive; the make_insertive_object default (override_mass=True) would rewrite
+        # it to 1 g.
+        "leg200mm": make_insertive_object(
+            f"{UWLAB_LOCAL_ASSETS_DIR}/Props/FurnitureBench/SquareTableLeg200mmDecomp/square_table_leg4_200mm.usd",
+            override_mass=False,
+        ),
     },
     "scene.receptive_object": {
         "fbtabletop": make_receptive_object(
@@ -264,6 +290,16 @@ variants = {
         "boxwithpcb": make_receptive_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/BoxWithPcb/box_with_pcb.usd"),
         # Receptive fixture for "deltoblock" -- see the deltoslot note in reset_states_cfg.
         "deltoslot": make_receptive_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/DeltoSlot/delto_slot.usd"),
+        # Receptive fixture for "leg200mm" (bead UWLab-zvd.8) -- see reset_states_cfg.py's identical
+        # entry. UWLAB_ASSETS_DATA_DIR (not UWLAB_LOCAL_ASSETS_DIR) because this fixture was built in
+        # UWLab-3o5.3 under a different asset root. disable_articulation_root=True: this fixture was
+        # run through UrdfConverter with fix_base=True, which bakes an ArticulationRootAPI into the
+        # USD that RigidObjectCfg construction hard-fails against otherwise -- see
+        # make_receptive_object's docstring above.
+        "onelegfixture": make_receptive_object(
+            f"{UWLAB_ASSETS_DATA_DIR}/Props/FurnitureBench/OneLegInsertionFixture/one_leg_insertion_fixture.usd",
+            disable_articulation_root=True,
+        ),
     },
 }
 

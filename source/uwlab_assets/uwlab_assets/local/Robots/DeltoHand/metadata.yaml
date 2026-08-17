@@ -35,7 +35,33 @@ maximum_aperture: 0.059
 # Mount-frame vector to the deployed grasp centre. The generic scalar finger_offset cannot encode
 # this hand's lateral component; events.py uses this vector when present and keeps the scalar path
 # unchanged for parallel grippers.
-grasp_center_offset: [0.07445, 0.05800, 0.14970]
+#
+# CORRECTED 2026-08-17. Previous value [0.07445, 0.05800, 0.14970] (|.| = 176.97 mm) was fitted by
+# PhysX replay against the ONE-SCALAR closure model, which commit ea540d0 DELETED. Commit 5cfbf52
+# restored the sampler with the fully-actuated 20-DOF per-joint servo and states in its own message:
+# "No simulation was run -- no GPU was available -- so everything here is verified by constructing
+# the real configs offline, not by stepping them." The grasp centre was never re-derived for the new
+# closed posture, so the sampler placed objects where the DELETED closure used to grip.
+#
+# WHAT THE STALE VALUE COST, measured on deltoblock with contact sensors on ALL 25 hand bodies
+# (20 phalanges + 5 tips, activate_contact_sensors set on the SPAWN cfg): EVERY body read 0.000 N at
+# every sample of a full 18 s episode. The hand never touched the object at all. Object sat 180.1 mm
+# from the palm while the thumb-vs-finger-2 pinch point is at 169.5 mm and closed fingertip reach
+# spans 164.2-182.9 mm -- i.e. ~10 mm BEYOND the pinch point, at the outer edge of the envelope,
+# plus ~15.7 mm lateral. Against a 34 mm cube (17 mm half-width) that misses entirely. Consequence:
+# 6144 attempts on the DOCUMENTED reference object produced 0 successes, and the UWLAB_GRASP_DEBUG
+# counts showed stable=0 with every other condition at 256/256.
+#
+# NEW VALUE: forward kinematics from rl_dg_mount at DELTO_HAND_SCRIPTED_CLOSE_JOINT_POS (the CURRENT
+# fully-actuated closed posture), taking midpoint(rl_dg_1_tip, rl_dg_2_tip) = (63.7, 46.5, 150.0) mm.
+# That pair is the metric this file's own header declares authoritative ("a virtual jaw of finger 1
+# against finger 2"). The 5-tip centroid was REJECTED: finger 5 sits at y = -68 mm and drags the
+# average into describing splayed fingers rather than a closing point.
+#
+# STATUS: FK-DERIVED, NOT YET EMPIRICALLY CONFIRMED. The falsifiable prediction is nonzero contact
+# force on at least one hand body within the closing window. If contact still reads zero everywhere,
+# the derivation is wrong and must be re-examined rather than re-fitted a third time.
+grasp_center_offset: [0.0637, 0.0465, 0.1500]
 # The measured stable package uses the exact centre. Generic top-down position/height/tilt and
 # standoff sweeps move this non-parallel hand off its narrow opposing-pad basin; keep them disabled
 # for DELTO while leaving the generic defaults unchanged for existing grippers.
