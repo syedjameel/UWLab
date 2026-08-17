@@ -173,9 +173,12 @@ def _detect_schema(rigid_object: dict) -> str:
     if "receptive_object" in keys:
         raise ValueError(
             f"Refusing: input rigid_object keys {sorted(keys)} already contain 'receptive_object' --"
-            " this looks like a GENERATOR-ORIGIN file (reset_states_cfg.py-produced), not a"
-            " dexlift-origin file. Re-synthesising on top of already-correct data would be a"
-            " double-write. Not proceeding."
+            " this file is already schema-complete, either a GENERATOR-ORIGIN file"
+            " (reset_states_cfg.py-produced) or a dexlift-origin file recorded with"
+            " DEXLIFT_PARTIAL_ASSEMBLY=1 (_DexliftToTrainingSceneRecorder now exports"
+            " receptive_object when the scene has one -- see generate_reset_states_policy.py)."
+            " Either way it needs no rename or synthesis. Re-synthesising on top of already-correct"
+            " data would be a double-write. Not proceeding."
         )
     if keys == {"object", "table"}:
         return "raw_dexlift"

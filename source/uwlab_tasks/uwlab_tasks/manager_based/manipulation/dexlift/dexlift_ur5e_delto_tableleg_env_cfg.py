@@ -295,7 +295,65 @@ class DexLiftUR5eDeltoOscTableLegLiftEnvCfg_PLAY(Ur5eDeltoTableLegOscMixinCfg, d
 class DexLiftUR5eDeltoRelJointPosTableLegReorientEnvCfg(
     Ur5eDeltoTableLegRelJointPosMixinCfg, dexsuite.DexsuiteReorientEnvCfg
 ):
-    pass
+    # -- PARTIALLY-ASSEMBLED SPAWN + GOAL-AT-SPAWN, opt-in via the environment (bead
+    # UWLab-qiao.2/.6): "spawn partially assembled configuration, with table itself and table leg
+    # partially screwed. Pose goal is set exactly where table leg spawns. The idea policy just
+    # needs to grasp it" (user's words). Set ``DEXLIFT_PARTIAL_ASSEMBLY=1`` to spawn a receptive
+    # fixture, spawn the leg partially screwed into it (reusing the 525 poses already collected in
+    # ``partial_assemblies.pt`` for this exact pair), and pin the pose goal to the leg's own spawn
+    # pose. See ``dexlift.mdp.partial_assembly``'s module docstring for the full Y1/Y2/Y3 argument
+    # (where the fixture sits and why, why the fixture-placement + leg-composition is one event
+    # term and not two, and why the goal has to be a command subclass rather than an event).
+    #
+    # THIS TASK ONLY, NOT LIFT -- this override lives on the Reorient env class specifically and
+    # nothing above it in the MRO is touched, so Lift cannot see this toggle even if the same env
+    # var were set for a Lift run. See partial_assembly.py's docstring for why that separation
+    # matters: on Lift, ``rot_std`` is forced ``None``, which makes ``success_reward`` return before
+    # its contact gate, so an idle policy would collect reward the instant ``goal == spawn`` with no
+    # grasp required. Reorient's ``success_reward`` and ``rewards.position_tracking`` are both
+    # multiplied by ``contacts()`` (``dexlift/mdp/rewards.py:113-165``), which is what actually
+    # enforces "the policy just needs to grasp it".
+    #
+    # DEFAULT PATH IS BYTE-IDENTICAL WHEN THIS IS UNSET: nothing below runs unless the env var is
+    # "1", matching the ``DEXLIFT_REF_RESET`` / ``DEXLIFT_SPAWN_CLEARANCE`` idiom this mirrors.
+    def __post_init__(self):
+        super().__post_init__()
+
+        if os.environ.get("DEXLIFT_PARTIAL_ASSEMBLY") == "1":
+            # -- Y1: the fixture. Never present in this scene before this toggle.
+            self.scene.receptive_object = mdp.make_dexlift_receptive_object_cfg()
+
+            # -- Y2: ONE event places the fixture, then composes+places the leg against it, in that
+            # order, inside one Python call -- see partial_assembly.py's docstring for why two
+            # separate EventTerms would race. REPLACES (does not add to) the inherited free-scatter
+            # ``reset_object``: the leg's spawn is now entirely the partial-assembly pose, not the
+            # old uniform pose_range.
+            self.events.reset_object = EventTerm(
+                func=mdp.SpawnPartialAssembly,
+                mode="reset",
+                params={
+                    "dataset_dir": mdp.DEXLIFT_PARTIAL_ASSEMBLY_DATASET_DIR,
+                    "insertive_object_cfg": SceneEntityCfg("object"),
+                    "receptive_object_cfg": SceneEntityCfg("receptive_object"),
+                    "fixture_pose_range": mdp.RECEPTIVE_POSE_RANGE,
+                    # No extra jitter on top of the stored partial-assembly relative pose -- the
+                    # leg spawns exactly where a recorded partial-assembly sample puts it.
+                    "pose_range_b": {},
+                },
+            )
+
+            # -- Y3: the goal is the object's own spawn pose, not a fresh uniform draw. MUST be a
+            # command SUBCLASS -- see partial_assembly.py's docstring, "Y3" section: an event term
+            # cannot do this, because CommandManager.reset() always resamples afterward, in the same
+            # reset call, regardless of resampling_time_range.
+            self.commands.object_pose = mdp.upgrade_to_goal_at_spawn(self.commands.object_pose)
+
+            print(
+                "[dexlift] DEXLIFT_PARTIAL_ASSEMBLY=1: receptive_object added at"
+                f" x={mdp.RECEPTIVE_POSE_RANGE['x']} y={mdp.RECEPTIVE_POSE_RANGE['y']}"
+                f" z={mdp.RECEPTIVE_POSE_RANGE['z'][0]}; reset_object -> SpawnPartialAssembly"
+                " (partial_assemblies.pt); goal pinned to leg spawn pose", flush=True,
+            )
 
 
 @configclass

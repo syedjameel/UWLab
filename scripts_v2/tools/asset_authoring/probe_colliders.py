@@ -21,6 +21,10 @@ import sys
 from pxr import Usd, UsdPhysics
 
 OURS = "/home/dom-iva/github.com/orel/lerobot/UWLab_ur5edelto/source/uwlab_assets/uwlab_assets/local/Robots/Ur5eDelto/ur5e_delto.usd"
+# REF points into a SEPARATE repo (IsaacLabDexterous), a sibling of this one on the machine this
+# script was written on -- it will NOT exist on DL_A6000 or any freshly provisioned host (e.g. the
+# 5090) unless that repo is separately vendored there too. No CLI override; edit this constant or
+# vendor the reference repo before running this script anywhere else.
 REF = "/home/dom-iva/github.com/orel/IsaacLabDexterous/source/isaaclab_assets/data/robots/URTessoloAlik/ur10e_delto_optimized_separate_tips_limited_jnts_self_collision.usd"
 
 

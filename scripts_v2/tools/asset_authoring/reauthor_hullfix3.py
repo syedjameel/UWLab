@@ -27,8 +27,13 @@ import sys
 from pxr import Usd, UsdPhysics
 
 ROOT = "/home/dom-iva/github.com/orel/lerobot/UWLab_ur5edelto/source/uwlab_assets/uwlab_assets/local/Robots/Ur5eDelto"
-SRC = f"{ROOT}/ur5e_delto.usd"
-DST = f"{ROOT}/ur5e_delto_hullfix3.usd"
+# Optional CLI overrides, added 2026-08-17 to allow a rebuild-and-compare run without ever writing
+# to the live asset paths (see the "Verified reproducibility" section of README.md in this
+# directory). No args -> SRC/DST are byte-identical to what this script has always defaulted to;
+# DST is independent of SRC on purpose, so a caller can redirect the output without touching the
+# input, unlike reauthor_leg_decomp.py's DST-derived-from-SRC pattern.
+SRC = sys.argv[1] if len(sys.argv) > 1 else f"{ROOT}/ur5e_delto.usd"
+DST = sys.argv[2] if len(sys.argv) > 2 else f"{ROOT}/ur5e_delto_hullfix3.usd"
 
 DECOMP = {"rl_dg_mount", "rl_dg_base", "rl_dg_palm"}
 SHELLS = ("rl_dg_base", "rl_dg_palm")   # the two bodies the reference does not have

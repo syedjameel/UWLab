@@ -192,31 +192,46 @@ class _DexliftToTrainingSceneRecorder(StableStateRecorder):
     generic ``CuboidCfg`` slab vs. the training scene's ``custom_lab_table.usd``), and restoring one
     asset's recorded pose onto a different one is not something to do silently even though both
     happen to be kinematic. The training scene's own table is already correctly placed at spawn.
-    ``receptive_object`` / ``ur5_metal_support`` are never invented -- both are kinematic in the
-    training scene and are correctly left at spawn when a state omits them (this scene has no
-    fixture at all -- see this script's module docstring -- so there is nothing to invent them FROM).
+    ``ur5_metal_support`` is never invented -- kinematic in the training scene and correctly left at
+    spawn when a state omits it; this scene has no support plate at all, so there is nothing to
+    invent it from.
 
-    FAILS LOUDLY rather than guessing if the source keys are ever anything other than exactly
-    ``{"object", "table"}`` -- e.g. if this script is ever pointed at a different ``--task`` whose
-    scene uses different names. A silent no-op remap would recreate exactly the defect this class
-    exists to prevent, just relocated.
+    ``receptive_object`` IS KEPT (renamed to itself, i.e. exported unchanged) WHEN PRESENT --
+    extended for bead UWLab-qiao.2/.6, the ``DEXLIFT_PARTIAL_ASSEMBLY`` toggle
+    (``dexlift_ur5e_delto_tableleg_env_cfg.py``). That toggle adds a real ``receptive_object`` entity
+    to this scene (see ``dexlift.mdp.partial_assembly``), so a state recorded with it on now carries
+    the fixture too and is schema-complete the moment it reaches disk -- exactly the gap
+    UWLab-qiao.7 found and had to patch after the fact for the two files recorded before this entity
+    existed. Nothing here re-derives the fixture's pose or the OmniReset training scene's z
+    convention; this class only forwards whatever the scene already wrote.
+
+    FAILS LOUDLY rather than guessing if the source keys are ever anything other than one of the two
+    KNOWN schemas -- e.g. if this script is ever pointed at a different ``--task`` whose scene uses
+    different names. A silent no-op remap would recreate exactly the defect this class exists to
+    prevent, just relocated.
     """
 
     _RENAME = {"object": "insertive_object"}  # dexlift scene name -> OmniReset training scene name
     _DROP = {"table"}  # different asset in the training scene; do not carry its pose across
+    # receptive_object is intentionally absent from both dicts above: absent from _RENAME because
+    # its name already matches the training scene, absent from _DROP because (when present) it is
+    # exactly the entity the training scene is missing when this file's rigid_object dict lacks it.
+    _KNOWN_SCHEMAS = ({"object", "table"}, {"object", "table", "receptive_object"})
 
     def record_pre_reset(self, env_ids):
         key, state = super().record_pre_reset(env_ids)
         rigid_object = state["rigid_object"]
-        if set(rigid_object.keys()) != {"object", "table"}:
+        keys = set(rigid_object.keys())
+        if keys not in self._KNOWN_SCHEMAS:
             raise ValueError(
-                f"_DexliftToTrainingSceneRecorder expected exactly the dexlift lift scene's own"
-                f" rigid_object keys {{'object', 'table'}}, got {sorted(rigid_object.keys())}. This"
-                f" recorder's rename/drop table is specific to that scene (see class docstring) --"
+                f"_DexliftToTrainingSceneRecorder expected rigid_object keys {{'object', 'table'}}"
+                f" (plain lift/reorient scene) or {{'object', 'table', 'receptive_object'}}"
+                f" (DEXLIFT_PARTIAL_ASSEMBLY=1 scene), got {sorted(keys)}. This recorder's"
+                f" rename/drop/passthrough is specific to those two scenes (see class docstring) --"
                 f" refusing to silently mis-map (or silently pass through) an unexpected schema."
             )
         state["rigid_object"] = {
-            self._RENAME[name]: tensors for name, tensors in rigid_object.items() if name not in self._DROP
+            self._RENAME.get(name, name): tensors for name, tensors in rigid_object.items() if name not in self._DROP
         }
         return key, state
 

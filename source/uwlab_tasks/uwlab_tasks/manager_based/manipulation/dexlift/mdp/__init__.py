@@ -54,3 +54,9 @@ from .spawn import *  # noqa: F401, F403
 # stay first: ``TaskStateVisPoseCommandCfg`` is a strict extension of the
 # ``ObjectUniformPoseCommandCfg`` it re-exports, not a shadow of it.
 from .task_state_vis import *  # noqa: F401, F403
+
+# Partially-assembled table-leg spawn (bead UWLab-qiao.2/.6), gated behind
+# ``DEXLIFT_PARTIAL_ASSEMBLY`` in the table-leg REORIENT config only. Imported after
+# ``task_state_vis`` for the same reason that module is imported after the dexsuite star-import:
+# ``GoalAtSpawnPoseCommandCfg`` extends ``TaskStateVisPoseCommandCfg``, not the raw dexsuite command.
+from .partial_assembly import *  # noqa: F401, F403
