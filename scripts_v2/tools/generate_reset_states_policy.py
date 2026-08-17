@@ -305,10 +305,26 @@ def main() -> None:
     # read off the CONSTRUCTED env_cfg rather than the DEXLIFT_SPAWN_CLEARANCE env var directly, so
     # a launcher that forgot to export it (or a toggle that silently failed to apply) is visible
     # here instead of producing a plausible-looking wrong reset-state distribution.
+    #
+    # THREE EXPLICIT CASES PLUS A SAFE FALLBACK, not a clearance-term/else split. The else-branch
+    # used to assume "not the clearance term" meant reset_root_state_uniform, indexing
+    # params['pose_range'] unconditionally -- true right up until DEXLIFT_PARTIAL_ASSEMBLY started
+    # correctly routing reset_object to SpawnPartialAssembly (bead UWLab-qiao.1 5090-migration
+    # follow-on, the Play-class fix), whose params have no 'pose_range' key at all. KeyError, on a
+    # line whose whole job is to report what was built without crashing. The fallback below is the
+    # fix that generalizes: ANY term this file doesn't know about prints its own name and params
+    # keys rather than guessing a schema -- and deliberately does NOT use params.get() to paper over
+    # an unknown field, because a verify line that prints None on a mismatch LOOKS like a passing
+    # check instead of the "I don't recognise this" it should be.
     _reset_object_func = env_cfg.events.reset_object.func
+    _reset_object_params = env_cfg.events.reset_object.params
+    # Computed ONCE here, not re-tested inline in the branch below and not re-tested again at the
+    # clearance hard guard further down -- both consume THIS variable. Recomputing it in more than
+    # one place is exactly the coupling that let this refactor silently drop it the first time
+    # (the guard kept referencing a name the branch rewrite no longer defined -- NameError, not a
+    # False, so the crash was loud, but the discipline going forward is one source of truth).
     _reset_object_is_clearance_term = _reset_object_func is dexlift_mdp.reset_object_pose_with_clearance
     if _reset_object_is_clearance_term:
-        _reset_object_params = env_cfg.events.reset_object.params
         print(
             f"[verify] events.reset_object.func = {_reset_object_func.__name__}  "
             f"clearance_range={_reset_object_params['clearance_range']} "
@@ -316,11 +332,24 @@ def main() -> None:
             f"surface_z={_reset_object_params['surface_z']}  (DEXLIFT_SPAWN_CLEARANCE=1)",
             flush=True,
         )
+    elif _reset_object_func is dexlift_mdp.SpawnPartialAssembly:
+        print(
+            f"[verify] events.reset_object.func = {_reset_object_func.__name__}  "
+            f"fixture_pose_range={_reset_object_params['fixture_pose_range']} "
+            f"dataset_dir={_reset_object_params['dataset_dir']}  (DEXLIFT_PARTIAL_ASSEMBLY=1)",
+            flush=True,
+        )
+    elif _reset_object_func.__name__ == "reset_root_state_uniform" and "pose_range" in _reset_object_params:
+        print(
+            f"[verify] events.reset_object.func = {_reset_object_func.__name__}  "
+            f"pose_range.z = {_reset_object_params['pose_range'].get('z')}  "
+            f"(DEXLIFT_SPAWN_CLEARANCE unset/not '1')",
+            flush=True,
+        )
     else:
         print(
             f"[verify] events.reset_object.func = {_reset_object_func.__name__}  "
-            f"pose_range.z = {env_cfg.events.reset_object.params['pose_range'].get('z')}  "
-            f"(DEXLIFT_SPAWN_CLEARANCE unset/not '1')",
+            f"UNRECOGNISED TERM -- params keys: {sorted(_reset_object_params.keys())}",
             flush=True,
         )
 
