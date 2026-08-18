@@ -1860,6 +1860,19 @@ class MultiResetManager(ManagerTermBase):
         reset_types: list[str],
         probs: list[float],
         success: str | None = None,
+        # CONSUMED IN __init__, DECLARED HERE BECAUSE THE MANAGER VALIDATES AGAINST __call__.
+        # EventManager._prepare_terms checks every configured param name against this signature and
+        # raises if one is not accepted -- so a param read only via cfg.params.get() in __init__,
+        # as this one is, still has to appear here or the term cannot be constructed at all.
+        #
+        # Omitting it is what broke EVERY OmniReset task that declares assumed_static_assets --
+        # the three reset-state tasks AND the rl_state training configs -- with
+        #   ValueError: The term '...' expects mandatory parameters: [...] but received:
+        #   [..., 'assumed_static_assets']
+        # It shipped unnoticed because the only thing exercised after that change was the reset
+        # GENERATOR, which runs dexlift tasks that never touch this term. Unused at call time by
+        # design: the guard it feeds is a construction-time check, not a per-reset one.
+        assumed_static_assets: list[str] | None = None,
     ) -> None:
         if env_ids is None:
             env_ids = torch.arange(self.num_envs, device=self._env.device)

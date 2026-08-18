@@ -122,6 +122,7 @@ grasp that is visibly slipping reads as slipping, not as held.
 from __future__ import annotations
 
 import argparse
+import time
 from pathlib import Path
 
 from isaaclab.app import AppLauncher
@@ -148,7 +149,19 @@ parser.add_argument("--state-task", default="OmniReset-UR10eDelto-RelCartesianOS
 parser.add_argument("--insertive-variant", default="deltoblock")
 parser.add_argument("--receptive-variant", default="deltoslot")
 parser.add_argument("--object-key", default=None, help="reset-states mode: rigid_object name to treat as the grasped object (auto-detected if omitted)")
+parser.add_argument("--cam-height", type=int, default=480)
+parser.add_argument("--cam-width", type=int, default=640)
+parser.add_argument("--dataset-dir", default=None, help="override every event term's dataset_dir (reset states + grasps). Task default points at a different pair.")
 parser.add_argument("--dry-run", action="store_true", help="load + select indices + print the schema, no Isaac, no rendering, nothing published")
+parser.add_argument(
+    "--drop-terminations",
+    nargs="*",
+    default=[],
+    metavar="TERM",
+    help="termination terms to set to None before gym.make. A render never reads a termination, and"
+    " on the insertion family 'success' builds a Warp CollisionAnalyzer over the leg+fixture pair"
+    " that does not finish (see module docstring, FIFTH). Explicit and logged per term.",
+)
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
 args.headless = True
@@ -287,12 +300,80 @@ def build_cfg():
     # such attribute; skip the override there and keep the task's own default scene object rather
     # than raising or silently corrupting an unrelated cfg.
     if hasattr(cfg.scene, "insertive_object"):
-        try:
-            state_cfg = parse_env_cfg(args.state_task, device=args.device, num_envs=1)
-            cfg.scene.insertive_object = state_cfg.variants["scene.insertive_object"][args.insertive_variant]
-            cfg.scene.receptive_object = state_cfg.variants["scene.receptive_object"][args.receptive_variant]
-        except Exception as exc:  # noqa: BLE001
-            print(f"[render] WARNING: object-variant override skipped ({exc}); using --task's own default scene object(s)")
+        # PREFER THE TASK'S OWN VARIANT TABLE over --state-task's.
+        #
+        # The reset-state task family (OmniReset-UR5eDelto-Object*-v0) defines `variants` itself,
+        # with the pair actually under test (leg200mm / onelegfixture). Reading them from a
+        # DIFFERENT task -- the UR10e CameraAlign-family --state-task, whose defaults are
+        # deltoblock/deltoslot -- silently builds a scene out of the wrong assets. That is not a
+        # cosmetic mismatch: those USDs are fetched from the cloud, and a cloud-USD fetch is a
+        # known SILENT hang in this project. It is what made an earlier attempt sit for 25 minutes
+        # after "Time taken for scene creation" with no further log line and no traceback, which
+        # read as "the insertion scene cannot render" when the scene builds in 11 s with the right
+        # variants (measured, cameras included).
+        source = cfg if getattr(cfg, "variants", None) else None
+        if source is None:
+            try:
+                source = parse_env_cfg(args.state_task, device=args.device, num_envs=1)
+                print(f"[render] variant source: --state-task {args.state_task} (task has no variants of its own)")
+            except Exception as exc:  # noqa: BLE001
+                source = None
+                print(f"[render] WARNING: no variant table available ({exc}); using --task's own default scene object(s)")
+        else:
+            print(f"[render] variant source: --task {args.task}'s own variants table")
+        if source is not None:
+            # Fail loudly on an unknown variant name rather than falling back to a default: a
+            # scene quietly built from the wrong object is exactly the failure being fixed here.
+            for field, name in (("insertive_object", args.insertive_variant), ("receptive_object", args.receptive_variant)):
+                table = source.variants[f"scene.{field}"]
+                if name not in table:
+                    raise SystemExit(
+                        f"[render] REFUSING: '{name}' is not a known scene.{field} variant. Available: {sorted(table)}"
+                    )
+                setattr(cfg.scene, field, table[name])
+            print(f"[render] variants: insertive={args.insertive_variant} receptive={args.receptive_variant}")
+
+    # Point every reset-state / grasp event term at the dataset that holds THIS pair's files. The
+    # task default is ./Datasets_ur5e_delto/OmniReset with the Peg__PegHole pair; the resulting
+    # FileNotFoundError is swallowed inside lazy event-term instantiation and resurfaces later as
+    # a bogus "MultiResetManager.__init__() got an unexpected keyword argument 'dataset_dir'".
+    if args.dataset_dir is not None:
+        patched = 0
+        for name, term in vars(cfg.events).items():
+            if term is not None and getattr(term, "params", None) and "dataset_dir" in term.params:
+                term.params["dataset_dir"] = args.dataset_dir
+                patched += 1
+                print(f"[render] dataset_dir -> {args.dataset_dir}  (event '{name}')")
+        if patched == 0:
+            raise SystemExit("[render] REFUSING: --dataset-dir given but no event term takes one -- it would be a silent no-op")
+    # DROP TERMINATION TERMS THAT ARE POINTLESS FOR A RENDER AND EXPENSIVE TO CONSTRUCT.
+    #
+    # This is what has blocked the insertion reset-state family from EVER rendering (see the
+    # module docstring, FIFTH). ``check_reset_state_success.__init__`` builds a Warp
+    # ``CollisionAnalyzer`` over the 200 mm leg + fixture collider pair, and on this local box that
+    # construction ran at 60-99 percent GPU for a full 900 s without finishing -- a real
+    # performance pathology in that path, not a cold JIT compile (tested, not assumed).
+    #
+    # A render replays STORED states and never reads a termination: nothing here scores an episode,
+    # and the settle loop below steps physics directly rather than going through the termination
+    # manager. So the term is pure construction cost for this script's purposes. Dropping it is a
+    # narrower intervention than switching to a task without the fixture, which would render a
+    # DIFFERENT scene than the one these states are consumed in -- the whole point of an in-domain
+    # picture.
+    #
+    # NOT a silent default: --drop-terminations must be passed explicitly, each dropped term is
+    # named on stdout, and a name that is absent is reported rather than ignored, so a typo cannot
+    # quietly leave the expensive term in place and be read as "the fix did not help".
+    for term in args.drop_terminations:
+        if not hasattr(cfg.terminations, term):
+            print(f"[render] --drop-terminations: '{term}' is not a termination on {args.task}, nothing dropped")
+            continue
+        if getattr(cfg.terminations, term) is None:
+            print(f"[render] --drop-terminations: '{term}' was already None")
+            continue
+        setattr(cfg.terminations, term, None)
+        print(f"[render] dropped termination '{term}' (render replays stored states; terminations are never read)")
+
     cfg.scene.num_envs = 1
     cfg.sim.render_interval = 1
     # Render-only, num_envs=1 -- the inherited training default (2 GiB, sized for thousands of
@@ -311,8 +392,8 @@ def add_debug_cameras(cfg, eye_3q_w, quat_3q_w, eye_axis_w, quat_axis_w) -> None
     # this is the fix, not a runtime re-aim and not a Robot-parented sensor.
     cfg.scene.debug_cam_3q = TiledCameraCfg(
         prim_path="{ENV_REGEX_NS}/DebugCam3Q",
-        height=480,
-        width=640,
+        height=args.cam_height,
+        width=args.cam_width,
         offset=TiledCameraCfg.OffsetCfg(pos=tuple(eye_3q_w.tolist()), rot=quat_3q_w, convention="opengl"),
         data_types=["rgb"],
         spawn=sim_utils.PinholeCameraCfg(focal_length=args.focal_length),
@@ -321,8 +402,8 @@ def add_debug_cameras(cfg, eye_3q_w, quat_3q_w, eye_axis_w, quat_axis_w) -> None
         return
     cfg.scene.debug_cam_axis = TiledCameraCfg(
         prim_path="{ENV_REGEX_NS}/DebugCamAxis",
-        height=480,
-        width=640,
+        height=args.cam_height,
+        width=args.cam_width,
         offset=TiledCameraCfg.OffsetCfg(pos=tuple(eye_axis_w.tolist()), rot=quat_axis_w, convention="opengl"),
         data_types=["rgb"],
         spawn=sim_utils.PinholeCameraCfg(focal_length=args.focal_length),
@@ -421,8 +502,19 @@ def main_grasps() -> None:
 
     cfg = build_cfg()
     add_debug_cameras(cfg, eye_3q_w, quat_3q_w, eye_axis_w, quat_axis_w)
+    print("[render] gym.make: constructing env (cameras add render products here) ...", flush=True)
+    _t = time.time()
     env = gym.make(args.task, cfg=cfg, render_mode="rgb_array").unwrapped
+    print(f"[render] gym.make: done in {time.time()-_t:.1f}s", flush=True)
+    # THE FIRST RESET IS WHERE A CAMERA-ENABLED RUN HANGS ON THIS SCENE. IsaacLab's own last line
+    # is "Completed setting up the environment...", which is emitted at the END of gym.make -- so a
+    # freeze after it reads as "construction hung" when construction already finished. Measured:
+    # first reset takes 0.5s with cameras ENABLED but no TiledCamera added, and did not return in
+    # 20 minutes with two 640x480 TiledCameras on this scene.
+    print("[render] env.reset(): first reset, triggers first render ...", flush=True)
+    _t = time.time()
     env.reset()
+    print(f"[render] env.reset(): done in {time.time()-_t:.1f}s", flush=True)
 
     robot = env.scene["robot"]
     device = env.device
@@ -548,8 +640,19 @@ def main_reset_states() -> None:
 
     cfg = build_cfg()
     add_debug_cameras(cfg, eye_3q_w, quat_3q_w, eye_axis_w, quat_axis_w)
+    print("[render] gym.make: constructing env (cameras add render products here) ...", flush=True)
+    _t = time.time()
     env = gym.make(args.task, cfg=cfg, render_mode="rgb_array").unwrapped
+    print(f"[render] gym.make: done in {time.time()-_t:.1f}s", flush=True)
+    # THE FIRST RESET IS WHERE A CAMERA-ENABLED RUN HANGS ON THIS SCENE. IsaacLab's own last line
+    # is "Completed setting up the environment...", which is emitted at the END of gym.make -- so a
+    # freeze after it reads as "construction hung" when construction already finished. Measured:
+    # first reset takes 0.5s with cameras ENABLED but no TiledCamera added, and did not return in
+    # 20 minutes with two 640x480 TiledCameras on this scene.
+    print("[render] env.reset(): first reset, triggers first render ...", flush=True)
+    _t = time.time()
     env.reset()
+    print(f"[render] env.reset(): done in {time.time()-_t:.1f}s", flush=True)
 
     robot = env.scene["robot"]
     device = env.device
