@@ -192,6 +192,15 @@ variants = {
         # V2c: SHAPED + near-frictionless blocker. v2/v2b are pickable BY THE BLOCKER.
         "jigv2c": make_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/JigV2c/jig_v2c.usd", override_mass=False),
         # Local dev asset (telescoping cover/lid). Switch to UWLAB_CLOUD_ASSETS_DIR when sharing.
+        # Jig with a MASSLESS box filling its window -- the REMOVAL task's insertive object
+        # (built by build_jig_enclosure_usds.py --blocked-jig). The removal task PICKS THE JIG,
+        # so jig-v1's one-sided rim pinch applies again (measured: median jaw gap 13.8 mm at
+        # peak lift, 201/202 successes, zero straddles); the blocker forbids it.
+        # override_mass=False: the blocker carries a MassAPI on a CHILD prim and
+        # modify_mass_properties is apply_nested -- see make_insertive_object.
+        "jigblocked": make_object(
+            f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/JigBlocked/jig_blocked.usd", override_mass=False
+        ),
         "cover": make_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/Cover/cover.usd"),
     }
 }

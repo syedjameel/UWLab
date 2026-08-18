@@ -70,6 +70,25 @@ class RlStateSceneCfg(InteractiveSceneCfg):
         init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, 0.0), rot=(1.0, 0.0, 0.0, 0.0)),
     )
 
+    # WORLD-FIXED parking marker (jig-removal task; ledger R4). Invisible success target at a
+    # constant spot on the mat: static kinematic body, positioned by init_state alone and never
+    # moved by any event -- reset_scene_to_default restores it. Present-but-inert for every other
+    # task (one buried 4 mm collider inside the mat; contributes no observation term).
+    # Why world-fixed: success measured against the FIXTURE would rotate with its free yaw and
+    # forces the fixture band down to 82 x 82 mm to keep the target on the mat (measured); a
+    # fixed marker keeps free yaw AND the wide band. Fixed is also what the RGB student needs --
+    # it never sees receptive_asset_pose, and memorises the spot from the visible table.
+    parking_marker: RigidObjectCfg = RigidObjectCfg(
+        prim_path="{ENV_REGEX_NS}/ParkingMarker",
+        spawn=sim_utils.UsdFileCfg(
+            usd_path=f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/ParkingSpot/parking_spot.usd",
+            scale=(1, 1, 1),
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
+            mass_props=sim_utils.MassPropertiesCfg(mass=0.5),
+        ),
+        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.87, 0.0, 0.004), rot=(1.0, 0.0, 0.0, 0.0)),
+    )
+
     # Environment -- the REAL lab table (procedurally generated from measured dims; see
     # local/Props/Mounts/CustomLabTable/table_dims.yaml + make_custom_table_usd.py).
     # Asset frame == robot base frame (origin at the base flange, work surface at +0.004),
@@ -692,6 +711,15 @@ variants = {
             f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/JigV2c/jig_v2c.usd", override_mass=False
         ),
         # Local dev asset (telescoping cover/lid). Switch to UWLAB_CLOUD_ASSETS_DIR when sharing.
+        # Jig with a MASSLESS box filling its window -- the REMOVAL task's insertive object
+        # (built by build_jig_enclosure_usds.py --blocked-jig). The removal task PICKS THE JIG,
+        # so jig-v1's one-sided rim pinch applies again (measured: median jaw gap 13.8 mm at
+        # peak lift, 201/202 successes, zero straddles); the blocker forbids it.
+        # override_mass=False: the blocker carries a MassAPI on a CHILD prim and
+        # modify_mass_properties is apply_nested -- see make_insertive_object.
+        "jigblocked": make_insertive_object(
+            f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/JigBlocked/jig_blocked.usd", override_mass=False
+        ),
         "cover": make_insertive_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/Cover/cover.usd"),
     },
     "scene.receptive_object": {
@@ -711,6 +739,13 @@ variants = {
         "bottomenclosure": make_receptive_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/BottomEnclosure/bottom_enclosure.usd"),
         # Local dev asset (box with seated PCB; lid task receptive, mating point at the top rim).
         "boxwithpcb": make_receptive_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/BoxWithPcb/box_with_pcb.usd"),
+        # Enclosure with the PCB already seated, ONE kinematic body -- the removal task's
+        # receptive fixture (build_jig_enclosure_usds.py --enclosure-pcb). Its assembled_offset
+        # is the PARKING TARGET: 205 mm along its own +x, on the mat, so success = "jig set down
+        # beside the fixture it came off". See JIG_REMOVAL_DEVIATION_LEDGER.md (R3, R8).
+        "enclosurepcb": make_receptive_object(
+            f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/EnclosurePcb/enclosure_pcb.usd"
+        ),
     },
 }
 

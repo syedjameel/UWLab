@@ -260,6 +260,15 @@ variants = {
             f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/JigV2c/jig_v2c.usd", override_mass=False
         ),
         # Local dev asset (telescoping cover/lid). Switch to UWLAB_CLOUD_ASSETS_DIR when sharing.
+        # Jig with a MASSLESS box filling its window -- the REMOVAL task's insertive object
+        # (built by build_jig_enclosure_usds.py --blocked-jig). The removal task PICKS THE JIG,
+        # so jig-v1's one-sided rim pinch applies again (measured: median jaw gap 13.8 mm at
+        # peak lift, 201/202 successes, zero straddles); the blocker forbids it.
+        # override_mass=False: the blocker carries a MassAPI on a CHILD prim and
+        # modify_mass_properties is apply_nested -- see make_insertive_object.
+        "jigblocked": make_insertive_object(
+            f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/JigBlocked/jig_blocked.usd", override_mass=False
+        ),
         "cover": make_insertive_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/Cover/cover.usd"),
     },
     "scene.receptive_object": {
@@ -279,6 +288,13 @@ variants = {
         "bottomenclosure": make_receptive_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/BottomEnclosure/bottom_enclosure.usd"),
         # Local dev asset (box with seated PCB; lid task receptive, mating point at the top rim).
         "boxwithpcb": make_receptive_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/BoxWithPcb/box_with_pcb.usd"),
+        # Enclosure with the PCB already seated, ONE kinematic body -- the removal task's
+        # receptive fixture (build_jig_enclosure_usds.py --enclosure-pcb). Its assembled_offset
+        # is the PARKING TARGET: 205 mm along its own +x, on the mat, so success = "jig set down
+        # beside the fixture it came off". See JIG_REMOVAL_DEVIATION_LEDGER.md (R3, R8).
+        "enclosurepcb": make_receptive_object(
+            f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/EnclosurePcb/enclosure_pcb.usd"
+        ),
     },
 }
 

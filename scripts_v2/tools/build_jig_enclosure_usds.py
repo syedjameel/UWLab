@@ -137,8 +137,11 @@ for sy in (+1, -1):  # long walls
     # to x +-66 so the (+-71, +-54) posts pass under at the corners
     _JIG_BOXES_MM.append((0.0, sy * 61.75, 4.5, 72.0, 2.75, 4.5))       # outer y 59..64.5
     _JIG_BOXES_MM.append((0.0, sy * 54.875, 4.5, 66.0, 4.125, 4.5))     # inner y 50.75..59
-    for sxa, sxb in ((-72.0, -25.0), (25.0, 72.0)):                     # upper tier z 9-24 (12 mm)
-        _JIG_BOXES_MM.append(((sxa + sxb) / 2, sy * 58.5, 16.5, (sxb - sxa) / 2, 6.0, 7.5))
+    # upper tier z 9-24 (12 mm), FULL length. The jig was redesigned 2026-08-14 (jig2.stl): the
+    # side slots are closed, so the long walls are a uniform 21.5 mm tall instead of dropping to
+    # 9.0 mm for |x| <= 28 (measured; +17.6 cm3 of material, clear window unchanged at 141x101).
+    # This line was previously two segments skipping that notch.
+    _JIG_BOXES_MM.append((0.0, sy * 58.5, 16.5, 72.0, 6.0, 7.5))
 for sx in (+1, -1):  # end walls with two-stage pillar sockets at +-32 and post-cleared corners
     xlo = sx * 76.325   # lower/mid tier center (x 70.65..82, 11.35 mm thick)
     xup = sx * 77.25    # upper tier center (x 72.5..82, 9.5 mm thick)
@@ -271,6 +274,19 @@ for _sx in (+1, -1):     # high slabs, only where the long wall is full height
     )
 _INTERIOR_DENSITY = 1e-9  # kg/m^3; non-zero so UsdPhysics honours it, small enough to vanish
 
+# ---------------------------------------------------------------------------------------
+# REMOVAL-TASK BLOCKER (jig2 geometry). The jig-removal task PICKS THE JIG, so jig-v1's
+# failure mode returns: a jaw descends into the frame's open window and pinches a single
+# wall (measured on the v1 expert: median jaw gap 13.8 mm at peak lift, 201/202 successes,
+# zero straddles). One massless box filling the window forbids it.
+#
+# One box suffices where v2 needed three attempts BECAUSE the side slots are now closed
+# (jig2.stl, 2026-08-14): the walls are full height for their whole length, so the blocker
+# never stands in open air -- v2's fake grasp (the gripper holding the BLOCKER at a
+# 107.7 mm jaw gap across the notch band) has no band to live in. A jaw descending
+# anywhere inboard of the rim lands on the blocker top or the wall top.
+_JIG_BLOCKER_BOXES_MM = [(0.0, 0.0, 12.0, 72.5, 52.5, 12.0)]   # full window, full height
+
 
 def _add_slippery_material(stage, root_name):
     """A near-frictionless PhysicsMaterial for the interior blocker.
@@ -397,6 +413,121 @@ def _reveal_colliders(usd_paths):
     print("  [show-colliders] collision prims made VISIBLE (red) -- debug build, do not commit")
 
 
+def build_parking_spot(out_usd):
+    """Author ParkingSpot: an INVISIBLE, WORLD-FIXED pose marker -- the removal task's target.
+
+    Success is measured against this rather than against the fixture, so the fixture keeps FREE
+    yaw AND its wide spawn band (x 0.45-0.62, y +-0.24). The rejected alternative -- a target in
+    the fixture's frame -- orbits with the fixture's yaw and forces the fixture band down to an
+    82 x 82 mm window to keep the whole circle on the mat (measured; ledger R4/R7).
+
+    Static: spawned by init_state at (0.87, 0) on the work surface and never moved by any event.
+    No visuals -- the RGB student memorises the fixed spot from the visible table. One tiny
+    collider rather than none (buried 3-7 mm below the origin, inside the mat) so any
+    material-properties observation sees a well-formed body.
+    """
+    if os.path.exists(out_usd):
+        os.remove(out_usd)
+    os.makedirs(os.path.dirname(out_usd), exist_ok=True)
+    stage, _, mat = create_stage(out_usd, root_name="ParkingSpot")
+    add_box(stage, "/ParkingSpot/collisions/marker", center=(0.0, 0.0, -0.005),
+            half_extents=(0.002, 0.002, 0.002), collision=True, material_path=mat)
+    stage.GetRootLayer().Save()
+    write_metadata(out_usd, {
+        # mating point = the marker origin, spawned AT the work surface: success is "the jig's
+        # bottom-centre at the spot, on the mat".
+        "assembled_offset": {"pos": [0.0, 0.0, 0.0], "quat": [1.0, 0.0, 0.0, 0.0]},
+        "bottom_offset": {"pos": [0.0, 0.0, 0.0], "quat": [1.0, 0.0, 0.0, 0.0]},
+        # LOOSE on purpose (ledger R3): parking is not insertion -- 50 mm, no yaw gate;
+        # orientation stays gated so the jig lands flat.
+        "success_thresholds": {"position": 0.05, "orientation": 0.025},
+    })
+    print(f"  [parking spot] {out_usd}  (invisible, world-fixed)")
+
+
+def build_enclosure_pcb(out_usd, *, pcb_seat_mm=13.60):
+    """Author EnclosurePcb: the bottom enclosure with the PCB already seated, as ONE body.
+
+    The jig-REMOVAL task starts from the fully assembled stack and lifts the JIG off, leaving the
+    board seated. That leftover -- enclosure + seated PCB -- is a single KINEMATIC receptive body:
+    the policy is never meant to move it, and baking it means the board cannot be knocked out of
+    its seat (deliberate simplification, chosen over a dynamic PCB).
+
+    Heights, mm above the enclosure's bottom face -- measured, not assumed:
+      PCB bottom  13.60  (test_pcb_seat.py on the realpcb branch: 16/16 drops, spread 0.77 mm)
+      jig bottom  17.60  (where the jig sits on this stack when assembled)
+
+    assembled_offset here is NOT a mating point -- it is the PARKING TARGET for the removal task:
+    park_offset_mm along the fixture's own +x, down on the mat. The jig's assembled_offset is its
+    bottom-centre, so success = "jig set down beside the fixture it came off" (ledger R8).
+    205 mm is the minimum clearing both parts at ANY relative yaw (jig half-diagonal 104 +
+    enclosure 99 = 203). Keeping the target in the FIXTURE's frame preserves FREE fixture yaw --
+    the target orbits with it, so the whole circle must stay on the mat, which is paid for with
+    fixture POSITION range at record time (x 0.659..0.741, |y| <= 0.041; ledger R7).
+    The jig's own initial seat (17.6 mm up) is applied by the reset event, not by this metadata.
+
+    Success thresholds are LOOSE on purpose (ledger R3): parking is not insertion -- 50 mm
+    position and NO yaw gate (either way round is fine). Orientation stays gated (lands flat).
+    """
+    enc = trimesh.load(f"{_LOCAL}/BottomEnclosure/bottom_enclosure.stl", force="mesh")
+    enc.apply_scale(0.001)
+    enc.apply_transform(trimesh.transformations.rotation_matrix(np.pi / 2.0, [1, 0, 0]))
+    enc.apply_translation(-enc.bounds.mean(axis=0))
+
+    pcb = trimesh.load(f"{_LOCAL}/EnclosurePcb/pcb_decimated.stl", force="mesh")
+    pcb.apply_scale(0.001)
+    pcb.apply_translation(-pcb.bounds.mean(axis=0))
+    # seat the board: its UNDERSIDE at pcb_seat_mm above the enclosure's bottom face
+    pcb.apply_translation([0.0, 0.0, enc.bounds[0][2] + pcb_seat_mm / 1000.0 - pcb.bounds[0][2]])
+
+    # re-centre the PAIR on its own bbox, matching every other asset's convention
+    lo = np.minimum(enc.bounds[0], pcb.bounds[0])
+    hi = np.maximum(enc.bounds[1], pcb.bounds[1])
+    shift = -(lo + hi) / 2.0
+    enc.apply_translation(shift)
+    pcb.apply_translation(shift)
+    dz = float(shift[2])
+    half_h = float(hi[2] - lo[2]) / 2.0
+    enc_bottom = -half_h
+
+    if os.path.exists(out_usd):
+        os.remove(out_usd)
+    stage, _, mat = create_stage(out_usd, root_name="EnclosurePcb")
+    add_trimesh(stage, "/EnclosurePcb/visuals/enclosure", enc, collision=False,
+                color=(0.02, 0.02, 0.022))     # real enclosure: black
+    add_trimesh(stage, "/EnclosurePcb/visuals/pcb", pcb, collision=False,
+                color=(0.20, 0.55, 0.30))      # board: green
+
+    # colliders: the enclosure's own hand-built box table, plus one slab for the seated board
+    # (the board's collider is a plain 3 mm slab everywhere in this project -- keep that).
+    tbl, bottom_mm = _BOX_TABLES["BottomEnclosure"]
+    n = 0
+    for cx, cy, cz, hx, hy, hz in tbl:
+        add_box(stage, f"/EnclosurePcb/collisions/box_{n:02d}",
+                center=(cx / 1000.0, cy / 1000.0, (cz - bottom_mm) / 1000.0 + dz),
+                half_extents=(hx / 1000.0, hy / 1000.0, hz / 1000.0),
+                collision=True, material_path=mat)
+        n += 1
+    add_box(stage, f"/EnclosurePcb/collisions/box_{n:02d}",
+            center=(0.0, 0.0, enc_bottom + (pcb_seat_mm + 1.5) / 1000.0),
+            half_extents=(0.070, 0.050, 0.0015), collision=True, material_path=mat)
+    n += 1
+    stage.GetRootLayer().Save()
+
+    jig_seat_z = enc_bottom + 17.6 / 1000.0
+    write_metadata(out_usd, {
+        # the jig SEAT on this stack (17.6 mm up). Success in the removal task is measured
+        # against the world-fixed ParkingSpot marker, not against this asset (ledger R4/R5).
+        "assembled_offset": {"pos": [0.0, 0.0, round(jig_seat_z, 6)], "quat": [1.0, 0.0, 0.0, 0.0]},
+        "bottom_offset": {"pos": [0.0, 0.0, round(enc_bottom, 6)], "quat": [1.0, 0.0, 0.0, 0.0]},
+        "success_thresholds": {"position": 0.05, "orientation": 0.025},
+    })
+    print(f"  [enclosure+pcb] {out_usd}")
+    print(f"    height {2*half_h*1000:.2f} mm; enclosure bottom {enc_bottom*1000:.2f} mm; "
+          f"{n} collider boxes")
+    print(f"    PCB seated {pcb_seat_mm:.2f} mm up; jig seats at {(jig_seat_z-enc_bottom)*1000:.2f} mm")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Build jig + bottom-enclosure USDs from STLs.")
     parser.add_argument("--enclosure-seat-z", type=float, default=0.0063,
@@ -413,6 +544,18 @@ def main() -> None:
                         help="Debug build: make the collision prims VISIBLE (tinted red) so the "
                              "collider can be inspected in the GUI. Re-run WITHOUT this flag for "
                              "the final assets.")
+    parser.add_argument("--parking-spot", action="store_true",
+                        help="Build ONLY ParkingSpot -- the removal task's invisible, world-fixed "
+                             "success marker.")
+    parser.add_argument("--enclosure-pcb", action="store_true",
+                        help="Build ONLY EnclosurePcb (enclosure + seated PCB, one kinematic "
+                             "body) -- the removal task's receptive fixture. Its assembled_offset "
+                             "is the PARKING TARGET, 205 mm along its +x on the mat.")
+    parser.add_argument("--blocked-jig", action="store_true",
+                        help="Build ONLY the removal-task jig (JigBlocked/jig_blocked.usd): the "
+                             "jig plus ONE massless box filling its window, so the removal "
+                             "expert cannot pinch a single rim wall. Sim-only training scaffold; "
+                             "see _JIG_BLOCKER_BOXES_MM and JIG_REMOVAL_DEVIATION_LEDGER.md R2.")
     parser.add_argument("--v2c-jig", action="store_true",
                         help="Build ONLY the v2c jig (JigV2c/jig_v2c.usd): the SHAPED, "
                              "near-frictionless blocker. Follows the measured local wall height "
@@ -431,6 +574,30 @@ def main() -> None:
                              "collecting against them); the v2 task pairs jigv2 with the SAME "
                              "bottomenclosure. See _JIG_INTERIOR_BOXES_MM.")
     args = parser.parse_args()
+
+    if args.parking_spot:
+        build_parking_spot(f"{_LOCAL}/ParkingSpot/parking_spot.usd")
+        return
+
+    if args.enclosure_pcb:
+        build_enclosure_pcb(f"{_LOCAL}/EnclosurePcb/enclosure_pcb.usd")
+        if args.show_colliders:
+            _reveal_colliders([f"{_LOCAL}/EnclosurePcb/enclosure_pcb.usd"])
+        return
+
+    if args.blocked_jig:
+        # Root prim stays "Jig" so _BOX_TABLES and the sampler resolve; the DIRECTORY
+        # (JigBlocked) is what drives dataset namespacing (object_name_from_usd).
+        out = f"{_LOCAL}/JigBlocked/jig_blocked.usd"
+        build(
+            f"{_LOCAL}/Jig/jig.stl", out, "Jig",
+            y_up=False, color=(0.10, 0.35, 0.13), mate="bottom",
+            approximation="handBoxes",
+            interior_blocker=_JIG_BLOCKER_BOXES_MM,
+        )
+        if args.show_colliders:
+            _reveal_colliders([out])
+        return
 
     if args.v2_jig or args.v2b_jig or args.v2c_jig:
         out = (f"{_LOCAL}/JigV2c/jig_v2c.usd" if args.v2c_jig else
