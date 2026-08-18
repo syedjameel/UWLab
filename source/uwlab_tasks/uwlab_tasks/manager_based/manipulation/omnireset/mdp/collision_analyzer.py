@@ -113,6 +113,13 @@ class CollisionAnalyzer:
         self.collider_rel_transform = pad_sequence(rel_transform, batch_first=True, padding_value=0).view(
             len(self.obstacles), env.num_envs, -1, 10
         )
+        # BUG FIX (measured; JIG_REMOVAL_DEVIATION_LEDGER.md): the hasher stores rel quats WXYZ
+        # (IsaacLab convention) but the kernel consumes them as wp.quat, which is XYZW. An
+        # identity (1,0,0,0) therefore became a 180-deg rotation about X, querying every obstacle
+        # mesh MIRRORED through its prim origin -- a perfectly seated jig read -4.25 mm "inside"
+        # the enclosure (the un-mirrored point lies 4.2-4.4 mm inside the end shelf, matching).
+        # Reorder once here so the wp.from_torch cast below receives XYZW.
+        self.collider_rel_transform[..., 3:7] = self.collider_rel_transform[..., [4, 5, 6, 3]]
 
     def __call__(self, env: ManagerBasedRLEnv, env_ids: torch.Tensor):
         pos_w = (

@@ -218,9 +218,16 @@ def fps(points: torch.Tensor, n_samples: int, memory_threashold=2 * 1024**3) -> 
 
 def prim_to_warp_mesh(prim, device, relative_to_world=False) -> wp.Mesh:
     if prim.GetTypeName() == "Mesh":
-        mesh_prim = UsdGeom.Mesh(prim)
-        points = np.asarray(mesh_prim.GetPointsAttr().Get(), dtype=np.float32)
-        indices = np.asarray(mesh_prim.GetFaceVertexIndicesAttr().Get(), dtype=np.int32)
+        # BUG FIX (measured, see JIG_REMOVAL_DEVIATION_LEDGER.md): the raw faceVertexIndices were
+        # fed to warp AS TRIANGLES. For triangle meshes (STL-derived assets) that is correct, but
+        # QUAD meshes (our hand-built box colliders, 6 faces x 4 indices) became 8 nonsense
+        # triangles -- a self-intersecting shard mesh whose signed distances are garbage near the
+        # surface (a physically clean seated jig read as -3.4 mm "inside" the enclosure at a point
+        # OUTSIDE every collider box). Route through prim_to_trimesh, which triangulates via
+        # faceVertexCounts exactly like the point-sampling path already does.
+        tm = prim_to_trimesh(prim)
+        points = tm.vertices.astype(np.float32)
+        indices = tm.faces.astype(np.int32).flatten()
     else:
         mesh = create_primitive_mesh(prim)
         points = mesh.vertices.astype(np.float32)
