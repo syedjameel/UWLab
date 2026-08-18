@@ -59,6 +59,13 @@ parser.add_argument("--repeats", type=int, default=3,
                          " PhysX GPU is non-deterministic and the seed is unset, so a single settle"
                          " gave 9.0mm on one run and 25.3mm on the next FOR THE SAME STATE -- the same"
                          " size as the HELD/SLIPPED thresholds. One sample cannot support a verdict.")
+parser.add_argument("--no-hold-targets", action="store_true",
+                    help="do NOT command the recorded joint posture during settle. write_joint_state_to_sim"
+                         " sets joint POSITIONS but leaves the actuators' PD TARGETS at whatever they held"
+                         " (the default posture), so the hand is physically closed while being commanded"
+                         " toward open and the fingers drive themselves apart. Drift then measures the hand"
+                         " letting go, not the grasp failing. On by default; this flag restores the old"
+                         " behaviour for comparison.")
 parser.add_argument("--light-intensity", type=float, default=1000.0,
                     help="dome light intensity. reset_states_cfg ships 10000 while the TRAINING scene"
                          " (rl_state_cfg) uses 1000; 10x is what washed the frames out. Default matches"
@@ -174,8 +181,42 @@ def write_state(idx: int) -> None:
             asset = env.scene[key]
             asset.write_root_pose_to_sim(state["rigid_object"][key]["root_pose"][idx].unsqueeze(0).to(env.device))
             asset.write_root_velocity_to_sim(state["rigid_object"][key]["root_velocity"][idx].unsqueeze(0).to(env.device))
+    # COMMAND THE POSTURE, DO NOT ONLY PLACE IT.
+    #
+    # write_joint_state_to_sim writes q and qdot. It does NOT touch the actuators' position
+    # targets, which keep whatever they last held -- for a fresh env, the default posture, whose
+    # hand is open. PhysX then runs a PD controller driving the fingers from the recorded grasp
+    # toward that default, so the hand actively releases the leg and the measured "drift" is the
+    # release, not a property of the reset state. Setting the target to the recorded q makes the
+    # controller HOLD the grasp, which is what the stored state actually represents.
+    q = state["articulation"]["robot"]["joint_position"][idx].unsqueeze(0).to(env.device)
+    if not args.no_hold_targets:
+        robot.set_joint_position_target(q)
     env.scene.write_data_to_sim()
     env.sim.forward()
+
+
+# WHICH HAND IS ACTUALLY REPLAYING THESE GRASPS?
+#
+# The states were GENERATED in the dexlift scene with DEXLIFT_REF_HAND_ACT=1 -- the REFERENCE
+# DELTO actuator, effort 30 N*m and velocity 10000 rad/s. The OmniReset scene builds the shared
+# _DELTO_HAND_ACTUATOR instead: effort 0.06-0.17 N*m, velocity 3.0 rad/s, i.e. 200-500x weaker.
+# That seam is not a rendering detail -- it is the difference between the environment that made
+# these states and the environment that will train on them, so it is printed rather than assumed.
+_hand_ids, _ = robot.find_joints([r"rj_dg_[1-5]_[1-4]"], preserve_order=False)
+if len(_hand_ids):
+    _eff = robot.data.joint_effort_limits[0, _hand_ids]
+    _vel = robot.data.joint_velocity_limits[0, _hand_ids]
+    print(f"[view] hand actuators AS BUILT: effort {_eff.min():.3f}-{_eff.max():.3f} N*m, "
+          f"velocity {_vel.min():.1f}-{_vel.max():.1f} rad/s over {len(_hand_ids)} joints", flush=True)
+    print("[view]   (states were generated under the REFERENCE hand: 30.0 N*m, 10000 rad/s)", flush=True)
+else:
+    print("[view] WARNING: no rj_dg_* hand joints found; cannot report actuator strength", flush=True)
+
+
+def target_gap_rad() -> float:
+    """Max |PD target - actual joint position| in rad, to prove the targets were really applied."""
+    return float((robot.data.joint_pos_target - robot.data.joint_pos).abs().max().item())
 
 
 for ordinal, idx in enumerate(sel, start=1):
@@ -184,8 +225,10 @@ for ordinal, idx in enumerate(sel, start=1):
     # 26.8 -> 95.2 mm and 34.1 -> 14.4 mm. That spread is the same size as the HELD/SLIPPED
     # thresholds, so a one-shot verdict is a coin flip wearing a label. Report median and range.
     drifts = []
+    gaps = []
     for _rep in range(max(1, args.repeats)):
         write_state(idx)
+        gaps.append(target_gap_rad())
         before = scene_obj.data.root_pos_w.clone()
         for _ in range(args.settle_steps):
             env.sim.step(render=False)
@@ -196,6 +239,7 @@ for ordinal, idx in enumerate(sel, start=1):
     drift_lo, drift_hi = drifts_sorted[0], drifts_sorted[-1]
     z_after = float(scene_obj.data.root_pos_w[0, 2].item())
     z_stored = float(obj_pose[idx, 2])
+    gap = max(gaps)
 
     # AIM PER STATE, AT THE OBJECT'S ACTUAL SETTLED POSITION.
     #
@@ -233,7 +277,7 @@ for ordinal, idx in enumerate(sel, start=1):
         Image.fromarray(img).save(args.out / f"{stem}_{vname}.png")
     fn = args.out / f"{stem}_3q.png"
     rows.append((ordinal, idx, z_stored, drift_mm, drift_lo, drift_hi, verdict))
-    print(f"[view] state {ordinal}/{len(sel)} idx={idx} z_stored={z_stored:.4f} drift median={drift_mm:.1f}mm range=[{drift_lo:.1f},{drift_hi:.1f}] n={len(drifts)} {verdict}", flush=True)
+    print(f"[view] state {ordinal}/{len(sel)} idx={idx} z_stored={z_stored:.4f} drift median={drift_mm:.1f}mm range=[{drift_lo:.1f},{drift_hi:.1f}] n={len(drifts)} target_gap={gap:.3f}rad {verdict}", flush=True)
 
 print("\n[view] SUMMARY  (drift = object displacement over real physics settle)", flush=True)
 for ordinal, idx, z, d, lo, hi, v in rows:
@@ -241,3 +285,14 @@ for ordinal, idx, z, d, lo, hi, v in rows:
 held = sum(1 for r in rows if r[6] == "HELD")
 print(f"[view] HELD {held}/{len(rows)}  frames in {args.out}", flush=True)
 print("[view] RENDER_OK", flush=True)
+
+# EXIT HARD. Isaac's shutdown path hangs on this codebase routinely -- both processes in the
+# first four-category batch printed RENDER_OK, wrote every frame, and then sat at ~120 percent
+# CPU holding 3-4 GiB of GPU until an external SIGKILL, which made a finished render look like a
+# stuck one and serialised the queue behind a 900 s timeout per category. Every artifact this
+# script produces is already on disk and fsynced by PIL at this point, so there is nothing left
+# to flush; a clean interpreter shutdown buys only the hang. os._exit skips atexit and the Kit
+# teardown entirely.
+import os as _os, sys as _sys
+_sys.stdout.flush(); _sys.stderr.flush()
+_os._exit(0)
