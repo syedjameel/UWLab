@@ -78,6 +78,22 @@ MAX_ITERATIONS=5600   # = 3600 (warm start) + 2000 (intended additional finetune
 # dexlift_ur5e_delto_env_cfg.py's ``_apply_pose_tilt_stage``.
 #
 # =====================================================================================
+# THE EPISODE MIXTURE IS OPT-IN, AND ITS PARTIAL-ASSEMBLY DATASET IS NOT AT THE HF DEFAULT
+# =====================================================================================
+# DEXLIFT_EPISODE_MIXTURE=1 is exported below because this launch IS the run the mixture (gravity/
+# low-goal/partial-assembly, epic UWLab-g3z4) was built for -- the mixture defaults OFF for every
+# OTHER construction of these classes (mdp/episode_mixture.py's "THE MIXTURE IS OPT-IN" section:
+# an ordinary tool run that forgot to opt in previously got the mixture installed anyway and crashed
+# on a missing dataset -- this launch must not repeat that mistake in the other direction by
+# forgetting to opt IN and silently training the old, no-mixture task under the new name).
+#
+# CONFIRMED TODAY: the class default partial_assembly_prob=0.25 makes MixtureResetObject construct a
+# composer that downloads partial_assemblies.pt for this exact pair, and that file 404s at the
+# default (Hugging Face) DEXLIFT_PARTIAL_ASSEMBLY_DATASET_DIR -- verified against the HF repo's own
+# directory listing, which has no entry for this pair at all. DATASET_DIR below points at a locally-
+# vendored copy instead; it MUST be transferred to the box (same class of requirement as CKPT).
+#
+# =====================================================================================
 # OPTIMIZER UPDATE RATE MATCHES THE CERTIFIED LINEAGE
 # =====================================================================================
 # updates_per_epoch = mini_epochs * num_envs * horizon_length / minibatch_size. The reference recipe
@@ -152,11 +168,45 @@ export DEXLIFT_REF_HAND_ACT=1
 export DEXLIFT_REF_ARM_ACT=0
 export DEXLIFT_POSE_TILT=0.3
 
+# -- THE EPISODE MIXTURE IS OPT-IN (mdp/episode_mixture.py's own docstring, "THE MIXTURE IS OPT-IN"
+# section): DexLiftUR5eDeltoRelJointPosTableLegReorientEnvCfg builds byte-identical to the pre-mixture
+# task unless this is exported. This IS the run the mixture was built for, so it must be set --
+# forgetting it would silently train the OLD (no-mixture) task under the new name.
+export DEXLIFT_EPISODE_MIXTURE=1
+
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_ROOT" || exit 1
 export PYTHONPATH="$REPO_ROOT/source/uwlab:$REPO_ROOT/source/uwlab_tasks:$REPO_ROOT/source/uwlab_assets:$REPO_ROOT/source/uwlab_rl"
 
 TASK="DexLift-UR5eDelto-RelJointPos-TableLeg-Reorient-v0"
+
+# -- partial_assembly_prob defaults to 0.25 > 0 (class default), so MixtureResetObject WILL construct
+# the partial-assembly composer, which downloads partial_assemblies.pt for this exact pair the moment
+# it is constructed. CONFIRMED TODAY: that file does not exist at the default (Hugging Face)
+# DEXLIFT_PARTIAL_ASSEMBLY_DATASET_DIR for this pair -- HTTP 404, verified against the HF repo's own
+# directory listing, which has no OneLegInsertionFixture__SquareTableLeg200mmDecomp entry at all. Left
+# at the default, this launch would reach the exact swallow-then-TypeError crash
+# (`MixtureResetObject.__init__() got an unexpected keyword argument 'dataset_dir'`) diagnosed in the
+# reset-generation regression this same epic caused -- just later, inside RslRlVecEnvWrapper/
+# RlGamesVecEnvWrapper's own reset(), instead of a tool's. DATASET_DIR below overrides it to a
+# LOCALLY-VENDORED copy that must be transferred to the box (same category of requirement as CKPT
+# above) -- not this repo's default local_ckpts/-relative dev convention, since that is not assumed to
+# exist on the box either. If this specific pair's dataset is ever published to the HF default, this
+# override becomes unnecessary but remains harmless (still points at a valid copy).
+DATASET_DIR=${DATASET_DIR:-/root/ckpt/Datasets_ur5e_delto/OmniReset}
+DATASET_PAIR_FILE="$DATASET_DIR/Resets/OneLegInsertionFixture__SquareTableLeg200mmDecomp/partial_assemblies.pt"
+[ -f "$DATASET_PAIR_FILE" ] || {
+  echo "REFUSING: partial-assembly dataset not found at $DATASET_PAIR_FILE"
+  echo "  (DEXLIFT_EPISODE_MIXTURE=1 with the default partial_assembly_prob=0.25 needs this file;"
+  echo "   the default Hugging Face path 404s for this pair -- see the comment above DATASET_DIR)."
+  exit 1
+}
+echo "partial-assembly dataset verified present: $DATASET_PAIR_FILE"
+# Read by _apply_episode_mixture (dexlift_ur5e_delto_tableleg_env_cfg.py) at cfg-construction time --
+# a plain env var, not only a Hydra override, so the identical mechanism also works for
+# scripts_v2/tools/certification/certify_pose.py (cert_g3z4_finetune.sh's own delegate), which has no
+# Hydra override path of its own.
+export DEXLIFT_EPISODE_MIXTURE_DATASET_DIR="$DATASET_DIR"
 
 # -- CHECKPOINT PATH IS A TOP-OF-SCRIPT VARIABLE, NOT DERIVED. Default is the training box's own
 # layout (checkpoint alone in /root/ckpt/, no local_ckpts/ tree, no params/ subdir beside it) --
@@ -188,6 +238,7 @@ mkdir -p "$(dirname "$LOG")"
 : > "$LOG"
 echo "task=$TASK gpu=$GPU num_envs=$NUM_ENVS minibatch=$MINIBATCH updates/epoch=$EXPECT max_iterations=$MAX_ITERATIONS (warm 3600 + 2000)" | tee -a "$LOG"
 echo "checkpoint=$CKPT" | tee -a "$LOG"
+echo "partial-assembly dataset_dir=$DATASET_DIR" | tee -a "$LOG"
 echo "wandb: entity=$WANDB_ENTITY project=$WANDB_PROJECT name=$WANDB_NAME" | tee -a "$LOG"
 
 # -- setsid + nohup + timeout -s KILL, redirected straight to a FILE. Never pipe an Isaac run

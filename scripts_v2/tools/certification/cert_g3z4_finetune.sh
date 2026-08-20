@@ -18,15 +18,21 @@
 #   - ADR pinned to max: --adr_difficulty max, which is also certify_pose.py's own default -- passed
 #     explicitly below anyway so the protocol is legible in the command, not just inherited silently.
 #   - The BASE Reorient task, i.e. the SAME task id training runs on
-#     (DexLift-UR5eDelto-RelJointPos-TableLeg-Reorient-v0), not some other "base dexsuite reorient"
-#     task. Concretely this means: certification does NOT force every env into the
-#     partial-assembly/goal-at-spawn path. run_certify.sh (the delegate below) does not export
-#     DEXLIFT_PARTIAL_ASSEMBLY or DEXLIFT_GOAL_AT_SPAWN, so
-#     dexlift_ur5e_delto_tableleg_env_cfg._apply_partial_assembly_and_goal_toggles reports neither
-#     legacy toggle fired, and _apply_episode_mixture wires the SAME probabilistic mixture
-#     (classic_goal_prob=0.50/low_goal_prob=0.25/partial_assembly_prob=0.25, the class defaults --
-#     this driver does not override them) the finetune trained under. Certifying under a forced
-#     100% partial-assembly path would score a different task than the one that was trained.
+#     (DexLift-UR5eDelto-RelJointPos-TableLeg-Reorient-v0) UNDER THE CLASSIC-ONLY GOAL DISTRIBUTION --
+#     NOT under the episode mixture the finetune trained under, and this is DELIBERATE, not an
+#     oversight. CORRECTED FROM AN EARLIER REVISION OF THIS SCRIPT, which reasoned the opposite way
+#     (certify under "the same mixture it trained under") before the mixture became opt-in
+#     (DEXLIFT_EPISODE_MIXTURE=1, see mdp/episode_mixture.py's "THE MIXTURE IS OPT-IN" section) --
+#     that reasoning does not survive contact with what pass@30mm actually measures: a
+#     PARTIAL-ASSEMBLY episode pins the goal to the object's OWN SPAWN POSE, so it is trivially
+#     "successful" at every tolerance the instant the leg is grasped, with no transport required.
+#     Certifying with DEXLIFT_EPISODE_MIXTURE=1 would let 25% of scored episodes (the class default
+#     partial_assembly_prob) be near-automatic passes that say nothing about whether the policy can
+#     TRANSPORT the leg to a real goal -- inflating pass@30mm regardless of what actually changed.
+#     run_certify.sh (the delegate below) exports neither the legacy toggles NOR
+#     DEXLIFT_EPISODE_MIXTURE, so the constructed task is the plain, classic-goal-only Reorient task
+#     for BOTH the control and the finetune -- the one "base Reorient task" and "pass@30mm" both
+#     refer to, and the one the STORED 0.6953 control figure was itself measured under.
 #
 # =====================================================================================
 # THE PARENT (ep3600) IS RE-CERTIFIED IN THE SAME BATCH, AS A CONTROL -- NOT COMPARED AGAINST ITS

@@ -125,9 +125,57 @@ Several tools outside training (``generate_reset_states_policy.py``, ``render_pa
 partial-assembly/goal-at-spawn path for reset-state harvesting and certification, which a probabilistic
 mixture cannot give them. The table-leg Reorient ``__post_init__`` therefore still calls
 ``_apply_partial_assembly_and_goal_toggles`` first; this module's mixture is applied only when that
-call reports neither legacy env var fired, so any existing script that sets
-``DEXLIFT_PARTIAL_ASSEMBLY=1``/``DEXLIFT_GOAL_AT_SPAWN=1`` keeps its old, deterministic, whole-run
-behaviour untouched.
+call reports neither legacy env var fired.
+
+THE MIXTURE IS OPT-IN (``DEXLIFT_EPISODE_MIXTURE=1``), NOT DEFAULT-ON -- CORRECTING THE CLAIM THIS
+DOCSTRING USED TO MAKE HERE. An earlier revision wired ``_apply_episode_mixture`` unconditionally
+whenever neither legacy toggle fired, and claimed that made every OTHER script's behaviour
+"untouched". That was false for exactly the scripts this paragraph names: an ORDINARY
+``generate_reset_states_policy.py`` run (any ``--reset_type`` other than
+``ObjectPartiallyAssembledEEGrasped``) sets NEITHER legacy env var either -- it never wanted
+partial-assembly at all -- so ``_apply_partial_assembly_and_goal_toggles`` reported "nothing fired"
+and the mixture installed itself anyway, changing that script's `events.reset_object`/
+`commands.object_pose` out from under it. Confirmed by running it: the crash surfaced as
+``MixtureResetObject.__init__() got an unexpected keyword argument 'dataset_dir'`` inside
+``wrapped_env.reset()`` -- the SAME swallow-then-TypeError chain a bad Hydra override produces (see
+``dexlift_ur5e_delto_tableleg_env_cfg.py``'s gravity/mixture bugfix history), but this time the REAL,
+swallowed error (visible only earlier in the log, inside Kit's deferred "at play" event-manager
+callback) was an ``urllib.error.HTTPError: HTTP Error 404: Not Found`` fetching
+``partial_assemblies.pt`` for this exact pair from the default (Hugging Face)
+``DEXLIFT_PARTIAL_ASSEMBLY_DATASET_DIR`` -- that file has never been published there (confirmed
+against the HF repo's own directory listing, which does not contain an
+``OneLegInsertionFixture__SquareTableLeg200mmDecomp`` entry at all). ``MixtureResetObject`` used to
+construct that dataset-loading composer UNCONDITIONALLY at ``__init__`` regardless of
+``partial_assembly_prob``, so ANY construction with a positive partial fraction -- the class DEFAULT
+is 0.25 -- paid this network dependency whether or not the caller wanted it, including callers that
+never draw a single partial-assembly episode in practice (``partial_assembly_prob`` too small,
+short smoke runs, etc.) and, worse, callers like ordinary reset-generation that have no interest in
+the mixture existing at all.
+
+Both halves of the fix:
+
+1. THE MECHANISM IS NOW GATED BEHIND ``DEXLIFT_EPISODE_MIXTURE=1``, checked in
+   ``dexlift_ur5e_delto_tableleg_env_cfg.py``'s ``__post_init__`` alongside (and independently of)
+   the legacy-toggle check -- ``_apply_episode_mixture`` now runs ONLY when that env var is "1" AND
+   neither legacy toggle fired. Unset (the default for every existing caller, including
+   ``generate_reset_states_policy.py``, ``render_partial_assemblies.py``,
+   ``rekey_dexlift_reset_states.py`` and any hand-run smoke test), the Reorient table-leg classes
+   build byte-identical to how they did before this module existed: plain ``reset_root_state_uniform``,
+   plain ``TaskStateVisPoseCommandCfg``, no ``receptive_object`` in the scene at all. Training scripts
+   that DO want the mixture (``launch_dexlift_tableleg_reorient_finetune.sh``) must export it
+   explicitly, matching the existing ``DEXLIFT_REF_RESET``/``DEXLIFT_POSE_TILT`` idiom -- opt-in for
+   training, not default-on for every construction of these classes.
+2. :class:`MixtureResetObject` NOW CONSTRUCTS THE PARTIAL-ASSEMBLY COMPOSER LAZILY -- only when
+   ``partial_assembly_prob > 0.0`` (see "THE COMPOSER IS CONSTRUCTED LAZILY" at its ``__init__``) --
+   so a mixture with the partial fraction genuinely disabled (an explicit ``partial_assembly_prob=0``
+   override, sum-preserved by raising ``classic_goal_prob``/``low_goal_prob``) never pays the network
+   dependency either. This does NOT fix the underlying 404 -- a run that legitimately wants
+   ``partial_assembly_prob > 0`` (the class default, and any real finetune) still needs
+   ``partial_assemblies.pt`` for this pair to be reachable, either by publishing it to the
+   ``DEXLIFT_PARTIAL_ASSEMBLY_DATASET_DIR`` default or, more reliably given it is not there today, by
+   overriding ``dataset_dir`` to a locally-vendored copy (``env.events.reset_object.params.
+   dataset_dir=...`` under Hydra, exactly as ``DEXLIFT_PARTIAL_ASSEMBLY_DATASET_DIR``'s own docstring
+   in ``partial_assembly.py`` already documents doing for local testing).
 """
 
 from __future__ import annotations
@@ -303,9 +351,6 @@ class MixtureResetObject(ManagerTermBase):
         self.insertive_object = env.scene[self.insertive_object_cfg.name]
         self.fixture_pose_range: dict[str, tuple[float, float]] = cfg.params["fixture_pose_range"]
         self._dataset_dir: str = cfg.params["dataset_dir"]
-        # Delegated composer -- see partial_assembly.SpawnPartialAssembly.__init__ for why
-        # constructing it against this same cfg is safe (it reads only the keys it knows about).
-        self._compose = reset_insertive_object_from_partial_assembly_dataset(cfg, env)
 
         # -- PARKED_FIXTURE_POSE_RANGE is safe by PhysX collision-GROUP isolation between env
         # replicas, not by distance -- see the module docstring's "THE PARKED POSE DEPENDS ON
@@ -330,6 +375,10 @@ class MixtureResetObject(ManagerTermBase):
         # is exactly the bug this fixes: __post_init__ runs BEFORE the override lands, so a params
         # dict built there is a snapshot of the pre-override defaults forever. See the module
         # docstring's "THE MIXTURE PROBABILITIES ARE READ AT TERM-CONSTRUCTION TIME" section.
+        #
+        # READ BEFORE CONSTRUCTING THE COMPOSER BELOW, DELIBERATELY -- see "THE COMPOSER IS
+        # CONSTRUCTED LAZILY" in the module docstring: partial_assembly_prob decides whether the
+        # (network-dependent) composer is built at all.
         self.classic_goal_prob: float = env.cfg.classic_goal_prob
         self.low_goal_prob: float = env.cfg.low_goal_prob
         self.partial_assembly_prob: float = env.cfg.partial_assembly_prob
@@ -338,6 +387,21 @@ class MixtureResetObject(ManagerTermBase):
             f"[dexlift] episode mixture (validated post-override): classic_goal_prob={self.classic_goal_prob:.3f}"
             f" low_goal_prob={self.low_goal_prob:.3f} partial_assembly_prob={self.partial_assembly_prob:.3f}",
             flush=True,
+        )
+
+        # -- THE COMPOSER IS CONSTRUCTED LAZILY, ONLY WHEN partial_assembly_prob > 0. Its own
+        # __init__ (reset_insertive_object_from_partial_assembly_dataset) downloads
+        # partial_assemblies.pt over the network the moment it is constructed -- see
+        # partial_assembly.SpawnPartialAssembly.__init__ for why constructing it against this same
+        # cfg is otherwise safe (it reads only the keys it knows about). With
+        # partial_assembly_prob == 0.0, the kind draw in __call__ below (``draw <
+        # self.partial_assembly_prob``) can never select EPISODE_KIND_PARTIAL_ASSEMBLY -- draw is
+        # sampled from [0, 1), so nothing is ever less than 0.0 -- so self._compose is never called
+        # either; constructing it anyway would be a needless, possibly-failing network dependency
+        # for a run that will never use it. Kept unconditional whenever the fraction IS positive:
+        # that case genuinely needs the dataset, same as the legacy SpawnPartialAssembly always has.
+        self._compose = (
+            reset_insertive_object_from_partial_assembly_dataset(cfg, env) if self.partial_assembly_prob > 0.0 else None
         )
 
     def __call__(
@@ -396,6 +460,14 @@ class MixtureResetObject(ManagerTermBase):
         # PARTIAL ASSEMBLY envs: place the fixture, then compose the leg against it -- see
         # partial_assembly.SpawnPartialAssembly.__call__, this is the same two steps on a subset.
         if partial_ids.numel() > 0:
+            # Cannot happen given partial_assembly_prob > 0.0 is required for any draw to land here
+            # (see __init__'s lazy-construction comment) -- asserted anyway so a future edit that
+            # breaks that invariant fails with a clear message instead of AttributeError: NoneType.
+            assert self._compose is not None, (
+                "partial_ids is non-empty but self._compose was never constructed (partial_assembly_prob"
+                f" was {self.partial_assembly_prob} at __init__ time) -- the kind draw and the lazy"
+                " composer construction have gone out of sync."
+            )
             reset_root_state_uniform(env, partial_ids, self.fixture_pose_range, {}, self.receptive_object_cfg)
             self._compose(env, partial_ids, self._dataset_dir, insertive_object_cfg, receptive_object_cfg, pose_range_b)
 

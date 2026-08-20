@@ -488,6 +488,18 @@ def _apply_episode_mixture(env_cfg) -> None:
     return value themselves and not call this function at all in that case -- see that function's
     docstring for why (reset-state generation / certification tooling needs the deterministic 100%
     path, which a probabilistic mixture cannot give it).
+
+    OPT-IN, NOT DEFAULT-ON: callers must ALSO check ``DEXLIFT_EPISODE_MIXTURE == "1"`` themselves and
+    not call this function at all when it is unset -- see ``mdp/episode_mixture.py``'s module
+    docstring, "THE MIXTURE IS OPT-IN" section, for the regression this closes. An earlier revision
+    called this function unconditionally whenever no legacy toggle fired, which silently wired the
+    mixture into EVERY construction of these classes -- including ordinary
+    ``generate_reset_states_policy.py`` runs that set neither legacy env var because they never
+    wanted partial-assembly at all, and crashed them (``MixtureResetObject.__init__() got an
+    unexpected keyword argument 'dataset_dir'`` -- a swallowed HTTPError 404 one level up, see the
+    same docstring section). The legacy-toggle check alone cannot express "I don't want the mixture
+    either" -- both are OFF for an ordinary run -- so a second, independent, explicit opt-in is
+    required.
     """
     # The fixture is needed unconditionally: even a CLI override that raises partial_assembly_prob
     # above its 0.25 default must find scene.receptive_object already present.
@@ -497,11 +509,22 @@ def _apply_episode_mixture(env_cfg) -> None:
     base_velocity_range = dict(
         env_cfg.events.reset_object.params.get("velocity_range", {"x": [0.0, 0.0], "y": [0.0, 0.0], "z": [0.0, 0.0]})
     )
+    # -- DEXLIFT_EPISODE_MIXTURE_DATASET_DIR overrides the default (Hugging Face) dataset root,
+    # readable from a plain env var rather than only a Hydra dotlist override -- train.py's
+    # `env.events.reset_object.params.dataset_dir=...` still works too and, applied later
+    # (post-construction, via Hydra), wins over this if both are set. The env var exists because
+    # NOT every consumer of this cfg goes through hydra_task_config: scripts_v2/tools/certification/
+    # certify_pose.py calls parse_env_cfg directly and has no override mechanism of its own, so a
+    # plain `export DEXLIFT_EPISODE_MIXTURE_DATASET_DIR=...` (as cert_g3z4_finetune.sh's run_certify.sh
+    # delegate does) is the only way to point it at a local copy. Needed because the class default
+    # (mdp.DEXLIFT_PARTIAL_ASSEMBLY_DATASET_DIR) 404s for this pair today -- see mdp/episode_mixture.py's
+    # "THE MIXTURE IS OPT-IN" section for how that was found.
+    _dataset_dir = os.environ.get("DEXLIFT_EPISODE_MIXTURE_DATASET_DIR", mdp.DEXLIFT_PARTIAL_ASSEMBLY_DATASET_DIR)
     env_cfg.events.reset_object = EventTerm(
         func=mdp.MixtureResetObject,
         mode="reset",
         params={
-            "dataset_dir": mdp.DEXLIFT_PARTIAL_ASSEMBLY_DATASET_DIR,
+            "dataset_dir": _dataset_dir,
             "insertive_object_cfg": SceneEntityCfg("object"),
             "receptive_object_cfg": SceneEntityCfg("receptive_object"),
             "fixture_pose_range": mdp.RECEPTIVE_POSE_RANGE,
@@ -522,7 +545,8 @@ def _apply_episode_mixture(env_cfg) -> None:
     print(
         "[dexlift] episode mixture MECHANISM wired (fractions validated later, post-override, in"
         f" MixtureResetObject.__init__); low goal pos_z={mdp.LOW_GOAL_POS_Z_RANGE} m, classic goal"
-        f" pos_z={tuple(env_cfg.commands.object_pose.ranges.pos_z)} m", flush=True,
+        f" pos_z={tuple(env_cfg.commands.object_pose.ranges.pos_z)} m; partial-assembly dataset_dir="
+        f"{_dataset_dir}", flush=True,
     )
 
 
@@ -555,14 +579,27 @@ class DexLiftUR5eDeltoRelJointPosTableLegReorientEnvCfg(
     # Called from BOTH this class and its ``_PLAY`` sibling below -- they are NOT in an inheritance
     # relationship with each other, so the call has to be written twice, once per class, or Play
     # never sees it (bead UWLab-qiao.9/J -- this is precisely the bug being fixed here). GRAVITY
-    # (``_apply_full_gravity``) and the EPISODE MIXTURE MECHANISM (``_apply_episode_mixture``) are new
-    # here for the same structural reason -- see each function's own docstring.
+    # (``_apply_full_gravity``) is unconditional -- always intended for this task family regardless of
+    # caller. The EPISODE MIXTURE MECHANISM (``_apply_episode_mixture``) is OPT-IN, gated behind
+    # DEXLIFT_EPISODE_MIXTURE=1 -- see _apply_episode_mixture's own docstring for the regression that
+    # made this a required second gate, independent of the legacy-toggle check: an ordinary
+    # generate_reset_states_policy.py run sets neither legacy env var (it never wanted
+    # partial-assembly) NOR this new one (it never wanted the mixture either) -- both must be checked,
+    # since "no legacy toggle fired" alone cannot distinguish "wants the mixture" from "wants neither".
     def __post_init__(self):
         super().__post_init__()
         _apply_full_gravity(self)
         legacy_toggle_active = _apply_partial_assembly_and_goal_toggles(self)
-        if not legacy_toggle_active:
+        episode_mixture_requested = os.environ.get("DEXLIFT_EPISODE_MIXTURE") == "1"
+        if episode_mixture_requested and not legacy_toggle_active:
             _apply_episode_mixture(self)
+        elif episode_mixture_requested and legacy_toggle_active:
+            print(
+                "[dexlift] DEXLIFT_EPISODE_MIXTURE=1 requested but a legacy toggle"
+                " (DEXLIFT_PARTIAL_ASSEMBLY/DEXLIFT_GOAL_AT_SPAWN) fired first -- the legacy,"
+                " deterministic whole-run path wins; the mixture is NOT installed on top of it.",
+                flush=True,
+            )
 
 
 @configclass
@@ -580,8 +617,16 @@ class DexLiftUR5eDeltoRelJointPosTableLegReorientEnvCfg_PLAY(
         super().__post_init__()
         _apply_full_gravity(self)
         legacy_toggle_active = _apply_partial_assembly_and_goal_toggles(self)
-        if not legacy_toggle_active:
+        episode_mixture_requested = os.environ.get("DEXLIFT_EPISODE_MIXTURE") == "1"
+        if episode_mixture_requested and not legacy_toggle_active:
             _apply_episode_mixture(self)
+        elif episode_mixture_requested and legacy_toggle_active:
+            print(
+                "[dexlift] DEXLIFT_EPISODE_MIXTURE=1 requested but a legacy toggle"
+                " (DEXLIFT_PARTIAL_ASSEMBLY/DEXLIFT_GOAL_AT_SPAWN) fired first -- the legacy,"
+                " deterministic whole-run path wins; the mixture is NOT installed on top of it.",
+                flush=True,
+            )
 
 
 @configclass
