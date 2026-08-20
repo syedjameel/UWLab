@@ -60,3 +60,9 @@ from .task_state_vis import *  # noqa: F401, F403
 # ``task_state_vis`` for the same reason that module is imported after the dexsuite star-import:
 # ``GoalAtSpawnPoseCommandCfg`` extends ``TaskStateVisPoseCommandCfg``, not the raw dexsuite command.
 from .partial_assembly import *  # noqa: F401, F403
+
+# Per-episode MIXTURE of {classic goal, low goal, partial-assembly grasp-only} for the table-leg
+# REORIENT finetune (epic UWLab-g3z4). Imported last: reuses both
+# ``omnireset.mdp.events.reset_insertive_object_from_partial_assembly_dataset`` (same delegate
+# ``partial_assembly.SpawnPartialAssembly`` uses) and ``task_state_vis.TaskStateVisPoseCommand``.
+from .episode_mixture import *  # noqa: F401, F403

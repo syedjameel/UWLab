@@ -269,7 +269,7 @@ class Ur5eDeltoTableLegOscMixinCfg(Ur5eDeltoOscMixinCfg):
 # reachable AT ALL for this hand is an open physical question, not a hyperparameter.
 
 
-def _apply_partial_assembly_and_goal_toggles(env_cfg) -> None:
+def _apply_partial_assembly_and_goal_toggles(env_cfg) -> bool:
     """PARTIALLY-ASSEMBLED SPAWN, and separately GOAL-AT-SPAWN, opt-in via the environment (bead
     UWLab-qiao.2/.6/.9). Two INDEPENDENT toggles, because C3's box measurement showed the height
     floor a policy converges to is set by the GOAL command's range, not the spawn distribution --
@@ -319,6 +319,13 @@ def _apply_partial_assembly_and_goal_toggles(env_cfg) -> None:
 
     DEFAULT PATH IS BYTE-IDENTICAL WHEN BOTH ENV VARS ARE UNSET: nothing below runs unless one of the
     two is "1", matching the ``DEXLIFT_REF_RESET`` / ``DEXLIFT_SPAWN_CLEARANCE`` idiom this mirrors.
+
+    RETURNS whether either legacy toggle fired (bead UWLab-g3z4). Every existing caller of this
+    function ignored its return value, so adding one is backward compatible; the new per-episode
+    ``episode_mixture`` (see that module's docstring) reads it to skip installing the probabilistic
+    mixture whenever a caller has explicitly asked for the deterministic, whole-run legacy path --
+    several tools outside training (reset-state generation, certification, rendering) depend on being
+    able to force 100% of envs into partial-assembly/goal-at-spawn, which a mixture cannot give them.
     """
     partial_assembly = os.environ.get("DEXLIFT_PARTIAL_ASSEMBLY") == "1"
     goal_at_spawn = partial_assembly or os.environ.get("DEXLIFT_GOAL_AT_SPAWN") == "1"
@@ -379,6 +386,59 @@ def _apply_partial_assembly_and_goal_toggles(env_cfg) -> None:
             " goal SOURCE = object spawn pose (pinned, not uniform-sampled)", flush=True,
         )
 
+    return partial_assembly or goal_at_spawn
+
+
+def _apply_full_gravity(env_cfg) -> None:
+    """Pin gravity at full magnitude for the REORIENT table-leg FINETUNE (epic UWLab-g3z4), instead
+    of letting the ADR curriculum ramp it in from exactly zero.
+
+    THE BUG THIS REPLACES. ``dexsuite``'s ``EventCfg.variable_gravity`` ships at
+    ``((0,0,0),(0,0,0))`` (see ``dexsuite_env_cfg.py``'s own comment: gravity starts at zero
+    "which removes the need for a special Lift reward") and ``curriculum.gravity_adr``
+    (``adr_curriculum.py``) interpolates it toward full gravity via ``initial_final_interpolate_fn``
+    as the ADR ``adr`` difficulty term rises. THAT SAME FUNCTION RETURNS ``NO_CHANGE`` BELOW
+    DIFFICULTY FRACTION 0.1 (``dexsuite/mdp/curriculums.py``), so a finetune run that starts --
+    and stays -- at or near the curriculum floor never leaves zero gravity: the leg floats and is
+    never asked to fall, be caught, or be placed against a real weight. THIS IS EXACTLY THE FAILURE
+    MODE ``dexlift_ur5e_delto_env_cfg.py``'s own gravity comment (search ``gravity: LEFT ALONE``)
+    documents choosing to accept for the BASE Lift/primitives task, on measured evidence that a long
+    enough run eventually escapes the floor. That argument does not transfer here: this finetune is
+    deliberately run short and pinned near the curriculum floor, so "eventually" does not arrive.
+
+    TWO EDITS ARE REQUIRED, AND EITHER ALONE IS WRONG -- the exact trap
+    ``table_leg_env_cfg.TableLegCurriculumCfg``/``TableLegGraspLiftEnvCfg`` (the older UR10e table-leg
+    task) already avoids, mirrored here:
+
+    * Pinning ``events.variable_gravity.params["gravity_distribution_params"]`` to full gravity
+      WITHOUT nulling ``curriculum.gravity_adr`` does nothing durable: the curriculum term re-derives
+      and overwrites that same address every time it runs (every reset), snapping it back toward
+      whatever ``initial_final_interpolate_fn`` computes from the current ADR difficulty -- back to
+      ~zero at the floor this finetune sits near.
+    * Nulling ``curriculum.gravity_adr`` WITHOUT also pinning ``events.variable_gravity`` freezes
+      gravity permanently at dexsuite's UNTOUCHED default, which is exactly zero -- the curriculum
+      term is the only thing that ever writes a non-zero value in the first place.
+
+    Scoped to the Reorient table-leg classes only (called from both the TRAIN class and its
+    ``_PLAY`` sibling, same reason ``_apply_partial_assembly_and_goal_toggles`` is): the base Lift
+    and primitives tasks keep the reference ADR ramp, per the comment cited above.
+    """
+    full_gravity = ((0.0, 0.0, -9.81), (0.0, 0.0, -9.81))
+    env_cfg.events.variable_gravity.params["gravity_distribution_params"] = full_gravity
+    env_cfg.curriculum.gravity_adr = None
+
+    # Fail loudly on a half-applied edit rather than silently training in vacuum -- see the
+    # docstring's "TWO EDITS ARE REQUIRED" section for what each half alone would do wrong.
+    written = env_cfg.events.variable_gravity.params["gravity_distribution_params"]
+    assert tuple(tuple(v) for v in written) == full_gravity, (
+        f"events.variable_gravity was not pinned to full gravity; got {written}"
+    )
+    assert env_cfg.curriculum.gravity_adr is None, (
+        "curriculum.gravity_adr must be nulled, or it overwrites variable_gravity back toward zero"
+        " on every reset"
+    )
+    print(f"[dexlift] gravity PINNED at {full_gravity} (curriculum.gravity_adr disabled)", flush=True)
+
 
 @configclass
 class DexLiftUR5eDeltoRelJointPosTableLegLiftEnvCfg(Ur5eDeltoTableLegRelJointPosMixinCfg, dexsuite.DexsuiteLiftEnvCfg):
@@ -402,31 +462,126 @@ class DexLiftUR5eDeltoOscTableLegLiftEnvCfg_PLAY(Ur5eDeltoTableLegOscMixinCfg, d
     pass
 
 
+def _apply_episode_mixture(env_cfg) -> None:
+    """Wire the per-episode mixture MECHANISM (epic UWLab-g3z4) over {classic goal, low goal,
+    partial-assembly grasp-only} into ``env_cfg`` -- see ``mdp/episode_mixture.py``'s module
+    docstring for the full design argument (shared per-env kind buffer, the fixture-parking fix, why
+    the classic fraction may never reach zero, why this does not replace the legacy whole-run
+    toggles).
+
+    DELIBERATELY DOES NOT TOUCH THE FRACTIONS, and does not validate them either. An earlier revision
+    read ``env_cfg.classic_goal_prob`` etc. HERE and both baked them as literal floats into
+    ``EventTerm.params`` and called ``assert_episode_mixture_is_sane`` on them -- at ``__post_init__``
+    time, i.e. before Hydra CLI overrides ever reach ``env_cfg``. That made any
+    ``env.classic_goal_prob=...`` sweep a silent no-op: the baked params dict kept the pre-override
+    defaults forever, and the assert had already passed on those same defaults before a bad override
+    could exist to reject. ``mdp.MixtureResetObject.__init__`` now reads
+    ``env.cfg.classic_goal_prob`` / ``env.cfg.low_goal_prob`` / ``env.cfg.partial_assembly_prob``
+    itself, at MANAGER-CONSTRUCTION time (inside ``gym.make``, strictly after
+    ``env_cfg.from_dict(...)`` has applied any override) and calls
+    ``assert_episode_mixture_is_sane`` there -- see that class's docstring and the ``mdp/
+    episode_mixture.py`` module docstring's "THE MIXTURE PROBABILITIES ARE READ AT TERM-CONSTRUCTION
+    TIME" section for the full argument. Nothing here can validate what the fractions will actually
+    be, because at ``__post_init__`` time they are not yet known.
+
+    SKIPPED WHEN A LEGACY TOGGLE FIRED. Callers must check ``_apply_partial_assembly_and_goal_toggles``'s
+    return value themselves and not call this function at all in that case -- see that function's
+    docstring for why (reset-state generation / certification tooling needs the deterministic 100%
+    path, which a probabilistic mixture cannot give it).
+    """
+    # The fixture is needed unconditionally: even a CLI override that raises partial_assembly_prob
+    # above its 0.25 default must find scene.receptive_object already present.
+    env_cfg.scene.receptive_object = mdp.make_dexlift_receptive_object_cfg()
+
+    base_pose_range = dict(env_cfg.events.reset_object.params["pose_range"])
+    base_velocity_range = dict(
+        env_cfg.events.reset_object.params.get("velocity_range", {"x": [0.0, 0.0], "y": [0.0, 0.0], "z": [0.0, 0.0]})
+    )
+    env_cfg.events.reset_object = EventTerm(
+        func=mdp.MixtureResetObject,
+        mode="reset",
+        params={
+            "dataset_dir": mdp.DEXLIFT_PARTIAL_ASSEMBLY_DATASET_DIR,
+            "insertive_object_cfg": SceneEntityCfg("object"),
+            "receptive_object_cfg": SceneEntityCfg("receptive_object"),
+            "fixture_pose_range": mdp.RECEPTIVE_POSE_RANGE,
+            # -- CLASSIC / LOW GOAL spawn: whatever reset_object already carried (narrowed x
+            # included) -- see MixtureResetObject.__call__, only the PARTIAL ASSEMBLY fraction spawns
+            # differently. NOTE: the mixture fractions themselves are NOT here -- see this function's
+            # docstring; MixtureResetObject reads them off env.cfg at its own __init__ instead.
+            "pose_range": base_pose_range,
+            "velocity_range": base_velocity_range,
+            # No extra jitter on top of the stored partial-assembly relative pose, matching
+            # SpawnPartialAssembly's own default.
+            "pose_range_b": {},
+        },
+    )
+
+    env_cfg.commands.object_pose = mdp.upgrade_to_episode_mixture(env_cfg.commands.object_pose)
+
+    print(
+        "[dexlift] episode mixture MECHANISM wired (fractions validated later, post-override, in"
+        f" MixtureResetObject.__init__); low goal pos_z={mdp.LOW_GOAL_POS_Z_RANGE} m, classic goal"
+        f" pos_z={tuple(env_cfg.commands.object_pose.ranges.pos_z)} m", flush=True,
+    )
+
+
 @configclass
 class DexLiftUR5eDeltoRelJointPosTableLegReorientEnvCfg(
     Ur5eDeltoTableLegRelJointPosMixinCfg, dexsuite.DexsuiteReorientEnvCfg
 ):
+    # -- Per-episode mixture fractions (epic UWLab-g3z4). Literal dataclass fields, not env-var
+    # switches like the two above: ``update_class_from_dict`` (IsaacLab's hydra override applier)
+    # refuses any key not already present in the dataclass, so these have to exist here with
+    # defaults before ``env.classic_goal_prob=...`` etc. can ever be set from the CLI.
+    #
+    # THESE DEFAULTS ARE NOT VALIDATED HERE, AND NOTHING IN ``__post_init__`` READS THEM EITHER --
+    # deliberately. Hydra applies CLI overrides to this cfg object AFTER ``__post_init__`` has already
+    # run (``env_cfg.from_dict(...)`` in ``isaaclab_tasks.utils.hydra``), so anything that captured
+    # ``self.classic_goal_prob`` etc. here would capture a pre-override snapshot forever -- exactly
+    # the bug this structure now avoids. The values actually drawn from are read straight off
+    # ``env.cfg`` by ``mdp.MixtureResetObject.__init__`` at manager-construction time (inside
+    # ``gym.make``, after overrides land), and validated by ``assert_episode_mixture_is_sane`` THERE.
+    # Defaults must still sum to 1.0 with ``classic_goal_prob > 0`` -- that assert enforces it on
+    # every construction, override or not; see its docstring for the measured collapse it guards
+    # against.
+    classic_goal_prob: float = 0.50
+    low_goal_prob: float = 0.25
+    partial_assembly_prob: float = 0.25
+
     # -- PARTIALLY-ASSEMBLED SPAWN / GOAL-AT-SPAWN toggles: see
     # ``_apply_partial_assembly_and_goal_toggles``'s docstring above for the full argument (why two
     # independent toggles, why a shared function rather than inline code, why Lift is excluded).
     # Called from BOTH this class and its ``_PLAY`` sibling below -- they are NOT in an inheritance
     # relationship with each other, so the call has to be written twice, once per class, or Play
-    # never sees it (bead UWLab-qiao.9/J -- this is precisely the bug being fixed here).
+    # never sees it (bead UWLab-qiao.9/J -- this is precisely the bug being fixed here). GRAVITY
+    # (``_apply_full_gravity``) and the EPISODE MIXTURE MECHANISM (``_apply_episode_mixture``) are new
+    # here for the same structural reason -- see each function's own docstring.
     def __post_init__(self):
         super().__post_init__()
-        _apply_partial_assembly_and_goal_toggles(self)
+        _apply_full_gravity(self)
+        legacy_toggle_active = _apply_partial_assembly_and_goal_toggles(self)
+        if not legacy_toggle_active:
+            _apply_episode_mixture(self)
 
 
 @configclass
 class DexLiftUR5eDeltoRelJointPosTableLegReorientEnvCfg_PLAY(
     Ur5eDeltoTableLegRelJointPosMixinCfg, dexsuite.DexsuiteReorientEnvCfg_PLAY
 ):
-    # -- Same toggles as the train class above, same reason, same function -- see its docstring.
-    # This class does NOT inherit from ``DexLiftUR5eDeltoRelJointPosTableLegReorientEnvCfg``, so the
-    # call above does not reach here on its own; it has to be repeated.
+    # -- Same fields and toggles as the train class above, same reasons -- see its docstring. This
+    # class does NOT inherit from ``DexLiftUR5eDeltoRelJointPosTableLegReorientEnvCfg``, so nothing
+    # above reaches here on its own; both the fields and the __post_init__ calls have to be repeated.
+    classic_goal_prob: float = 0.50
+    low_goal_prob: float = 0.25
+    partial_assembly_prob: float = 0.25
+
     def __post_init__(self):
         super().__post_init__()
-        _apply_partial_assembly_and_goal_toggles(self)
+        _apply_full_gravity(self)
+        legacy_toggle_active = _apply_partial_assembly_and_goal_toggles(self)
+        if not legacy_toggle_active:
+            _apply_episode_mixture(self)
 
 
 @configclass
