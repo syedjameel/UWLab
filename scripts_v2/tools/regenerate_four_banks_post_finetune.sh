@@ -420,13 +420,38 @@ done
 # reset_states.py's _detect_schema expects as its "raw_dexlift" input. That function explicitly
 # REFUSES (raises ValueError) the moment receptive_object is already present, calling such a file
 # "already schema-complete" -- running rekey on C4's merged bank would error, not help.
-# table/ur5_metal_support stay ABSENT from C4's bank as a result, which is fine per
-# _DexliftToTrainingSceneRecorder's own docstring: MultiResetManager._reset_to matches
-# rigid_object entries by name and silently SKIPS any absent from the state, harmless for a
-# KINEMATIC body (both table and ur5_metal_support are) that then simply stays at its own
-# already-correct default pose. C1/C3 have no receptive_object at all straight out of the
-# recorder (that scene never has the entity outside the C4-only legacy toggle), so their merged
-# output IS rekey's "already_rekeyed" input case and needs the full four-key synthesis.
+# table/ur5_metal_support stay ABSENT from C4's bank as a result. THIS IS NOT SAFE BY THE "THEY
+# ARE KINEMATIC" ARGUMENT ALONE -- checked, not assumed, because this exact project has a scar on
+# that inference: MultiResetManager's own coverage guard (_assert_reset_file_covers_scene,
+# omnireset/mdp/events.py) used to exempt any kinematic body and was WRONG to, because
+# kinematic_enabled says nothing about whether the default pose is authored-correct or a
+# placeholder -- make_receptive_object hardcodes it True for all ten receptive variants, INCLUDING
+# receptive_object itself, whose own init_state is a bare (0,0,0) placeholder (the omission that
+# was catastrophic). The guard was rewritten to require an EXPLICIT, per-config
+# ``assumed_static_assets`` claim instead, cross-checked against kinematic_enabled but never
+# inferred from it alone. VERIFIED against the actual consuming config, not inferred from the
+# mechanism being "real": rl_state_cfg.py's RL_STATE_ASSUMED_STATIC_ASSETS = ["table",
+# "ur5_metal_support"] (its own comment there gives each an authored, non-placeholder init_state
+# as the reason) is passed as assumed_static_assets at every MultiResetManager EventTerm in that
+# file, and receptive_object is deliberately NOT in that list, on record, for the same reason
+# stated above. Construction-time check (OmniReset-UR5eDelto-RelCartesianOSC-State-v0, a two-key
+# insertive_object+receptive_object bank standing in for a merged C4 output): loads through
+# MultiResetManager without raising.
+#
+# THIS CLEARANCE IS SCOPED TO THAT DECLARATION, NOT UNIVERSAL -- the same seam (a fact verified
+# under one config, consumed under a different one, nothing gating the two) that produced most of
+# today's other defects. A C4 bank from this script is valid for a MultiResetManager EventTerm
+# whose OWN assumed_static_assets declares table and ur5_metal_support static (rl_state_cfg.py's
+# TrainEventCfg/TrainEvalEventCfg/etc. all do, today). If it is ever pointed at a DIFFERENT
+# consumer whose assumed_static_assets omits either name, that construction will raise --
+# loudly, at env construction, before any training step, which is the correct failure mode; it is
+# not something this script can guard against generically, since which config it does what
+# is a fact about the CONSUMER, not about the bank file itself.
+#
+# C1/C3 have no receptive_object at all straight out of the recorder (that scene never has the
+# entity outside the C4-only legacy toggle), so their merged output IS rekey's "already_rekeyed"
+# input case and needs the full four-key synthesis -- receptive_object is NOT assumed-static
+# anywhere, so a C1/C3 bank omitting it would raise regardless of which config consumes it.
 for arm_type in "c1:ObjectAnywhereEEAnywhere" "c3:ObjectAnywhereEEGrasped"; do
   arm="${arm_type%%:*}"; reset_type="${arm_type##*:}"
   MERGED_FILE=$(find "$RUN_BASE/$arm/merged" -name "resets_${reset_type}.pt" | head -1)
