@@ -194,7 +194,10 @@ from isaaclab.managers.recorder_manager import DatasetExportMode  # noqa: E402
 from isaaclab_rl.rl_games import RlGamesGpuEnv, RlGamesVecEnvWrapper  # noqa: E402
 from isaaclab_tasks.utils import parse_env_cfg  # noqa: E402
 
-from uwlab.utils.datasets.torch_dataset_file_handler import TorchDatasetFileHandler  # noqa: E402
+from uwlab.utils.datasets.torch_dataset_file_handler import (  # noqa: E402
+    TorchDatasetFileHandler,
+    atomic_torch_save,
+)
 from uwlab_tasks.manager_based.manipulation.dexlift.dexlift_ur5e_delto_actions import (  # noqa: E402
     ARM_JOINT_NAMES as DEXLIFT_ARM_JOINT_NAMES,
 )
@@ -219,33 +222,6 @@ def unwrap(o):
     if isinstance(o, dict):
         o = o["obs"]
     return o
-
-
-def _atomic_torch_save(obj, path: str) -> None:
-    """Write ``obj`` to ``path`` via a temp file + ``os.replace``, never a direct truncate-in-place
-    ``torch.save(obj, path)``.
-
-    Measured on a live 10,000-state run: the naive in-place save left the canonical bank on disk
-    torn (0 bytes or partial) roughly half of all wall-clock time, and a kill landing in that
-    window destroyed the whole run's output (recovered only from an out-of-band snapshot once).
-    ``os.replace`` is atomic within a filesystem, so the temp file MUST live next to ``path`` --
-    a temp file under /tmp would risk a cross-device rename (fails, or silently degrades to a
-    non-atomic copy). The temp name includes the pid so two concurrent runs writing different
-    ``path``s can never collide and a crashed run's leftover temp is never picked up later.
-    """
-    directory = os.path.dirname(path) or "."
-    os.makedirs(directory, exist_ok=True)
-    tmp_path = os.path.join(directory, f".{os.path.basename(path)}.tmp.{os.getpid()}")
-    try:
-        with open(tmp_path, "wb") as f:
-            torch.save(obj, f)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp_path, path)
-    except BaseException:
-        if os.path.exists(tmp_path):
-            os.remove(tmp_path)
-        raise
 
 
 def _require(name: str, requested: bool, actual: bool, message: str) -> None:
@@ -781,7 +757,7 @@ class _C2RewindBank:
                     f"[c2] offset={off_s:.2f}s articulation {asset_name!r} is missing {missing} -- "
                     "refusing to write a bank with a zeroed commanded PD squeeze on replay."
                 )
-            _atomic_torch_save(accum, path)
+            atomic_torch_save(accum, path)
             print(
                 f"[c2] offset={off_s:.2f}s: wrote {n} episodes ({rejected} rejected by the resting "
                 f"filter, |v|>{self.max_resting_speed_m_s} m/s) -> {path}",

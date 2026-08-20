@@ -18,6 +18,34 @@ from typing import Any
 from isaaclab.utils.datasets.dataset_file_handler_base import DatasetFileHandlerBase, EpisodeData
 
 
+def atomic_torch_save(obj, path: str) -> None:
+    """Write ``obj`` to ``path`` via a temp file + ``os.replace``, never a direct truncate-in-place
+    ``torch.save(obj, path)``.
+
+    A naive in-place ``torch.save`` truncates the destination on open and rewrites it in place;
+    sampled concurrently, the file is 0 bytes or a torn partial write for most of the time it
+    takes to serialize, so a kill (or crash) landing in that window destroys the whole file. This
+    already happened in production. ``os.replace`` is atomic within a filesystem, so the temp file
+    MUST live in the same directory as ``path`` -- a temp file under ``/tmp`` would risk a
+    cross-device rename (fails, or silently degrades to a non-atomic copy). The temp name includes
+    the pid so two concurrent writers of different ``path``s can never collide and a crashed
+    process's leftover temp is never picked up later.
+    """
+    directory = os.path.dirname(path) or "."
+    os.makedirs(directory, exist_ok=True)
+    tmp_path = os.path.join(directory, f".{os.path.basename(path)}.tmp.{os.getpid()}")
+    try:
+        with open(tmp_path, "wb") as f:
+            torch.save(obj, f)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, path)
+    except BaseException:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+        raise
+
+
 class TorchDatasetFileHandler(DatasetFileHandlerBase):
     """
     Dataset file handler that saves data directly in torch format as a torch file.
@@ -99,7 +127,7 @@ class TorchDatasetFileHandler(DatasetFileHandlerBase):
     def flush(self):
         """Flush any pending data to disk."""
         if self._file_path and self._episode_data:
-            torch.save(self._episode_data, self._file_path)
+            atomic_torch_save(self._episode_data, self._file_path)
 
     def close(self):
         """Close the dataset file handler."""
