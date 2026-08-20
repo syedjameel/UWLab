@@ -15,8 +15,15 @@
 #     episodes per seed (EPISODES is split evenly across seeds, rounding up if it does not divide).
 #   - Deterministic policy: certify_pose.py hard-codes agent.get_action(obs, is_deterministic=True)
 #     -- there is no flag for this, nothing to pass, it cannot be accidentally left stochastic.
-#   - ADR pinned to max: --adr_difficulty max, which is also certify_pose.py's own default -- passed
-#     explicitly below anyway so the protocol is legible in the command, not just inherited silently.
+#   - ADR pinned to max, INHERITED from certify_pose.py's own default (:119), NOT passed explicitly.
+#     An earlier revision of this comment claimed it was passed explicitly below; it never was, and
+#     an export here would be INERT because run_certify.sh does not forward any such variable to
+#     certify_pose.py -- adding one would look like protection while doing nothing, which is worse
+#     than the honest dependency. What makes this checkable is that the value is PRINTED: every
+#     CERTIFY_RESULT line carries adr_difficulty_frac, and the stored control cert records
+#     adr_difficulty 'max'/pinned_at 10. VERIFY IT IN THE OUTPUT rather than trusting either the
+#     default or a flag; if it ever reads anything but full difficulty, the number is not
+#     comparable to the stored 0.6953 and must not be quoted against it.
 #   - The BASE Reorient task, i.e. the SAME task id training runs on
 #     (DexLift-UR5eDelto-RelJointPos-TableLeg-Reorient-v0) UNDER THE CLASSIC-ONLY GOAL DISTRIBUTION --
 #     NOT under the episode mixture the finetune trained under, and this is DELIBERATE, not an
@@ -91,6 +98,16 @@ DRIVER_LOG="$REPO_ROOT/logs/cert_g3z4_finetune_$(date +%Y%m%d_%H%M%S).driver.log
 mkdir -p "$(dirname "$DRIVER_LOG")"
 : > "$DRIVER_LOG"
 
+# DEFENSIVE UNSETS -- these three change WHAT TASK IS SCORED, and all three are opt-in env vars that
+# survive in an interactive shell. If DEXLIFT_EPISODE_MIXTURE=1 leaked in from having sourced the
+# finetune launch script, ~25% of scored episodes would be partial-assembly episodes whose goal is
+# pinned to their own spawn -- near-automatic passes -- and the finetune would certify as an
+# improvement BECAUSE it was scored on an easier task. The number would look entirely clean.
+# GOAL_AT_SPAWN is the same defect without the mixture wrapper; PARTIAL_ASSEMBLY changes the spawn.
+unset DEXLIFT_EPISODE_MIXTURE
+unset DEXLIFT_GOAL_AT_SPAWN
+unset DEXLIFT_PARTIAL_ASSEMBLY
+
 run() {  # tag  checkpoint
   local tag="$1" ckpt="$2"
   echo "=== $tag  $(date -u +%H:%M:%SZ)" | tee -a "$DRIVER_LOG"
@@ -98,6 +115,14 @@ run() {  # tag  checkpoint
   (
     export TASK=DexLift-UR5eDelto-RelJointPos-TableLeg-Reorient-v0
     export COLLIDERS=hullfix3 SELFCOLL=on HAND=ref ARM=ours
+    # DEXLIFT_LEG_DECOMP IS DELIBERATELY ABSENT AND ITS ABSENCE IS NOT A PLANT DIFFERENCE.
+    # It appears in the plant.dexlift_env dict of EVERY historical stored cert, including the
+    # control's own 0.6953, so a reader diffing this script against those JSONs will notice it
+    # missing here. A tree-wide grep finds it SET by older cert scripts and recorded in their
+    # JSONs, and READ NOWHERE -- there is no os.environ.get/os.environ[] site for it anywhere.
+    # The decomposed-leg USD is now unconditional (dexlift_ur5e_delto_tableleg_env_cfg.py:39-77),
+    # so the variable is vestigial and the simulated plant is identical with or without it.
+    # Documented rather than re-added: setting a variable nothing reads is theatre.
     export GPU NUM_ENVS=128 EPISODES=128 POS_TOL=0.03 TILT=0.3
     bash "$REPO_ROOT/scripts_v2/tools/certification/run_certify.sh" "$tag" "$ckpt"
   ) 2>&1 | tee -a "$DRIVER_LOG"

@@ -624,7 +624,13 @@ def main() -> None:
         f" wilson95=[{headline['wilson_95'][0]:.4f},{headline['wilson_95'][1]:.4f}]"
         f" min_pos_p50={mins.get('p50', float('nan')):.4f} p90={mins.get('p90', float('nan')):.4f}"
         f" p99={mins.get('p99', float('nan')):.4f} max={mins.get('max', float('nan')):.4f}"
-        f" adr_difficulty_frac={result['domain']['adr_difficulty_frac']} json={out_path}",
+        f" adr_difficulty_frac={result['domain']['adr_difficulty_frac']}"
+        # THE HASH BELONGS IN THE LINE A HUMAN READS, not only in the JSON. This project has two
+        # checkpoints both named "ep 3600" in different runs, and the WORSE one carries the HIGHER
+        # reward (42.788 vs 38.389, certifying 24 points lower at 30mm). The standing rule is to
+        # disambiguate by the certifier's own sha256 -- which is useless if it is not printed here.
+        f" checkpoint_sha256={result['checkpoint_sha256']}"
+        f" json={out_path}",
         flush=True,
     )
     env.close()
