@@ -261,12 +261,22 @@ def main() -> None:
         args.c2_reset_type = "ObjectAnywhereEENear"
 
     # Discover each chunk's files: <chunk_dir>/Resets/<pair>/<--filename OR resets_<c2_reset_type>_off*.pt>
-    # Chunk label = the chunk dir's own basename (e.g. "chunk_1") -- used ONLY to attribute states
+    # Chunk label = "<1-based index in --chunk_dirs>:<basename>" -- used ONLY to attribute states
     # to a chunk for the duplicate check below, never written into the merged output itself.
+    #
+    # BUG FIXED HERE (team-lead, caught on the real C3 comparison): this used to be JUST the
+    # basename (e.g. "OmniReset"), which silently COLLIDES whenever two chunk dirs differ higher up
+    # the path than their last component -- exactly C3's own layout, <root>_c3chunkN/OmniReset for
+    # every N. chunk_poses is a dict keyed by this label; a collision means the second chunk's poses
+    # OVERWRITE the first's, so that chunk vanishes from the duplicate comparison while the merge
+    # (which works off the path list, not this label) still proceeds correctly and reports the
+    # right count -- a check that silently measures less than it claims. The 1-based index prefix
+    # makes every label unique BY CONSTRUCTION regardless of what the chunk dirs' basenames are,
+    # since args.chunk_dirs is a fixed-order list and this loop visits each position exactly once.
     per_offset_chunk_paths: dict[str, list[tuple[str, str]]] = {}  # fname -> [(chunk_label, path), ...]
     pair_dirs_seen: set[str] = set()
-    for chunk_dir in args.chunk_dirs:
-        chunk_label = os.path.basename(os.path.normpath(chunk_dir))
+    for i, chunk_dir in enumerate(args.chunk_dirs, start=1):
+        chunk_label = f"{i}:{os.path.basename(os.path.normpath(chunk_dir))}"
         if args.filename is not None:
             pattern = os.path.join(chunk_dir, "Resets", "*", args.filename)
         else:
@@ -314,6 +324,19 @@ def main() -> None:
             expected_total += n
             chunk_poses[chunk_label] = extract_object_root_poses(data["initial_state"])
             merge_leaf_lists(merged.setdefault("initial_state", {}), data["initial_state"])
+
+        # LOUD, NOT SILENT, if this ever recurs under some layout neither of us has thought of
+        # (team-lead requirement): the index-prefixed label above makes a collision impossible by
+        # construction, so this should never fire -- but "should never" is exactly the class of
+        # claim this whole campaign has spent today disproving. Checking the INVARIANT (one pose
+        # list per chunk file, no fewer) rather than trusting the labeling scheme is what catches a
+        # future regression here instead of silently under-counting again.
+        assert len(chunk_poses) == len(chunk_paths), (
+            f"{fname}: {len(chunk_paths)} chunk files but only {len(chunk_poses)} distinct labels in "
+            f"chunk_poses ({sorted(chunk_poses.keys())}) -- a chunk label collided and its states "
+            "were silently dropped from the duplicate check. This should be structurally impossible "
+            "with index-prefixed labels; if it fires, the labeling logic itself has a new bug."
+        )
 
         merged_total = _single_length(leaf_lengths(merged["initial_state"]), context=f"{fname} (merged)")
         # HARD count check (team-lead requirement): verify the merged count equals the sum of the
