@@ -717,6 +717,22 @@ class _C2RewindBank:
             }
         )
 
+    def print_progress(self) -> None:
+        """Unbuffered, one line, meant to share the SAME heartbeat cadence as the existing
+        ``[progress]`` attempts/accepted line in ``main()`` -- ``self.accum``/``self.diagnostics``
+        are only ever written to disk once, at the very end (``write()``), so without this there is
+        NOTHING to watch mid-run for a caller who only cares about the C2 total (e.g. an isolated
+        paper-scale run whose accept-time bank is a deliberate throwaway and whose real stopping
+        criterion is the C2 total, not the accepted-episode count ``--num_reset_states`` actually
+        gates on)."""
+        total_emitted = sum(self.emitted_counts.values())
+        total_rejected = sum(self.rejected_not_resting.values())
+        per_offset = "  ".join(
+            f"{off_s:.2f}s={self.emitted_counts[off_steps]}({self.rejected_not_resting[off_steps]}rej)"
+            for off_s, off_steps, _ in self.offsets
+        )
+        print(f"[c2][progress] total_emitted={total_emitted}  total_rejected={total_rejected}  {per_offset}", flush=True)
+
     def write(self) -> None:
         """Assert requirement #1 (joint targets present) and flush one file per offset. A run that
         captured zero episodes for a given offset still writes nothing for it (there is nothing to
@@ -1272,6 +1288,8 @@ def main() -> None:
                     f"/{args_cli.num_reset_states}  acceptance_rate={rate:.2%}",
                     flush=True,
                 )
+                if c2 is not None:
+                    c2.print_progress()
                 n_attempts_at_last_progress = n_attempts
                 last_progress_time = time.monotonic()
 
