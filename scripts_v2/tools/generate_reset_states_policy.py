@@ -847,6 +847,14 @@ def main() -> None:
         agent_cfg = yaml.safe_load(f)
     print(f"[generator] agent yaml: {agent_yaml}")
     print(f"[generator] normalize_input: {agent_cfg['params']['config'].get('normalize_input')}")
+    # PRINT THE VALUE, NOT JUST THE PATH (bead UWLab-weyl, chunking follow-up #3): rl_games'
+    # torch_runner.load_config reads agent_cfg["params"]["seed"] and calls torch.manual_seed +
+    # np.random.seed with it GLOBALLY, before the env is ever constructed -- identical seeds
+    # across chunk processes with an identical command line means identical env sampling, no
+    # matter how many different agent_yaml PATHS point at files that turn out to carry the same
+    # value. A caller relying on per-chunk seeded yaml copies (make_seeded_agent_yaml.py) should
+    # grep THIS line to verify the intended seed actually loaded, rather than trusting the path.
+    print(f"[generator] agent_cfg params.seed: {agent_cfg['params'].get('seed')}")
 
     env_cfg = parse_env_cfg(args_cli.task, device=args_cli.device, num_envs=args_cli.num_envs)
     # Shrink the GPU collision stack for a small-env smoke/dev scene (the training default is sized
