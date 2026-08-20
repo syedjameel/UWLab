@@ -65,7 +65,7 @@
 # policy under the plant it actually learned in.
 set -uo pipefail
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 
 # -- FILL IN AFTER TRAINING PRODUCES A CHECKPOINT. No default, deliberately: a script that quietly
 # certified nothing, or certified the wrong .pth, would be a worse outcome than refusing to run.
