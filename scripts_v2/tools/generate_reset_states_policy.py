@@ -331,6 +331,16 @@ class _C2RewindBank:
     (``first_opposed_contact_step``), not for capture, but so ``report()`` can print how many steps
     earlier the any-contact anchor fires, per accepted episode -- see ``self._lead_deltas_s``.
 
+    UNDER PRODUCTION SETTINGS (DEXLIFT_POSE_TILT set, plant+episode_length matched -- see the
+    free-fall-confound note below) THE TWO ANCHORS NEARLY COINCIDE: any-contact and opposed-contact
+    fired the SAME number of times (277 of 277) with median lead 1 step (0.017 s), down from ~8
+    steps (~0.13 s) measured under the misconfigured runs that motivated this anchor change in the
+    first place. A pre-oriented, cleanly-landed leg means first touch is usually already a clean
+    two-sided pinch. THE ANY-CONTACT ANCHOR WAS STILL THE RIGHT CALL -- it is what made the short
+    offsets meaningful under the WRONG configuration this project was actually running when the
+    choice was made, and keeping it costs nothing now that the two rarely differ -- but do not read
+    the any-vs-opposed distinction as load-bearing under production settings; it mostly is not.
+
     Anchoring on the ACCEPT step instead was considered and rejected: accept only latches
     ~SETTLE_STEPS+PROBE_STEPS after (opposed) contact, by which point the leg is typically already
     lifted clear of the table, so a fixed offset from accept lands mid-hold -- just another
