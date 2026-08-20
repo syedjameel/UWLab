@@ -4,7 +4,12 @@
 # or a different collider set measures a different robot.
 #
 #   TASK=<id> COLLIDERS=hullfix3 SELFCOLL=on HAND=ref ARM=ours [GPU=3] [EPISODES=256] [POS_TOL=0.01] \
-#       run_certify.sh <tag> <checkpoint>
+#       [ADR_DIFFICULTY=max] run_certify.sh <tag> <checkpoint>
+#
+# ADR_DIFFICULTY is forwarded to certify_pose.py's own --adr_difficulty (choices: max/configured;
+# default max). Certification protocols that need to be comparable across runs should still set this
+# explicitly rather than lean on the default -- see cert_g3z4_finetune.sh's own comment on why a
+# silent dependency on a default is the wrong shape for a number a 6-hour finetune decision reads.
 set -uo pipefail
 export CUDA_VISIBLE_DEVICES=${GPU:-3}
 export OMNI_KIT_ACCEPT_EULA=YES ACCEPT_EULA=Y
@@ -43,7 +48,8 @@ LOG="$HOME/cert_$TAG.log"; OUT="$HOME/cert_$TAG.json"
 timeout -s KILL 7200 "$HOME/UWLab/env_uwlab/bin/python" -u "$HOME/certify_pose.py" \
     --task "${TASK:?set TASK}" --checkpoint "$CKPT" \
     --num_envs "${NUM_ENVS:-256}" --episodes "${EPISODES:-256}" \
-    --pos_tol "${POS_TOL:-0.01}" --out "$OUT" --headless > "$LOG" 2>&1
+    --pos_tol "${POS_TOL:-0.01}" --adr_difficulty "${ADR_DIFFICULTY:-max}" \
+    --out "$OUT" --headless > "$LOG" 2>&1
 echo "rc=$?"
 
 WANT="colliders=$WANT_COLL self_collisions=$WANT_SC hand_act=$WANT_HAND arm_act=$WANT_ARM"

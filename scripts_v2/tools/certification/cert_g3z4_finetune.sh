@@ -15,15 +15,16 @@
 #     episodes per seed (EPISODES is split evenly across seeds, rounding up if it does not divide).
 #   - Deterministic policy: certify_pose.py hard-codes agent.get_action(obs, is_deterministic=True)
 #     -- there is no flag for this, nothing to pass, it cannot be accidentally left stochastic.
-#   - ADR pinned to max, INHERITED from certify_pose.py's own default (:119), NOT passed explicitly.
-#     An earlier revision of this comment claimed it was passed explicitly below; it never was, and
-#     an export here would be INERT because run_certify.sh does not forward any such variable to
-#     certify_pose.py -- adding one would look like protection while doing nothing, which is worse
-#     than the honest dependency. What makes this checkable is that the value is PRINTED: every
-#     CERTIFY_RESULT line carries adr_difficulty_frac, and the stored control cert records
-#     adr_difficulty 'max'/pinned_at 10. VERIFY IT IN THE OUTPUT rather than trusting either the
-#     default or a flag; if it ever reads anything but full difficulty, the number is not
-#     comparable to the stored 0.6953 and must not be quoted against it.
+#   - ADR pinned to max: ADR_DIFFICULTY=max, exported below and forwarded by run_certify.sh to
+#     certify_pose.py's own --adr_difficulty flag -- passed explicitly now, not merely inherited from
+#     certify_pose.py's own default (:119). An earlier revision of this comment claimed it was passed
+#     explicitly while the code only relied on the default; that was fixed by actually wiring
+#     ADR_DIFFICULTY through run_certify.sh's python invocation (see run_certify.sh), not by editing
+#     the comment to match the weaker behaviour -- a silent dependency on a default is exactly what
+#     breaks when someone later changes that default. Still double-checkable in the output regardless:
+#     every CERTIFY_RESULT line carries adr_difficulty_frac, and the stored control cert records
+#     adr_difficulty 'max'/pinned_at 10. If it ever reads anything but full difficulty, the number is
+#     not comparable to the stored 0.6953 and must not be quoted against it.
 #   - The BASE Reorient task, i.e. the SAME task id training runs on
 #     (DexLift-UR5eDelto-RelJointPos-TableLeg-Reorient-v0) UNDER THE CLASSIC-ONLY GOAL DISTRIBUTION --
 #     NOT under the episode mixture the finetune trained under, and this is DELIBERATE, not an
@@ -98,15 +99,19 @@ DRIVER_LOG="$REPO_ROOT/logs/cert_g3z4_finetune_$(date +%Y%m%d_%H%M%S).driver.log
 mkdir -p "$(dirname "$DRIVER_LOG")"
 : > "$DRIVER_LOG"
 
-# DEFENSIVE UNSETS -- these three change WHAT TASK IS SCORED, and all three are opt-in env vars that
+# DEFENSIVE UNSETS -- these four change WHAT TASK IS SCORED, and all four are opt-in env vars that
 # survive in an interactive shell. If DEXLIFT_EPISODE_MIXTURE=1 leaked in from having sourced the
 # finetune launch script, ~25% of scored episodes would be partial-assembly episodes whose goal is
 # pinned to their own spawn -- near-automatic passes -- and the finetune would certify as an
 # improvement BECAUSE it was scored on an easier task. The number would look entirely clean.
-# GOAL_AT_SPAWN is the same defect without the mixture wrapper; PARTIAL_ASSEMBLY changes the spawn.
+# GOAL_AT_SPAWN is the same defect without the mixture wrapper; PARTIAL_ASSEMBLY changes the spawn;
+# SPAWN_CLEARANCE (dexlift_ur5e_delto_env_cfg.py:1543) swaps reset_object for a clearance-aware spawn
+# in the SAME shared __post_init__ path -- cert_ft.sh's own precedent names it explicitly as one of
+# the two things "run_certify.sh does NOT export ... which is exactly the point".
 unset DEXLIFT_EPISODE_MIXTURE
 unset DEXLIFT_GOAL_AT_SPAWN
 unset DEXLIFT_PARTIAL_ASSEMBLY
+unset DEXLIFT_SPAWN_CLEARANCE
 
 run() {  # tag  checkpoint
   local tag="$1" ckpt="$2"
@@ -115,6 +120,11 @@ run() {  # tag  checkpoint
   (
     export TASK=DexLift-UR5eDelto-RelJointPos-TableLeg-Reorient-v0
     export COLLIDERS=hullfix3 SELFCOLL=on HAND=ref ARM=ours
+    # ADR pinned to max, EXPLICITLY -- forwarded by run_certify.sh to certify_pose.py's own
+    # --adr_difficulty. Matches certify_pose.py's own default (:119) and the stored control cert's
+    # domain.adr_difficulty ('max'/pinned_at 10); made explicit here so a future change to that
+    # default cannot silently decouple this certification from the stored 0.6953 protocol.
+    export ADR_DIFFICULTY=max
     # DEXLIFT_LEG_DECOMP IS DELIBERATELY ABSENT AND ITS ABSENCE IS NOT A PLANT DIFFERENCE.
     # It appears in the plant.dexlift_env dict of EVERY historical stored cert, including the
     # control's own 0.6953, so a reader diffing this script against those JSONs will notice it
