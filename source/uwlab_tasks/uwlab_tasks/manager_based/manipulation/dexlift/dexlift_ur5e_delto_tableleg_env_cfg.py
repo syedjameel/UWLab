@@ -342,11 +342,22 @@ def _apply_partial_assembly_and_goal_toggles(env_cfg) -> bool:
         # this same ``__post_init__`` chain, if that was also set: the fixture-composed pose is
         # the intended source of truth for this pairing and wins over a free-scatter clearance
         # spawn, not merged with it.
+        # -- DEXLIFT_PARTIAL_ASSEMBLY_DATASET_DIR (env var, distinct from the module CONSTANT of the
+        # same base name it overrides) -- the same override mechanism added to _apply_episode_mixture
+        # for the SAME reason: SpawnPartialAssembly.__init__ downloads partial_assemblies.pt for this
+        # pair from mdp.DEXLIFT_PARTIAL_ASSEMBLY_DATASET_DIR the moment it is constructed, and that
+        # default (Hugging Face) path 404s for this exact pair -- confirmed 2026-08-20, see mdp/
+        # episode_mixture.py's "THE MIXTURE IS OPT-IN" section. Every consumer of THIS legacy toggle
+        # (generate_reset_states_policy.py's --reset_type ObjectPartiallyAssembledEEGrasped / C4,
+        # cert scripts that might one day certify under it) hits the identical 404 without this.
+        _partial_assembly_dataset_dir = os.environ.get(
+            "DEXLIFT_PARTIAL_ASSEMBLY_DATASET_DIR", mdp.DEXLIFT_PARTIAL_ASSEMBLY_DATASET_DIR
+        )
         env_cfg.events.reset_object = EventTerm(
             func=mdp.SpawnPartialAssembly,
             mode="reset",
             params={
-                "dataset_dir": mdp.DEXLIFT_PARTIAL_ASSEMBLY_DATASET_DIR,
+                "dataset_dir": _partial_assembly_dataset_dir,
                 "insertive_object_cfg": SceneEntityCfg("object"),
                 "receptive_object_cfg": SceneEntityCfg("receptive_object"),
                 "fixture_pose_range": mdp.RECEPTIVE_POSE_RANGE,
@@ -368,7 +379,7 @@ def _apply_partial_assembly_and_goal_toggles(env_cfg) -> bool:
         # generation log states the configuration rather than leaving it to be inferred. A
         # silently-unset toggle here is a plausible wrong number, not an obvious one.
         reset_object_source = (
-            "SpawnPartialAssembly (partial_assemblies.pt)" if partial_assembly
+            f"SpawnPartialAssembly (dataset_dir={_partial_assembly_dataset_dir})" if partial_assembly
             else "reset_object_pose_with_clearance (DEXLIFT_SPAWN_CLEARANCE=1)" if spawn_clearance
             else "reset_root_state_uniform (dexsuite default pose_range)"
         )
