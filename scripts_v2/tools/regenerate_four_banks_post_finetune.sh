@@ -320,20 +320,40 @@ run_chunked_arm() {
     grep -q "hand effort_limit_sim (distinct values): \[30.0\]" "$chunk_log" \
       || echo "[$arm chunk $i/$n_chunks] WARNING: constructed hand actuators do not read [30.0] in" \
               "this chunk's [verify] line -- inspect $chunk_log before trusting it." >&2
+
+    # -- DEXLIFT_REF_RESET's consequence, confirmed from the CONSTRUCTED env_cfg's own printed
+    # value (generate_reset_states_policy.py's [verify] events.reset_robot_joints.position_range
+    # line), not from the export alone -- exports can be silently clobbered downstream; this
+    # project's rule is to verify what was actually built, same as the hand-effort check above.
+    grep -q "events\.reset_robot_joints\.position_range = \[-0\.5, 0\.5\]" "$chunk_log" \
+      || echo "[$arm chunk $i/$n_chunks] WARNING: constructed reset_robot_joints.position_range does" \
+              "not read [-0.5, 0.5] in this chunk's [verify] line -- DEXLIFT_REF_RESET may not have" \
+              "taken; inspect $chunk_log before trusting it." >&2
+
+    # -- DEXLIFT_POSE_TILT's consequence, confirmed from the CONSTRUCTED cfg's own printed value
+    # (dexlift_ur5e_delto_env_cfg.py's "[dexlift] POSE_TILT staged" line, %.4f-formatted), not from
+    # the export alone. Exact match, not a prefix -- "+-0.3" would also match +-0.35 or +-0.30001.
+    grep -q -- "+-0.3000 rad" "$chunk_log" \
+      || echo "[$arm chunk $i/$n_chunks] WARNING: constructed POSE_TILT does not read +-0.3000 rad in" \
+              "this chunk's [dexlift] POSE_TILT staged line -- DEXLIFT_POSE_TILT may not have taken;" \
+              "inspect $chunk_log before trusting it." >&2
   done
 }
 
 # =====================================================================================
 # C1 -- ObjectAnywhereEEAnywhere
 # =====================================================================================
-run_chunked_arm c1 ObjectAnywhereEEAnywhere "$TARGET_PER_BANK"
+run_chunked_arm c1 ObjectAnywhereEEAnywhere "$TARGET_PER_BANK" \
+  || { echo "[c1] ARM FAILED -- see $REPO_ROOT/fourbank_c1_chunk*.log -- refusing to continue to c3/c2/c4/merge." >&2; exit 1; }
 
 # =====================================================================================
 # C3 -- ObjectAnywhereEEGrasped, WITH C2 (via --c2_rewind) riding on the same chunks. See the
 # design-decision section above for why this is one pass, not two.
 # =====================================================================================
 run_chunked_arm c3 ObjectAnywhereEEGrasped "$TARGET_PER_BANK" \
-  --c2_rewind --c2_reset_type ObjectAnywhereEENear
+  --c2_rewind --c2_reset_type ObjectAnywhereEENear \
+  || { echo "[c3] ARM FAILED -- see $REPO_ROOT/fourbank_c3_chunk*.log -- refusing to continue to c4/merge" \
+            "(c1's output under \$RUN_BASE/c1 is intact, not lost)." >&2; exit 1; }
 
 # -- C2_EXTRA_CHUNKS: if C2's real yield (watch each c3 chunk's "[c2][progress] total_emitted=..."
 # lines) falls short of 10,000 once C3's own target is met, set this to run additional c3-shaped
@@ -366,7 +386,8 @@ verify_partial_assembly_dataset
   export DEXLIFT_PARTIAL_ASSEMBLY=1
   export DEXLIFT_PARTIAL_ASSEMBLY_DATASET_DIR="$PARTIAL_ASSEMBLY_DATASET_DIR"
   run_chunked_arm c4 ObjectPartiallyAssembledEEGrasped "$TARGET_PER_BANK"
-)
+) || { echo "[c4] ARM FAILED -- see $REPO_ROOT/fourbank_c4_chunk*.log -- refusing to continue to merge" \
+            "(c1/c3/c2 output under \$RUN_BASE is intact, not lost)." >&2; exit 1; }
 
 # =====================================================================================
 # MERGE. C1/C3/C4 via --filename (plain chunk merge); C2 via --c2_reset_type (offset-file merge,
@@ -388,8 +409,10 @@ merge_plain() {  # arm reset_type
   [ "$merge_exit" -eq 0 ] || { echo "[$arm] MERGE FAILED (exit $merge_exit), see $merge_log" >&2; return 1; }
 }
 
-merge_plain c1 ObjectAnywhereEEAnywhere
-merge_plain c3 ObjectAnywhereEEGrasped
+merge_plain c1 ObjectAnywhereEEAnywhere \
+  || { echo "[c1] MERGE FAILED -- refusing to continue (see $REPO_ROOT/fourbank_c1_merge.log)." >&2; exit 1; }
+merge_plain c3 ObjectAnywhereEEGrasped \
+  || { echo "[c3] MERGE FAILED -- refusing to continue (see $REPO_ROOT/fourbank_c3_merge.log)." >&2; exit 1; }
 
 C2_CHUNK_DIRS=("$RUN_BASE/c3"/chunk_* "$RUN_BASE/c3"/chunk_extra_*)
 C2_MERGED_DIR="$RUN_BASE/c2/merged"
@@ -399,9 +422,13 @@ C2_MERGE_LOG="$REPO_ROOT/fourbank_c2_merge.log"
   --output_dir "$C2_MERGED_DIR" \
   --c2_reset_type ObjectAnywhereEENear \
   > "$C2_MERGE_LOG" 2>&1
+C2_MERGE_EXIT=$?
 cat "$C2_MERGE_LOG"
+[ "$C2_MERGE_EXIT" -eq 0 ] \
+  || { echo "[c2] MERGE FAILED (exit $C2_MERGE_EXIT) -- refusing to continue (see $C2_MERGE_LOG)." >&2; exit 1; }
 
-merge_plain c4 ObjectPartiallyAssembledEEGrasped
+merge_plain c4 ObjectPartiallyAssembledEEGrasped \
+  || { echo "[c4] MERGE FAILED -- refusing to continue (see $REPO_ROOT/fourbank_c4_merge.log)." >&2; exit 1; }
 
 # =====================================================================================
 # C4-SPECIFIC ACCEPTANCE CHECK, ON THE RAW CHUNKS -- see the header's dedicated section for why
@@ -443,13 +470,38 @@ print("[c4-check] native receptive_object confirmed on every raw chunk. Read the
       " (well under the fixture's own RECEPTIVE_POSE_RANGE footprint); no pre-measured threshold"
       " exists for this checkpoint, this is the first time C4 has been generated.")
 PYEOF
+C4_CHECK_EXIT=$?
+[ "$C4_CHECK_EXIT" -eq 0 ] || {
+  echo "[c4-check] HARD REFUSAL TRIPPED (criterion (a), exit $C4_CHECK_EXIT -- see the [c4-check]" \
+       "REFUSING line above) -- NOT proceeding to rekey/validate/copy-in." >&2
+  exit 1
+}
 
-for i in $(seq 1 3); do
+# -- criterion (c): each chunk's own log must show the toggle was READ AS REQUESTED by the
+# CONSTRUCTED cfg, not merely passed on a command line something downstream ignored. The header
+# (line ~119) calls (a) and (c) BOTH hard refusals; iterate the ACTUAL chunk count (n_chunks as
+# run_chunked_arm computed it), not a hardcoded 3 -- TARGET_PER_BANK/CHUNK_TARGET_SIZE default to
+# 6 chunks, and a fixed "seq 1 3" would silently never check chunks 4-6. Chunk-level tolerance
+# (lines ~299-301) means an individual chunk log can legitimately be missing this line if that
+# chunk's own Isaac process died early -- the hard refusal fires only if NONE of the C4 chunks
+# that exist confirm it, i.e. the toggle mechanism itself never took across the whole arm.
+C4_N_CHUNKS=$(( (TARGET_PER_BANK + CHUNK_TARGET_SIZE - 1) / CHUNK_TARGET_SIZE ))
+C4_TOGGLE_CONFIRMED=0
+for i in $(seq 1 "$C4_N_CHUNKS"); do
   CLOG=$(ls "$REPO_ROOT"/fourbank_c4_chunk${i}.log 2>/dev/null)
-  [ -n "$CLOG" ] && grep -q "DEXLIFT_PARTIAL_ASSEMBLY=1.*SpawnPartialAssembly" "$CLOG" \
-    && echo "[c4-check] chunk $i confirms SpawnPartialAssembly construction: $(grep -o 'reset_object -> SpawnPartialAssembly[^;]*' "$CLOG" | head -1)" \
-    || echo "[c4-check] WARNING: chunk $i log missing the SpawnPartialAssembly construction line -- verify by hand." >&2
+  if [ -n "$CLOG" ] && grep -q "DEXLIFT_PARTIAL_ASSEMBLY=1.*SpawnPartialAssembly" "$CLOG"; then
+    echo "[c4-check] chunk $i confirms SpawnPartialAssembly construction: $(grep -o 'reset_object -> SpawnPartialAssembly[^;]*' "$CLOG" | head -1)"
+    C4_TOGGLE_CONFIRMED=$((C4_TOGGLE_CONFIRMED + 1))
+  else
+    echo "[c4-check] WARNING: chunk $i log missing the SpawnPartialAssembly construction line -- verify by hand." >&2
+  fi
 done
+[ "$C4_TOGGLE_CONFIRMED" -gt 0 ] || {
+  echo "[c4-check] HARD REFUSAL TRIPPED (criterion (c)): no C4 chunk log (of $C4_N_CHUNKS checked)" \
+       "confirms the CONSTRUCTED cfg actually took SpawnPartialAssembly -- NOT proceeding to" \
+       "rekey/validate/copy-in." >&2
+  exit 1
+}
 
 # =====================================================================================
 # REKEY -- C1/C3 ONLY. NOT C4, AND THIS IS DELIBERATE, FOUND BY READING rekey's OWN REFUSAL
