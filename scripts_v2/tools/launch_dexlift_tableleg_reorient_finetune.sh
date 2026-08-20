@@ -201,7 +201,41 @@ DATASET_PAIR_FILE="$DATASET_DIR/Resets/OneLegInsertionFixture__SquareTableLeg200
   echo "   the default Hugging Face path 404s for this pair -- see the comment above DATASET_DIR)."
   exit 1
 }
-echo "partial-assembly dataset verified present: $DATASET_PAIR_FILE"
+# -- A FILE EXISTING AT THIS PATH IS NOT ENOUGH -- CONFIRMED BLOCKER, 2026-08-20. The 525-pose file
+# that shipped locally on this machine (local_ckpts/reset_states_2026-08-17/partial_assemblies.pt,
+# byte-identical to a second copy under Datasets_render/) was produced by the OLD force-driven
+# random-walk generator (superseded by bead UWLab-algw.9's axial_depth_sampling -- see
+# partial_assemblies_cfg.py's header) and is PHYSICALLY INVALID for this pair: reprojected against
+# OneLegInsertionFixture/metadata.yaml's own assembled_offset (the seat point), ZERO of its 525
+# poses have z within the [seat, mouth] engaged span at all -- every one is a leg hovering near the
+# hole, not seated in it. The correct replacement is a 2048-pose file from the rebuilt axial-depth
+# sampler (lateral miss median ~0.035mm, tilt median ~0.143deg, depth spread evenly across the
+# operational band -- verified in a live Isaac run). COUNT THE POSES BEFORE TRUSTING THIS FILE, not
+# just its path or size: a file that merely exists here is exactly what let the broken one through
+# unnoticed before.
+_DATASET_POSE_COUNT=$("$HOME/UWLab/env_uwlab/bin/python" -c "
+import torch
+d = torch.load('$DATASET_PAIR_FILE', map_location='cpu', weights_only=True)
+print(d['relative_position'].shape[0])
+" 2>/dev/null) || {
+  echo "REFUSING: could not load $DATASET_PAIR_FILE to count its poses -- do not trust an unreadable dataset file"
+  exit 1
+}
+echo "partial-assembly dataset pose count: $_DATASET_POSE_COUNT ($DATASET_PAIR_FILE)"
+if [ "$_DATASET_POSE_COUNT" = "525" ]; then
+  echo "REFUSING: this is the KNOWN-BROKEN 525-pose file (old random-walk generator, zero poses"
+  echo "  actually seated in the bore -- see the comment above). Point DATASET_DIR at the rebuilt"
+  echo "  2048-pose axial-depth-sampler file instead; do not override this check."
+  exit 1
+fi
+if [ "$_DATASET_POSE_COUNT" != "2048" ]; then
+  echo "REFUSING: expected the 2048-pose axial-depth-sampler file, got $_DATASET_POSE_COUNT poses."
+  echo "  An unrecognised count is not automatically trusted just because it isn't 525 -- verify this"
+  echo "  file's own geometry (lateral miss / tip height / tilt against the seat point) before"
+  echo "  overriding this check by hand."
+  exit 1
+fi
+echo "partial-assembly dataset verified: 2048 poses, not the known-broken 525-pose file."
 # Read by _apply_episode_mixture (dexlift_ur5e_delto_tableleg_env_cfg.py) at cfg-construction time --
 # a plain env var, not only a Hydra override, so the identical mechanism also works for
 # scripts_v2/tools/certification/certify_pose.py (cert_g3z4_finetune.sh's own delegate), which has no
