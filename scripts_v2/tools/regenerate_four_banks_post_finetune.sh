@@ -302,6 +302,11 @@ run_chunked_arm() {
     fi
 
     # -- seed verified at BOTH producer (yaml contained it) and consumer (rl_games consumed it).
+    # DELIBERATELY A WARNING, NOT AN ABORT -- do not "fix" this to match the FATAL checks
+    # below. A duplicated seed degrades DIVERSITY across chunks; it does not make any state
+    # WRONG, and merge_c2_chunks.py's two-tier duplicate detection (near-dup under 1mm/0.5deg
+    # plus exact) is the real backstop for it. The checks below are a different class: they
+    # catch a configuration that makes every banked state wrong.
     local yaml_ok=0 rlgames_ok=0
     grep -q "agent_cfg params.seed: $chunk_seed\$" "$chunk_log" && yaml_ok=1
     grep -q "self.seed = $chunk_seed\$" "$chunk_log" && rlgames_ok=1
@@ -317,26 +322,51 @@ run_chunked_arm() {
     # number, not the label" correction already applied elsewhere in this epic).
     # generate_reset_states_policy.py prints: "[verify] hand effort_limit_sim (distinct values):
     # [30.0]  (expect [30.0] for reference, ...)" when the reference hand actuators are live.
-    grep -q "hand effort_limit_sim (distinct values): \[30.0\]" "$chunk_log" \
-      || echo "[$arm chunk $i/$n_chunks] WARNING: constructed hand actuators do not read [30.0] in" \
-              "this chunk's [verify] line -- inspect $chunk_log before trusting it." >&2
+    # -- CONFIG CHECKS ARE HARD, AND ONLY ON A CHUNK THAT SUCCEEDED.
+    # A chunk that exited nonzero has a legitimately truncated log -- it may have died before the
+    # [verify] lines were ever printed -- so running these against it produces false positives that
+    # teach a reader to ignore them. That chunk already reported itself above.
+    # On a chunk that exited ZERO, a missing marker is not transient: DEXLIFT_POSE_TILT,
+    # DEXLIFT_REF_RESET and the reference-actuator plant are DETERMINISTIC AND GLOBAL. They cannot
+    # be wrong in this chunk and right in the next -- they are wrong in all 6 chunks of all 4 arms
+    # or in none. Under warning-only semantics such a run does not fail, it COMPLETES: 40,000 states
+    # in the wrong regime, ~24 warnings buried across ~24 log files, and a success banner on top.
+    # Aborting costs one Isaac boot. Continuing costs the night and yields a bank that looks healthy.
+    # VERIFIED SAFE FOR C4: pose-tilt staging runs in the base cfg (dexlift_ur5e_delto_env_cfg.py
+    # :1353) BEFORE the tableleg subclass swaps reset_object to SpawnPartialAssembly, and two real
+    # partial-assembly logs on the box (step5b_policy_smoke2.log, step5b_shortep_smoke.log) print
+    # BOTH markers with SpawnPartialAssembly live. So no arm needs an exemption.
+    if [ "$chunk_exit" -eq 0 ]; then
+      grep -q "hand effort_limit_sim (distinct values): \[30.0\]" "$chunk_log" \
+        || { echo "[$arm chunk $i/$n_chunks] FATAL: constructed hand actuators do not read [30.0]" \
+                  "in this chunk's [verify] line -- DEXLIFT_REF_ACTUATORS/REF_HAND_ACT did not take." \
+                  "This is global, not transient; every chunk of every arm is affected. See" \
+                  "$chunk_log. Aborting rather than banking a wrong-plant bank." >&2; return 1; }
+
+      grep -q "events\.reset_robot_joints\.position_range = \[-0\.5, 0\.5\]" "$chunk_log" \
+        || { echo "[$arm chunk $i/$n_chunks] FATAL: constructed reset_robot_joints.position_range" \
+                  "does not read [-0.5, 0.5] -- DEXLIFT_REF_RESET did not take, so the start-pose" \
+                  "distribution is dexsuite's, not production's. Global, not transient. See" \
+                  "$chunk_log. Aborting." >&2; return 1; }
+
+      grep -q -- "+-0.3000 rad" "$chunk_log" \
+        || { echo "[$arm chunk $i/$n_chunks] FATAL: constructed POSE_TILT does not read" \
+                  "+-0.3000 rad -- DEXLIFT_POSE_TILT did not take, so reset roll/pitch/yaw and the" \
+                  "drop-height clamp are both wrong. Global, not transient. See $chunk_log." \
+                  "Aborting." >&2; return 1; }
+    else
+      echo "[$arm chunk $i/$n_chunks] config checks SKIPPED (chunk exited $chunk_exit; its log is" \
+           "truncated and would false-positive)." >&2
+    fi
 
     # -- DEXLIFT_REF_RESET's consequence, confirmed from the CONSTRUCTED env_cfg's own printed
     # value (generate_reset_states_policy.py's [verify] events.reset_robot_joints.position_range
     # line), not from the export alone -- exports can be silently clobbered downstream; this
     # project's rule is to verify what was actually built, same as the hand-effort check above.
-    grep -q "events\.reset_robot_joints\.position_range = \[-0\.5, 0\.5\]" "$chunk_log" \
-      || echo "[$arm chunk $i/$n_chunks] WARNING: constructed reset_robot_joints.position_range does" \
-              "not read [-0.5, 0.5] in this chunk's [verify] line -- DEXLIFT_REF_RESET may not have" \
-              "taken; inspect $chunk_log before trusting it." >&2
 
     # -- DEXLIFT_POSE_TILT's consequence, confirmed from the CONSTRUCTED cfg's own printed value
     # (dexlift_ur5e_delto_env_cfg.py's "[dexlift] POSE_TILT staged" line, %.4f-formatted), not from
     # the export alone. Exact match, not a prefix -- "+-0.3" would also match +-0.35 or +-0.30001.
-    grep -q -- "+-0.3000 rad" "$chunk_log" \
-      || echo "[$arm chunk $i/$n_chunks] WARNING: constructed POSE_TILT does not read +-0.3000 rad in" \
-              "this chunk's [dexlift] POSE_TILT staged line -- DEXLIFT_POSE_TILT may not have taken;" \
-              "inspect $chunk_log before trusting it." >&2
   done
 }
 
