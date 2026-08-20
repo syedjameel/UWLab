@@ -379,6 +379,17 @@ class _C2RewindBank:
     mechanism changed between the two measured passes, the SIZE of the problem ("0.5 s is too far")
     did not.
 
+    THE [0.0, 0.4] RANGE ABOVE IS THE UNSTAGED DEFAULT, NOT A CONSTANT -- ``DEXLIFT_POSE_TILT`` (a
+    task-definition env var, see ``_apply_pose_tilt_stage`` in ``dexlift_ur5e_delto_env_cfg.py``)
+    clamps the SAME ``pose_range.z`` down to ``[0.0, DEXLIFT_DROP_Z]`` (default 0.05) when set --
+    production's own certified invocation sets it. Measured under that staged config: median
+    obj_disp_from_spawn_mm drops to ~105 mm (from ~230-290 mm unstaged) and acceptance rises to
+    ~58% (from ~24% with the plant and episode length already correct but tilt unset) -- tilt was
+    the third and largest of the three production-matching factors, ahead of episode_length_s. The
+    "use velocity, not displacement" guidance above holds regardless of which range is active;
+    ``report()``'s own caveat print reads the live ``[verify]`` line rather than hardcoding either
+    number, for exactly this reason.
+
     HARD RESTING FILTER, ENFORCED NOT JUST DOCUMENTED (team-lead decision). Because a bank is
     consumed by filename with nothing else validating its contents, ``_emit`` rejects any candidate
     whose ``obj_lin_vel_mag`` at the rewound step exceeds ``max_resting_speed_m_s`` (default 0.05
@@ -763,13 +774,15 @@ class _C2RewindBank:
 
         print(
             "\nCAVEAT on obj_disp_from_spawn_mm below: this task's own reset_object draws "
-            "pose_range.z in [0.0, 0.4] (see this run's own [verify] line) -- EVERY episode spawns "
-            "the object AIRBORNE and free-falls it onto the table before acquisition. A large "
-            "displacement from the literal spawn pose is therefore expected from that scripted "
-            "drop ALONE, regardless of any hand contact -- this metric cannot distinguish "
-            "free-fall settling from hand-caused disturbance. obj_lin_vel_mag_m_s (near 0 once "
-            "landed) and obj_height_m are the more trustworthy 'is it still resting, untouched' "
-            "signals for this task family.",
+            "pose_range.z from SOME range around a free-fall drop -- SEE THIS RUN'S OWN [verify] "
+            "events.reset_object.func / pose_range.z LINE ABOVE FOR THE ACTUAL VALUE, do not assume "
+            "[0.0, 0.4] (the unstaged default) -- DEXLIFT_POSE_TILT, when set, clamps it down to "
+            "[0.0, DEXLIFT_DROP_Z] (default 0.05) instead. Either way, every episode spawns the "
+            "object AIRBORNE and free-falls it onto the table before acquisition, so a chunk of "
+            "displacement from the literal spawn pose is expected from that scripted drop ALONE, "
+            "regardless of any hand contact -- this metric cannot distinguish free-fall settling "
+            "from hand-caused disturbance. obj_lin_vel_mag_m_s (near 0 once landed) and obj_height_m "
+            "are the more trustworthy 'is it still resting, untouched' signals for this task family.",
             flush=True,
         )
 
