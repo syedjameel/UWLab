@@ -184,6 +184,23 @@ export ACCEPT_EULA=Y
 export PYTHONUNBUFFERED=1
 export PYTHONPATH="$REPO_ROOT/source/uwlab:$REPO_ROOT/source/uwlab_tasks:$REPO_ROOT/source/uwlab_assets:$REPO_ROOT/source/uwlab_rl"
 
+# ---------------------------------------------------------------------------
+# PRODUCTION PLANT + START-POSE DISTRIBUTION.
+# These five were promised in this file's header and were NEVER SET in the body
+# until 2026-08-20. Unset, the task silently builds dexsuite's start distribution
+# and the identified (weak) hand instead of the production ones -- not merely a
+# lower yield, WRONG DATA, with no error. Verified consumers:
+#   dexlift_ur5e_delto_env_cfg.py:1492  gates the whole reset distribution on REF_RESET
+#   dexlift_ur5e_delto_env_cfg.py:502   gates reference-actuator parity
+#   dexlift_ur5e_delto_env_cfg.py:913   gates POSE_TILT (roll/pitch/yaw AND drop height)
+# Cost of omission, measured: episode_length 3.6x, POSE_TILT a further 2.5x.
+# ---------------------------------------------------------------------------
+export DEXLIFT_REF_RESET=1
+export DEXLIFT_REF_ACTUATORS=1
+export DEXLIFT_REF_HAND_ACT=1
+export DEXLIFT_REF_ARM_ACT=0
+export DEXLIFT_POSE_TILT=0.3
+
 TASK="DexLift-UR5eDelto-RelJointPos-TableLeg-Reorient-Play-v0"
 RECEPTIVE_USD_PATH="$REPO_ROOT/source/uwlab_assets/data/Props/FurnitureBench/OneLegInsertionFixture/one_leg_insertion_fixture.usd"
 
