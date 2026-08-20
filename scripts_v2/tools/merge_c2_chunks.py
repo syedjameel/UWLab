@@ -35,6 +35,20 @@ inside them -- there is no batch dimension to concatenate along, only a python l
 
 NO ISAAC IMPORT. Plain torch, runs with any interpreter that has torch installed -- does not need
 the Isaac-enabled python this project's other generator/rekey tools require.
+
+CROSS-CHUNK DUPLICATE CHECK (team-lead requirement, chunking follow-up #2). The merge above proves
+nothing about DIVERSITY -- if every chunk is a fresh process launched with an identical command
+line (same checkpoint, same env count, same task, same offsets), a per-process-seeded RNG could
+make two or three chunks explore the same trajectory distribution from the same initial conditions
+and emit largely or entirely IDENTICAL states. The count check would still pass (count is count),
+the schema would still validate, and the bank would silently carry N copies of one chunk's
+diversity. This script therefore ALWAYS compares the manipulated object's root_pose across chunks
+(position + orientation) and reports how many states are exact or near-exact duplicates of a state
+in ANOTHER chunk, as a headline number -- reporting, not failing, since interpreting "how much
+overlap is too much" is a judgment call for whoever is watching the run, not a hardcoded gate here.
+Also runnable standalone with --report_only (no --output_dir needed, nothing written) for an
+early check -- e.g. chunk 1 vs chunk 2 as soon as both exist, before a third chunk's GPU time is
+spent on what might be a clone.
 """
 
 from __future__ import annotations
@@ -86,23 +100,132 @@ def _single_length(lengths: dict[str, int], context: str) -> int:
     return next(iter(distinct)) if distinct else 0
 
 
+def extract_object_root_poses(initial_state: dict) -> list[torch.Tensor]:
+    """Every rigid_object's root_pose list, concatenated (in this schema there is exactly one --
+    ``insertive_object`` -- but this does not assume that, in case a future bank ever carries
+    more than one manipulated body)."""
+    poses: list[torch.Tensor] = []
+    for asset in initial_state.get("rigid_object", {}).values():
+        poses.extend(asset["root_pose"])
+    return poses
+
+
+def report_cross_chunk_duplicates(
+    chunk_poses: dict[str, list[torch.Tensor]], pos_tol_m: float, ang_tol_deg: float
+) -> dict:
+    """Compare every state's object root_pose (position + quaternion, IsaacLab's own
+    xyz + wxyz layout -- see root_pose_w) against every OTHER chunk's states for the SAME offset,
+    and report how many have at least one near/exact match in a DIFFERENT chunk.
+
+    NOT a coincidence detector at these tolerances: the reset distribution this bead measured
+    spans tens to hundreds of millimeters and full-range orientation (or +-0.3 rad under
+    DEXLIFT_POSE_TILT) -- two INDEPENDENT random draws landing within 1 mm and 0.5 deg of each
+    other by chance, in that continuous a space, is not a plausible coincidence. A large count
+    here means shared RNG state across chunk processes, not luck.
+
+    EXACT means bit-identical to float32 precision (pos_tol effectively 0); NEAR uses the caller's
+    tolerances and INCLUDES exact matches (a looser superset, not a disjoint bucket) -- report both
+    so "some near-misses" (expected, e.g. a common table-rest pose) reads differently from
+    "everything is exact" (a cloned RNG stream).
+    """
+    chunk_names = list(chunk_poses.keys())
+    flat_poses: list[torch.Tensor] = []
+    chunk_idx: list[int] = []
+    for ci, name in enumerate(chunk_names):
+        for pose in chunk_poses[name]:
+            flat_poses.append(pose)
+            chunk_idx.append(ci)
+
+    n_total = len(flat_poses)
+    result = {
+        "chunk_names": chunk_names,
+        "chunk_sizes": [len(chunk_poses[c]) for c in chunk_names],
+        "n_total": n_total,
+        "n_near_dup": 0,
+        "n_exact_dup": 0,
+    }
+    if n_total == 0 or len(chunk_names) < 2:
+        return result
+
+    stacked = torch.stack(flat_poses).float()  # (n_total, 7): xyz + wxyz
+    pos = stacked[:, :3]
+    quat = torch.nn.functional.normalize(stacked[:, 3:7], dim=-1)
+    chunk_idx_t = torch.tensor(chunk_idx)
+
+    pos_dist = torch.cdist(pos, pos)
+    dot = (quat @ quat.T).clamp(-1.0, 1.0).abs()
+    ang_dist_deg = torch.rad2deg(2.0 * torch.acos(dot))
+
+    different_chunk = chunk_idx_t.unsqueeze(0) != chunk_idx_t.unsqueeze(1)
+    not_self = ~torch.eye(n_total, dtype=torch.bool)
+    cross_chunk = different_chunk & not_self
+
+    near = (pos_dist < pos_tol_m) & (ang_dist_deg < ang_tol_deg) & cross_chunk
+    exact = (pos_dist < 1e-6) & (ang_dist_deg < 1e-4) & cross_chunk
+
+    result["n_near_dup"] = int(near.any(dim=1).sum().item())
+    result["n_exact_dup"] = int(exact.any(dim=1).sum().item())
+    return result
+
+
+def print_duplicate_report(fname: str, report: dict, pos_tol_m: float, ang_tol_deg: float) -> None:
+    n_total = report["n_total"]
+    n_near = report["n_near_dup"]
+    n_exact = report["n_exact_dup"]
+    sizes = " + ".join(f"{name}={size}" for name, size in zip(report["chunk_names"], report["chunk_sizes"]))
+    near_pct = (100.0 * n_near / n_total) if n_total else 0.0
+    exact_pct = (100.0 * n_exact / n_total) if n_total else 0.0
+    print(
+        f"[dup-check] {fname}: {sizes}  ->  near-dup (<{pos_tol_m * 1000:.1f}mm, <{ang_tol_deg:.1f}deg, "
+        f"cross-chunk)={n_near}/{n_total} ({near_pct:.1f}%)  exact-dup={n_exact}/{n_total} ({exact_pct:.1f}%)"
+    )
+    if n_total > 0 and near_pct > 20.0:
+        print(
+            f"[dup-check] WARNING: {near_pct:.1f}% of states in {fname} have a near/exact match in "
+            "a DIFFERENT chunk -- this many coincidental matches is not plausible in this reset "
+            "distribution's continuous state space. The chunks are likely sharing RNG state "
+            "(per-process rather than per-run seeding) and largely duplicating each other's "
+            "diversity, not adding to it. Investigate before trusting this bank at its face count."
+        )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument(
         "--chunk_dirs", nargs="+", required=True,
         help="Each chunk run's --dataset_dir root (NOT the Resets/ subdir -- same value passed to generate_reset_states_policy.py for that chunk).",
     )
-    parser.add_argument("--output_dir", required=True, help="Merged --dataset_dir root; created if absent.")
+    parser.add_argument(
+        "--output_dir", default=None,
+        help="Merged --dataset_dir root; created if absent. Required unless --report_only.",
+    )
     parser.add_argument(
         "--c2_reset_type", default="ObjectAnywhereEENear",
         help="Must match the --c2_reset_type every chunk was generated with.",
     )
+    parser.add_argument(
+        "--report_only", action="store_true",
+        help=(
+            "Run the load + duplicate check but do NOT merge/write anything -- for an early, "
+            "no-side-effects diversity check (e.g. chunk 1 vs chunk 2 as soon as both exist, "
+            "before spending GPU time on a third chunk). --output_dir not required with this."
+        ),
+    )
+    parser.add_argument("--dup_pos_tol_m", type=float, default=1e-3, help="NEAR-duplicate position tolerance, meters.")
+    parser.add_argument("--dup_ang_tol_deg", type=float, default=0.5, help="NEAR-duplicate orientation tolerance, degrees.")
     args = parser.parse_args()
 
+    if not args.report_only and args.output_dir is None:
+        print("[merge] FATAL: --output_dir is required unless --report_only is set.", file=sys.stderr)
+        sys.exit(1)
+
     # Discover each chunk's per-offset files: <chunk_dir>/Resets/<pair>/resets_<c2_reset_type>_off*.pt
-    per_offset_paths: dict[str, list[str]] = {}
+    # Chunk label = the chunk dir's own basename (e.g. "chunk_1") -- used ONLY to attribute states
+    # to a chunk for the duplicate check below, never written into the merged output itself.
+    per_offset_chunk_paths: dict[str, list[tuple[str, str]]] = {}  # fname -> [(chunk_label, path), ...]
     pair_dirs_seen: set[str] = set()
     for chunk_dir in args.chunk_dirs:
+        chunk_label = os.path.basename(os.path.normpath(chunk_dir))
         pattern = os.path.join(chunk_dir, "Resets", "*", f"resets_{args.c2_reset_type}_off*.pt")
         matches = sorted(glob.glob(pattern))
         if not matches:
@@ -112,9 +235,9 @@ def main() -> None:
             pair_dir = os.path.basename(os.path.dirname(path))
             pair_dirs_seen.add(pair_dir)
             fname = os.path.basename(path)
-            per_offset_paths.setdefault(fname, []).append(path)
+            per_offset_chunk_paths.setdefault(fname, []).append((chunk_label, path))
 
-    if not per_offset_paths:
+    if not per_offset_chunk_paths:
         print("[merge] FATAL: no C2 files found in ANY chunk dir -- nothing to merge.", file=sys.stderr)
         sys.exit(1)
     if len(pair_dirs_seen) != 1:
@@ -127,19 +250,25 @@ def main() -> None:
         sys.exit(1)
     pair_dir = next(iter(pair_dirs_seen))
 
-    out_pair_dir = os.path.join(args.output_dir, "Resets", pair_dir)
-    os.makedirs(out_pair_dir, exist_ok=True)
-    print(f"[merge] pair dir: {pair_dir}")
+    if not args.report_only:
+        out_pair_dir = os.path.join(args.output_dir, "Resets", pair_dir)
+        os.makedirs(out_pair_dir, exist_ok=True)
+        print(f"[merge] pair dir: {pair_dir}")
+    else:
+        print(f"[merge] pair dir: {pair_dir}  (--report_only: nothing will be written)")
 
-    for fname, paths in sorted(per_offset_paths.items()):
+    any_dup_warning = False
+    for fname, chunk_paths in sorted(per_offset_chunk_paths.items()):
         merged: dict = {}
         chunk_counts: list[int] = []
         expected_total = 0
-        for path in paths:
+        chunk_poses: dict[str, list[torch.Tensor]] = {}
+        for chunk_label, path in chunk_paths:
             data = torch.load(path, map_location="cpu", weights_only=False)
             n = _single_length(leaf_lengths(data["initial_state"]), context=path)
             chunk_counts.append(n)
             expected_total += n
+            chunk_poses[chunk_label] = extract_object_root_poses(data["initial_state"])
             merge_leaf_lists(merged.setdefault("initial_state", {}), data["initial_state"])
 
         merged_total = _single_length(leaf_lengths(merged["initial_state"]), context=f"{fname} (merged)")
@@ -151,11 +280,33 @@ def main() -> None:
             f"(per-chunk: {chunk_counts}) -- refusing to write a bank whose count does not add up."
         )
 
+        # CROSS-CHUNK DUPLICATE CHECK (team-lead requirement) -- reports, does not fail. See
+        # report_cross_chunk_duplicates's own docstring for why a large overlap here is not a
+        # plausible coincidence.
+        dup_report = report_cross_chunk_duplicates(chunk_poses, args.dup_pos_tol_m, args.dup_ang_tol_deg)
+        print_duplicate_report(fname, dup_report, args.dup_pos_tol_m, args.dup_ang_tol_deg)
+        if dup_report["n_total"] and dup_report["n_near_dup"] / dup_report["n_total"] > 0.20:
+            any_dup_warning = True
+
+        if args.report_only:
+            print(f"[merge] {fname}: {' + '.join(str(c) for c in chunk_counts)} = {merged_total}  (--report_only: not written)")
+            continue
+
         out_path = os.path.join(out_pair_dir, fname)
         torch.save(merged, out_path)
         print(f"[merge] {fname}: {' + '.join(str(c) for c in chunk_counts)} = {merged_total} -> {out_path}")
 
-    print(f"[merge] DONE. Merged output at: {out_pair_dir}")
+    if args.report_only:
+        print("[merge] REPORT-ONLY DONE -- nothing written.")
+    else:
+        print(f"[merge] DONE. Merged output at: {out_pair_dir}")
+    if any_dup_warning:
+        print(
+            "[merge] SUMMARY: at least one offset crossed the 20% near-duplicate threshold -- see "
+            "the [dup-check] WARNING lines above before trusting this bank's state count as real "
+            "diversity.",
+            file=sys.stderr,
+        )
 
 
 if __name__ == "__main__":
