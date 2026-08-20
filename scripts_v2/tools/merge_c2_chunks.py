@@ -49,6 +49,20 @@ overlap is too much" is a judgment call for whoever is watching the run, not a h
 Also runnable standalone with --report_only (no --output_dir needed, nothing written) for an
 early check -- e.g. chunk 1 vs chunk 2 as soon as both exist, before a third chunk's GPU time is
 spent on what might be a clone.
+
+EXTENSION (bead UWLab-hls2, ported from GenRunner's independent 3d7168f on feat/realbox-assembly,
+reconciled here rather than left as two diverging copies): this tool's own C2-via-rewind splits
+its target into several OFFSETS per run, hence resets_<type>_off<N>s.pt and the glob below. C3
+chunks come from plain generate_reset_states_policy.py, which writes exactly one
+resets_<reset_type>.pt per --dataset_dir with NO offset suffix. Rather than fork a second merge
+script for that shape, --filename accepts an exact basename and bypasses the c2_reset_type/_off*
+glob entirely -- mutually exclusive with --c2_reset_type (an ERROR to pass both, not a silent
+precedence rule -- the earlier GenRunner-only version let --c2_reset_type sit unused whenever
+--filename was given, which is exactly the kind of silently-ignored flag this project has been
+bitten by all day). Every other code path -- the pair-dir consistency guard, the per-file
+list-concat merge, the hard count assertion, and the cross-chunk duplicate check above -- is
+identical and untouched for both entry points; C3's chunks need the duplicate check at least as
+much as C2's, since the seed is confirmed globally pinned across every process too.
 """
 
 from __future__ import annotations
@@ -200,8 +214,21 @@ def main() -> None:
         help="Merged --dataset_dir root; created if absent. Required unless --report_only.",
     )
     parser.add_argument(
-        "--c2_reset_type", default="ObjectAnywhereEENear",
-        help="Must match the --c2_reset_type every chunk was generated with.",
+        "--c2_reset_type", default=None,
+        help=(
+            "Must match the --c2_reset_type every chunk was generated with. Mutually exclusive "
+            "with --filename (an error to pass both). Defaults to 'ObjectAnywhereEENear' when "
+            "neither this nor --filename is given."
+        ),
+    )
+    parser.add_argument(
+        "--filename", default=None,
+        help=(
+            "Exact resets_<Type>.pt basename to merge from each chunk dir's Resets/<pair>/ -- "
+            "bypasses the c2_reset_type/_off* glob entirely. Use for non-offset-split generators "
+            "(e.g. C3's plain generate_reset_states_policy.py output, resets_<ResetType>.pt with "
+            "no _off<N>s suffix). Mutually exclusive with --c2_reset_type (an error to pass both)."
+        ),
     )
     parser.add_argument(
         "--report_only", action="store_true",
@@ -219,14 +246,31 @@ def main() -> None:
         print("[merge] FATAL: --output_dir is required unless --report_only is set.", file=sys.stderr)
         sys.exit(1)
 
-    # Discover each chunk's per-offset files: <chunk_dir>/Resets/<pair>/resets_<c2_reset_type>_off*.pt
+    # --filename and --c2_reset_type select DIFFERENT discovery patterns (exact basename vs.
+    # c2_reset_type/_off* glob) -- an ERROR to pass both, not a silent precedence rule (the
+    # earlier GenRunner-only version let --c2_reset_type sit unused whenever --filename was given;
+    # see this script's own module docstring for why that shape of bug is not acceptable here).
+    if args.filename is not None and args.c2_reset_type is not None:
+        print(
+            "[merge] FATAL: --filename and --c2_reset_type are mutually exclusive -- pass exactly "
+            "one (or neither, for the 'ObjectAnywhereEENear' offset-glob default).",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    if args.filename is None and args.c2_reset_type is None:
+        args.c2_reset_type = "ObjectAnywhereEENear"
+
+    # Discover each chunk's files: <chunk_dir>/Resets/<pair>/<--filename OR resets_<c2_reset_type>_off*.pt>
     # Chunk label = the chunk dir's own basename (e.g. "chunk_1") -- used ONLY to attribute states
     # to a chunk for the duplicate check below, never written into the merged output itself.
     per_offset_chunk_paths: dict[str, list[tuple[str, str]]] = {}  # fname -> [(chunk_label, path), ...]
     pair_dirs_seen: set[str] = set()
     for chunk_dir in args.chunk_dirs:
         chunk_label = os.path.basename(os.path.normpath(chunk_dir))
-        pattern = os.path.join(chunk_dir, "Resets", "*", f"resets_{args.c2_reset_type}_off*.pt")
+        if args.filename is not None:
+            pattern = os.path.join(chunk_dir, "Resets", "*", args.filename)
+        else:
+            pattern = os.path.join(chunk_dir, "Resets", "*", f"resets_{args.c2_reset_type}_off*.pt")
         matches = sorted(glob.glob(pattern))
         if not matches:
             print(f"[merge] WARNING: no C2 files found under {chunk_dir!r} (pattern {pattern!r})", file=sys.stderr)
