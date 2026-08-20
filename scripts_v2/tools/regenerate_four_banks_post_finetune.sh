@@ -136,6 +136,30 @@
 # (DEXLIFT_EPISODE_MIXTURE_DATASET_DIR) one -- two different env vars, same underlying file, same
 # guard logic, because they are two structurally independent code paths (see the design-decision
 # section above).
+#
+# =====================================================================================
+# THESE BANKS ARE ADDRESSED BY PAIR DIRECTORY -- ANY CONSUMER MUST SET THE VARIANT PAIR EXPLICITLY
+# =====================================================================================
+# Every bank this script produces is written under Resets/OneLegInsertionFixture__
+# SquareTableLeg200mmDecomp/ -- the leg200mm/onelegfixture pair, computed the same way
+# MultiResetManager itself computes it (compute_pair_dir off the scene's actual insertive/
+# receptive USD paths), NOT a fixed or assumed location. A consumer that does not ALSO resolve to
+# this exact pair will not find these banks at all.
+#
+# CONCRETE, MEASURED TRAP: OmniReset-UR5eDelto-RelCartesianOSC-State-v0 -- the actual eventual RL
+# task this campaign's banks exist to feed -- DEFAULTS TO A DIFFERENT PAIR (Peg__PegHole), not
+# leg200mm/onelegfixture, unless its scene objects are explicitly overridden to the variant this
+# campaign targets. Confirmed directly while verifying the C4 arm's MultiResetManager guard today:
+# a construction pointed at that task's DEFAULT pair looked for Resets/Peg__PegHole/... and, left
+# to fetch that pair's assets from the cloud, has previously presented as a SILENT ~25-MINUTE HANG
+# right after "Time taken for scene creation" with no further log line -- not a missing-file error,
+# not a crash, just silence. A launch of the eventual RL run that forgets to set the variant pair
+# will not find a single bank this campaign generates, and the failure will look like a hang, not
+# a "file not found."
+#
+# THIS SCRIPT DOES NOT WIRE THAT -- pointing the eventual RL launch at the right variant pair is a
+# separate job, out of scope here. This note exists so whoever writes that launch command reads it
+# BEFORE discovering the hang, not after.
 set -uo pipefail
 
 CKPT=${1:?"usage: $0 <finetune_ckpt.pth> <finetune_agent_yaml> [gpu]"}
