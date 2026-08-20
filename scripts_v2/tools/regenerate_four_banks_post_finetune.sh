@@ -358,15 +358,6 @@ run_chunked_arm() {
       echo "[$arm chunk $i/$n_chunks] config checks SKIPPED (chunk exited $chunk_exit; its log is" \
            "truncated and would false-positive)." >&2
     fi
-
-    # -- DEXLIFT_REF_RESET's consequence, confirmed from the CONSTRUCTED env_cfg's own printed
-    # value (generate_reset_states_policy.py's [verify] events.reset_robot_joints.position_range
-    # line), not from the export alone -- exports can be silently clobbered downstream; this
-    # project's rule is to verify what was actually built, same as the hand-effort check above.
-
-    # -- DEXLIFT_POSE_TILT's consequence, confirmed from the CONSTRUCTED cfg's own printed value
-    # (dexlift_ur5e_delto_env_cfg.py's "[dexlift] POSE_TILT staged" line, %.4f-formatted), not from
-    # the export alone. Exact match, not a prefix -- "+-0.3" would also match +-0.35 or +-0.30001.
   done
 }
 
