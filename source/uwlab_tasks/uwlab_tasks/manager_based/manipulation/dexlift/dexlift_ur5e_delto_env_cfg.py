@@ -943,6 +943,141 @@ def _apply_pose_tilt_stage(env_cfg) -> None:
     )
 
 
+def _apply_c1_hand_pose_stage(env_cfg) -> None:
+    """Optionally add a Cartesian palm-pose IK reset for the C1 rung (RESET_SPEC_V2.md sec 1).
+
+    Off unless ``DEXRESET_C1_HAND=1``. Like :func:`_apply_pose_tilt_stage` this is a
+    task-definition change and it is printed. It goes through this opt-in env-var staging function
+    rather than a config field a hydra override could appear to control but not actually reach --
+    RESET_SPEC_V2.md sec 1a trap 3 / this module's own F6 finding: a hydra override of
+    ``commands.object_pose.ranges.pitch`` is silently overwritten by :func:`_apply_pose_tilt_stage`
+    above, and nothing added here gets an exemption from that lesson.
+
+    WHAT IT ADDS. A new ``events.reset_c1_hand_pose`` term, set as an attribute here rather than
+    declared on :class:`Ur5eDeltoEventCfg`, so the UNSET path is byte-for-byte the existing
+    behaviour -- nothing about ``Ur5eDeltoEventCfg`` changes when this function returns early.
+    Event terms of one mode run in the order their attribute was set (class-declared fields first,
+    in declaration order, then anything a subclass or ``__post_init__`` adds after), and LATER
+    terms of the same mode WIN (see ``reset_finger_root_joints``'s own docstring for the same fact
+    used the same way) -- so appending this term here, after every class-declared ``reset``-mode
+    term already ran, is what lets it OVERRIDE the arm/wrist half of
+    ``reset_robot_joints``/``reset_robot_elbow_joint``'s +-10 deg jitter with an IK-solved Cartesian
+    palm pose while leaving those SAME terms' write to the FINGER joints alone (this term's
+    ``robot_ik_cfg`` only names ``ARM_JOINT_NAMES`` + ``PALM_BODY``, never a hand joint). Fingers
+    therefore stay on the existing DexSuite-style jitter exactly as before -- RESET_SPEC_V2.md's C1
+    asks for "fingers randomized in the DexSuite style", which is what those terms already are;
+    nothing new is added for them here.
+
+    ANCHOR (XY). RESET_SPEC_V2.md wants the hand centred "above the insertion hole (goal/bore XY),
+    not above the leg". The dexlift scene has NO physical bore
+    (V2_POSE_FINDINGS.md F2: "the dexlift scene HAS NO FIXTURE"). The closest stand-in available is
+    ``commands.object_pose``'s own goal-XY distribution, so this reads its RANGE MIDPOINT
+    (``ranges.pos_x``/``pos_y``, robot ROOT frame -- read here, after ``_apply_goal_vertical_mixture``,
+    so every stage that could touch those ranges has already run).
+
+    THIS IS A STATIC ANCHOR, NOT THE LIVE PER-EPISODE GOAL DRAW, and that is deliberate, not an
+    oversight: ``ManagerBasedRLEnv._reset_idx`` runs ``self.event_manager.apply(mode="reset", ...)``
+    BEFORE ``self.command_manager.reset(env_ids)`` (which is what resamples the goal) -- measured
+    directly against IsaacLabDexterous's ``manager_based_rl_env.py``. A ``reset``-mode event
+    reading ``env.command_manager.get_command("object_pose")`` would therefore read the PREVIOUS
+    episode's goal, not the one about to be sampled for this one: the exact class of silent
+    staleness RESET_SPEC_V2.md sec 1a trap 3 warns about (an override that looks live but is not),
+    one layer deeper than the hydra case it names. Anchoring on the RANGE's midpoint instead
+    sidesteps that ordering hazard entirely, at the cost of not tracking this episode's specific
+    goal draw -- acceptable because the goal itself is drawn from this same range every episode, so
+    the hand ends up centred in the region the goal will occupy, just not glued to the exact point.
+
+    HEIGHT (Z). ``WORK_SURFACE_Z`` = 0 IS the table surface, stated in the ROBOT'S OWN ROOT FRAME
+    (see that constant's own docstring), and ``commands.object_pose.ranges`` is ALSO in the root
+    frame (``ObjectUniformPoseCommand``'s own docstring: "Targets are defined in the robot's base
+    frame"). So an anchor placed at root-frame z = 0 lands at world z = the robot root's own world
+    height once ``events.reset_root`` has pinned it -- which it always has by the time any
+    ``reset``-mode term declared after it runs. ``DEXRESET_C1_HAND_Z``'s two numbers are therefore
+    literal metres ABOVE the real tabletop, with NO leg-tip correction: the 106.203 mm offset in
+    RESET_SPEC_V2.md sec 1a trap 1 is ``SquareTableLeg200mmDecomp``'s own assembled-offset and has
+    nothing to do with a HAND pose -- stated explicitly so the next reader does not go looking for
+    it here.
+
+    ORIENTATION. "Palm pointing downwards" is built in :mod:`.mdp.c1_hand_pose` from the SAME
+    metadata key and the SAME formula the ``orient_down`` success gate already uses
+    (``omnireset/mdp/terminations.py::check_reset_state_success``, 60-degree cone about world -Z;
+    ``gripper_approach_direction`` = [0.2582, 0.4717, 0.8431], duplicated onto
+    ``Ur5eDelto/metadata.yaml``). ``DEXRESET_C1_HAND_TILT`` is a per-axis (roll, pitch, yaw)
+    half-angle, sampled independently per axis and composed as an EXTRINSIC world-frame rotation on
+    top of that nominal -- see the event class for the exact composition.
+
+    R1 / IK EXEMPTION. RESET_SPEC_V2.md sec 2 R1 forbids IK for the HELD reset states (C2/C3/C4)
+    because those must be reached by a policy and held against gravity. C1 is free-space sampling
+    with nothing held, so it is exempt, and an IK-placed hand here does not violate R1.
+    """
+    raw = os.environ.get("DEXRESET_C1_HAND")
+    if raw != "1":
+        return
+
+    z_raw = os.environ.get("DEXRESET_C1_HAND_Z", "0.10,0.20")
+    try:
+        z_lo, z_hi = (float(part) for part in z_raw.split(","))
+    except ValueError as exc:
+        raise ValueError(
+            f"DEXRESET_C1_HAND_Z must be two comma-separated metres, e.g. '0.10,0.20'; got {z_raw!r}"
+        ) from exc
+    if not z_lo < z_hi:
+        raise ValueError(f"DEXRESET_C1_HAND_Z must satisfy lo < hi; got {z_lo} >= {z_hi}")
+
+    xy_raw = os.environ.get("DEXRESET_C1_HAND_XY", "0.15")
+    try:
+        xy_half_width = float(xy_raw)
+    except ValueError as exc:
+        raise ValueError(
+            f"DEXRESET_C1_HAND_XY must be a single metres value, e.g. '0.15'; got {xy_raw!r}"
+        ) from exc
+    if not xy_half_width > 0.0:
+        raise ValueError(f"DEXRESET_C1_HAND_XY must be > 0; got {xy_half_width}")
+
+    tilt_raw = os.environ.get("DEXRESET_C1_HAND_TILT", "0.7854")
+    try:
+        tilt = float(tilt_raw)
+    except ValueError as exc:
+        raise ValueError(
+            f"DEXRESET_C1_HAND_TILT must be a single radians value, e.g. '0.7854'; got {tilt_raw!r}"
+        ) from exc
+    if not 0.0 <= tilt <= math.pi:
+        raise ValueError(f"DEXRESET_C1_HAND_TILT must be in [0, pi] radians; got {tilt}")
+
+    ranges = env_cfg.commands.object_pose.ranges
+    pos_x, pos_y = tuple(ranges.pos_x), tuple(ranges.pos_y)
+    anchor_x = 0.5 * (pos_x[0] + pos_x[1])
+    anchor_y = 0.5 * (pos_y[0] + pos_y[1])
+
+    env_cfg.events.reset_c1_hand_pose = EventTerm(
+        func=mdp.reset_end_effector_c1_hand_pose,
+        mode="reset",
+        params={
+            "robot_ik_cfg": SceneEntityCfg("robot", joint_names=ARM_JOINT_NAMES, body_names=PALM_BODY),
+            "anchor_xy_root": (anchor_x, anchor_y),
+            "z_range": (z_lo, z_hi),
+            "xy_half_width": xy_half_width,
+            "tilt": tilt,
+        },
+    )
+    print(
+        "[dexlift] C1_HAND staged: hand reset height"
+        f" [{z_lo:.4f}, {z_hi:.4f}] m above WORK_SURFACE_Z (no leg-tip correction -- this is a hand"
+        f" pose, see RESET_SPEC_V2.md sec 1a trap 1), XY +-{xy_half_width:.4f} m about the goal-XY"
+        f" anchor ({anchor_x:.4f}, {anchor_y:.4f}) m [robot root frame, = commands.object_pose"
+        f".ranges pos_x/pos_y midpoint -- pos_x={pos_x}, pos_y={pos_y}], palm pointing down"
+        f" (gripper_approach_direction -> world -Z) +-{tilt:.4f} rad (+-{math.degrees(tilt):.2f} deg)"
+        " per axis (roll, pitch, yaw independently sampled, composed as an extrinsic world-frame"
+        " rotation on top of the palm-down nominal), fingers UNCHANGED (existing DexSuite-style"
+        " reset_finger_root_joints / reset_robot_joints jitter still applies). Arm/wrist IK solved"
+        " against body 'rl_dg_mount' (PALM_BODY), joints ARM_JOINT_NAMES, 10 damped iterations at"
+        " step 0.25, joint-limit-wrapped. THIS OVERRIDES the arm/wrist half of"
+        " reset_robot_joints/reset_robot_elbow_joint's +-10 deg jitter for every reset (declared"
+        " last, later reset-mode terms win); finger joints from those same terms are untouched.",
+        flush=True,
+    )
+
+
 def _apply_goal_vertical_mixture(env_cfg) -> None:
     """Optionally MIX a vertical (tip-down) near-table goal into the commanded goal distribution.
 
@@ -1523,6 +1658,13 @@ class Ur5eDeltoMixinCfg:
         # ``_apply_pose_tilt_stage``, whose staged ``ranges`` become the mixture's OTHER component.
         # Inert unless DEXLIFT_GOAL_VERTICAL_PROB is set.
         _apply_goal_vertical_mixture(self)
+
+        # -- OPTIONAL C1 Cartesian hand-pose IK reset (RESET_SPEC_V2.md sec 1, bead F10). Must run
+        # HERE, after every stage above that can touch ``commands.object_pose.ranges.pos_x``/
+        # ``pos_y`` -- see the function's own docstring for why it reads that range's midpoint as a
+        # static anchor rather than the live per-episode goal command. Inert unless
+        # DEXRESET_C1_HAND=1.
+        _apply_c1_hand_pose_stage(self)
 
         # -- contact sensors: one per fingertip, filtered to the object, plus the table.
         # These resolve PRIM PATHS, not body names. The hand is referenced under {ROOT}/gripper by

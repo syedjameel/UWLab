@@ -1,0 +1,146 @@
+# Copyright (c) 2024-2026, The UW Lab Project Developers. (https://github.com/uw-lab/UWLab/blob/main/CONTRIBUTORS.md).
+# All Rights Reserved.
+#
+# SPDX-License-Identifier: BSD-3-Clause
+
+"""Unit-proves the C1 hand-pose stage's env-var parsing (RESET_SPEC_V2.md sec 1 C1,
+V2_POSE_FINDINGS.md F10) without touching the arm/IK at all.
+
+Needs only torch -- no Isaac Sim, no GPU, no env construction. Same reason and same technique as
+``test_held_check_core.py`` next to this file: the ISAAC-TOUCHING half (the actual IK-solving event
+term, ``dexlift/mdp/c1_hand_pose.py``, and the config wiring in
+``dexlift_ur5e_delto_env_cfg.py::_apply_c1_hand_pose_stage``) imports ``isaaclab`` at module scope,
+which needs a running Isaac Sim process just to import. ``c1_hand_pose_core.py`` has none of that
+dependency by design -- see its own module docstring -- so it is loaded here BY FILE PATH, not via
+``import uwlab_tasks...`` (whose package ``__init__.py`` transitively pulls in
+``isaaclab_tasks -> isaaclab -> omni.kit.app``).
+
+This test therefore covers ONLY the parsing/validation/anchor-arithmetic/quaternion half. It
+cannot, by construction, prove ``_apply_c1_hand_pose_stage`` wires the resulting values into
+``env_cfg.events.reset_c1_hand_pose`` correctly, or that the IK event solves to a sane joint
+configuration -- both of those need Isaac Sim and are out of scope for a torch-only test. What it
+DOES prove: the four env vars parse to exactly RESET_SPEC_V2.md's numbers, malformed input raises
+with the offending value quoted, the master switch's off-path is a true no-op, and the palm-down
+quaternion actually rotates ``gripper_approach_direction`` onto world -Z.
+"""
+
+from __future__ import annotations
+
+import importlib.util
+import math
+import sys
+from pathlib import Path
+
+import torch
+
+# Loaded by file path, registered in sys.modules BEFORE exec -- unlike test_held_check_core.py's
+# loader, this module's C1HandPoseStage uses @dataclass, and Python 3.12's dataclass machinery
+# resolves `sys.modules[cls.__module__]` while processing the class body; skipping this line raises
+# `AttributeError: 'NoneType' object has no attribute '__dict__'` at import time. Registering the
+# module under its own spec name first is what fixes it, with no other change to the pattern.
+_CORE_PATH = (
+    Path(__file__).resolve().parents[1] / "uwlab_tasks/manager_based/manipulation/dexlift/mdp/c1_hand_pose_core.py"
+)
+_spec = importlib.util.spec_from_file_location("c1_hand_pose_core", _CORE_PATH)
+_c1_hand_pose_core = importlib.util.module_from_spec(_spec)
+sys.modules["c1_hand_pose_core"] = _c1_hand_pose_core
+_spec.loader.exec_module(_c1_hand_pose_core)
+
+parse_c1_hand_pose_env = _c1_hand_pose_core.parse_c1_hand_pose_env
+anchor_xy_from_ranges = _c1_hand_pose_core.anchor_xy_from_ranges
+palm_down_self_check = _c1_hand_pose_core.palm_down_self_check
+
+# Ur5eDelto/metadata.yaml's gripper_approach_direction, read directly (not guessed) -- same value
+# scripts_v2/tools/analyze_grasp_orientation_distribution.py uses.
+_GRIPPER_APPROACH_DIRECTION_LOCAL = torch.tensor([0.2582, 0.4717, 0.8431])
+
+
+def test_master_switch_unset_is_a_true_no_op():
+    """No DEXRESET_C1_HAND at all, and DEXRESET_C1_HAND set to anything but '1', both no-op."""
+    assert parse_c1_hand_pose_env({}) is None
+    assert parse_c1_hand_pose_env({"DEXRESET_C1_HAND": "0"}) is None
+    assert parse_c1_hand_pose_env({"DEXRESET_C1_HAND": "false"}) is None
+    # A no-op must not even look at the other three env vars -- garbage in DEXRESET_C1_HAND_Z must
+    # not raise when the master switch is off.
+    assert parse_c1_hand_pose_env({"DEXRESET_C1_HAND": "0", "DEXRESET_C1_HAND_Z": "not,numbers"}) is None
+
+
+def test_defaults_match_reset_spec_v2():
+    """RESET_SPEC_V2.md sec 1 C1: z in [0.10, 0.20] m, xy +-0.15 m, tilt +-45 deg (0.7854 rad)."""
+    stage = parse_c1_hand_pose_env({"DEXRESET_C1_HAND": "1"})
+    assert stage is not None
+    assert stage.z_lo == 0.10
+    assert stage.z_hi == 0.20
+    assert stage.xy_half_width == 0.15
+    assert math.isclose(stage.tilt, 0.7854, abs_tol=1e-9)
+    assert math.isclose(math.degrees(stage.tilt), 45.0, abs_tol=0.01)
+
+
+def test_permitted_relaxation_to_0_10m_xy():
+    """RESET_SPEC_V2.md sec 1's explicitly permitted relaxation: XY narrowed to +-0.10 m, height
+    range narrowed too -- both configurable, per the assignment.
+    """
+    stage = parse_c1_hand_pose_env(
+        {"DEXRESET_C1_HAND": "1", "DEXRESET_C1_HAND_XY": "0.10", "DEXRESET_C1_HAND_Z": "0.10,0.15"}
+    )
+    assert stage.xy_half_width == 0.10
+    assert (stage.z_lo, stage.z_hi) == (0.10, 0.15)
+
+
+def test_bad_z_range_raises_with_value_quoted():
+    for bad in ("0.20,0.10", "not,numbers", "0.10"):
+        try:
+            parse_c1_hand_pose_env({"DEXRESET_C1_HAND": "1", "DEXRESET_C1_HAND_Z": bad})
+        except ValueError as exc:
+            assert bad in str(exc) or "0.2" in str(exc)  # exact repr varies by which check fires
+        else:
+            raise AssertionError(f"DEXRESET_C1_HAND_Z={bad!r} should have raised ValueError")
+
+
+def test_bad_xy_raises():
+    for bad in ("-0.1", "0.0", "nope"):
+        try:
+            parse_c1_hand_pose_env({"DEXRESET_C1_HAND": "1", "DEXRESET_C1_HAND_XY": bad})
+        except ValueError as exc:
+            assert bad in str(exc)
+        else:
+            raise AssertionError(f"DEXRESET_C1_HAND_XY={bad!r} should have raised ValueError")
+
+
+def test_bad_tilt_raises():
+    for bad in ("-0.1", "4.0", "nope"):  # 4.0 rad > pi
+        try:
+            parse_c1_hand_pose_env({"DEXRESET_C1_HAND": "1", "DEXRESET_C1_HAND_TILT": bad})
+        except ValueError as exc:
+            assert bad in str(exc) or bad.replace(".0", "") in str(exc)
+        else:
+            raise AssertionError(f"DEXRESET_C1_HAND_TILT={bad!r} should have raised ValueError")
+
+
+def test_anchor_is_the_goal_range_midpoint_not_the_leg():
+    """RESET_SPEC_V2.md: nominal point is above the goal/bore XY, not above the leg. This dexlift
+    env's stand-in for that anchor is commands.object_pose.ranges' own midpoint -- see this task's
+    default pos_x=(0.3, 0.7), pos_y inherited at (-0.25, 0.25).
+    """
+    assert anchor_xy_from_ranges((0.3, 0.7), (-0.25, 0.25)) == (0.5, 0.0)
+
+
+def test_palm_down_quaternion_rotates_approach_axis_to_world_minus_z():
+    """The nominal orientation the event class builds must actually point the palm down: applying
+    it to gripper_approach_direction must land at (0, 0, -1), inside the same 60-degree
+    orient_down gate omnireset/mdp/terminations.py::check_reset_state_success scores.
+    """
+    # palm_down_self_check raises AssertionError internally if the rotation doesn't land at -Z;
+    # reaching this line without raising IS the assertion.
+    palm_down_self_check(_GRIPPER_APPROACH_DIRECTION_LOCAL)
+
+
+if __name__ == "__main__":
+    # Runnable with plain python3, no pytest required -- same convention as the assignment allows
+    # for a repo with no dedicated check_*.py location; this repo DOES have one
+    # (source/uwlab_tasks/test/, see test_held_check_core.py), so the test lives there instead.
+    for name, fn in sorted(globals().items()):
+        if name.startswith("test_") and callable(fn):
+            fn()
+            print(f"[c1_hand_pose] {name} OK", flush=True)
+    print("[c1_hand_pose] all tests passed", flush=True)

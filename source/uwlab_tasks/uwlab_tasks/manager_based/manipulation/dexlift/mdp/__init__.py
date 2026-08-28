@@ -78,3 +78,11 @@ from .episode_mixture import *  # noqa: F401, F403
 # ``dexlift_ur5e_delto_tableleg_env_cfg.py``) needs one predicate the base package has no
 # equivalent of. Imported last, after ``episode_mixture``: shadows nothing.
 from .terminations import *  # noqa: F401, F403
+
+# C1's Cartesian palm-pose IK reset (RESET_SPEC_V2.md sec 1, V2_POSE_FINDINGS.md F10). Off by
+# default; wired only by ``dexlift_ur5e_delto_env_cfg._apply_c1_hand_pose_stage`` when
+# ``DEXRESET_C1_HAND=1``. Shadows nothing -- ``reset_end_effector_c1_hand_pose`` is a new name.
+# ``c1_hand_pose_core`` (the Isaac-free half, unit-tested standalone) is deliberately NOT
+# star-imported here; callers that want it use it directly, same convention as
+# ``held_check_core``/``held_check`` next to it.
+from .c1_hand_pose import *  # noqa: F401, F403
