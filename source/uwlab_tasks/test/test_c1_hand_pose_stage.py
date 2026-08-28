@@ -51,6 +51,9 @@ anchor_xy_from_ranges = _c1_hand_pose_core.anchor_xy_from_ranges
 palm_down_self_check = _c1_hand_pose_core.palm_down_self_check
 quat_from_two_vectors = _c1_hand_pose_core.quat_from_two_vectors
 quat_apply = _c1_hand_pose_core.quat_apply
+worst_case_composed_angle_rad = _c1_hand_pose_core.worst_case_composed_angle_rad
+ik_gate_pass = _c1_hand_pose_core.ik_gate_pass
+C1HandPoseStage = _c1_hand_pose_core.C1HandPoseStage
 
 # Ur5eDelto/metadata.yaml's gripper_approach_direction, read directly (not guessed) -- same value
 # scripts_v2/tools/analyze_grasp_orientation_distribution.py uses.
@@ -119,6 +122,178 @@ def test_bad_tilt_raises():
             raise AssertionError(f"DEXRESET_C1_HAND_TILT={bad!r} should have raised ValueError")
 
 
+def test_defaults_include_the_post_solve_gate_thresholds():
+    """Repair for the missing-reachability-gate finding (critic review of commit 1654e2c): a
+    reset that writes whatever IK converges to, unchecked, measured on the H100 at 17-19% of
+    resets landing outside the RESET_SPEC_V2.md sec 1 height/XY band (run B/C, n=512 each;
+    min achieved height -0.317 m -- BELOW the tabletop). Defaults chosen from that same data:
+    DEXRESET_C1_HAND_MAX_POS_ERR_MM=100 sits just past the elbow where the sorted residual's
+    gaps widen (run B: p95=96.6mm, p97=152.6mm; run C: p95=72.9mm, p97=117.6mm) --
+    comfortably above the median (~24-26mm, the population IK actually converges well for) and
+    past the point good/bad populations mostly separate, without being so tight it rejects
+    ordinary DLS residual on a healthy solve. DEXRESET_C1_HAND_MAX_ORI_ERR_DEG=20 sits at
+    run B's own measured p95 (20.2 deg) / just above run C's p95 (15.7 deg).
+    DEXRESET_C1_HAND_MIN_JOINT_MARGIN_DEG=1.0 matches gen_ik_c4_reset_bank.py's own
+    --joint-limit-margin-deg default verbatim, on instruction. DEXRESET_C1_HAND_MAX_RETRIES=5
+    is a bounded retry budget -- see test_retry_budget_is_bounded_and_configurable.
+    """
+    stage = parse_c1_hand_pose_env({"DEXRESET_C1_HAND": "1"})
+    assert math.isclose(stage.max_pos_err_m, 0.100, abs_tol=1e-9)
+    assert math.isclose(math.degrees(stage.max_ori_err_rad), 20.0, abs_tol=1e-6)
+    assert math.isclose(math.degrees(stage.min_joint_margin_rad), 1.0, abs_tol=1e-6)
+    assert stage.max_retries == 5
+
+
+def test_gate_thresholds_are_configurable():
+    stage = parse_c1_hand_pose_env(
+        {
+            "DEXRESET_C1_HAND": "1",
+            "DEXRESET_C1_HAND_MAX_POS_ERR_MM": "50",
+            "DEXRESET_C1_HAND_MAX_ORI_ERR_DEG": "10",
+            "DEXRESET_C1_HAND_MIN_JOINT_MARGIN_DEG": "2.5",
+            "DEXRESET_C1_HAND_MAX_RETRIES": "8",
+        }
+    )
+    assert math.isclose(stage.max_pos_err_m, 0.050, abs_tol=1e-9)
+    assert math.isclose(math.degrees(stage.max_ori_err_rad), 10.0, abs_tol=1e-6)
+    assert math.isclose(math.degrees(stage.min_joint_margin_rad), 2.5, abs_tol=1e-6)
+    assert stage.max_retries == 8
+
+
+def test_bad_max_pos_err_mm_raises():
+    for bad in ("-1", "0", "nope"):
+        try:
+            parse_c1_hand_pose_env({"DEXRESET_C1_HAND": "1", "DEXRESET_C1_HAND_MAX_POS_ERR_MM": bad})
+        except ValueError as exc:
+            assert bad in str(exc)
+        else:
+            raise AssertionError(f"DEXRESET_C1_HAND_MAX_POS_ERR_MM={bad!r} should have raised ValueError")
+
+
+def test_bad_max_ori_err_deg_raises():
+    for bad in ("-1", "0", "181", "nope"):
+        try:
+            parse_c1_hand_pose_env({"DEXRESET_C1_HAND": "1", "DEXRESET_C1_HAND_MAX_ORI_ERR_DEG": bad})
+        except ValueError as exc:
+            assert bad in str(exc)
+        else:
+            raise AssertionError(f"DEXRESET_C1_HAND_MAX_ORI_ERR_DEG={bad!r} should have raised ValueError")
+
+
+def test_bad_min_joint_margin_deg_raises():
+    for bad in ("-1", "nope"):
+        try:
+            parse_c1_hand_pose_env({"DEXRESET_C1_HAND": "1", "DEXRESET_C1_HAND_MIN_JOINT_MARGIN_DEG": bad})
+        except ValueError as exc:
+            assert bad in str(exc)
+        else:
+            raise AssertionError(f"DEXRESET_C1_HAND_MIN_JOINT_MARGIN_DEG={bad!r} should have raised ValueError")
+
+
+def test_retry_budget_is_bounded_and_configurable():
+    """RESET_SPEC_V2.md sec 2 R1 note (critic review, item 3): retries must be BOUNDED and
+    non-negative -- an unbounded or negative retry budget is exactly the kind of "silent
+    fallback" the fix must not introduce.
+    """
+    for bad in ("-1", "1.5", "nope"):
+        try:
+            parse_c1_hand_pose_env({"DEXRESET_C1_HAND": "1", "DEXRESET_C1_HAND_MAX_RETRIES": bad})
+        except ValueError as exc:
+            assert bad in str(exc)
+        else:
+            raise AssertionError(f"DEXRESET_C1_HAND_MAX_RETRIES={bad!r} should have raised ValueError")
+    # zero is a valid, if aggressive, choice: "gate but never retry, report every failure".
+    stage = parse_c1_hand_pose_env({"DEXRESET_C1_HAND": "1", "DEXRESET_C1_HAND_MAX_RETRIES": "0"})
+    assert stage.max_retries == 0
+
+
+def _stage(**overrides) -> C1HandPoseStage:
+    base = dict(
+        z_lo=0.10, z_hi=0.20, xy_half_width=0.15, tilt=0.7854,
+        max_pos_err_m=0.100, max_ori_err_rad=math.radians(20.0),
+        min_joint_margin_rad=math.radians(1.0), max_retries=5,
+    )
+    base.update(overrides)
+    return C1HandPoseStage(**base)
+
+
+def test_ik_gate_pass_all_criteria_satisfied():
+    stage = _stage()
+    ok = ik_gate_pass(
+        pos_err_m=torch.tensor([0.02, 0.05]),
+        ori_err_rad=torch.tensor([math.radians(5.0), math.radians(15.0)]),
+        joint_margin_rad=torch.tensor([math.radians(30.0), math.radians(2.0)]),
+        height_m=torch.tensor([0.15, 0.11]),
+        dx_m=torch.tensor([0.05, -0.14]),
+        dy_m=torch.tensor([-0.05, 0.14]),
+        stage=stage,
+    )
+    assert ok.tolist() == [True, True]
+
+
+def test_ik_gate_pass_rejects_each_criterion_independently():
+    """One env per criterion, everything else held at a comfortably-passing value, so a failure
+    to reject proves exactly which check is missing rather than a generic off-by-one.
+    """
+    stage = _stage()
+    good = dict(
+        pos_err_m=0.02, ori_err_rad=math.radians(5.0), joint_margin_rad=math.radians(30.0),
+        height_m=0.15, dx_m=0.0, dy_m=0.0,
+    )
+    cases = {
+        "pos_err_too_large": dict(pos_err_m=0.2),
+        "ori_err_too_large": dict(ori_err_rad=math.radians(45.0)),
+        "joint_margin_too_small": dict(joint_margin_rad=math.radians(0.1)),
+        "height_below_band": dict(height_m=0.05),
+        "height_above_band": dict(height_m=0.25),
+        "dx_outside_band": dict(dx_m=0.20),
+        "dy_outside_band": dict(dy_m=-0.20),
+    }
+    for name, override in cases.items():
+        row = dict(good)
+        row.update(override)
+        ok = ik_gate_pass(
+            pos_err_m=torch.tensor([row["pos_err_m"]]),
+            ori_err_rad=torch.tensor([row["ori_err_rad"]]),
+            joint_margin_rad=torch.tensor([row["joint_margin_rad"]]),
+            height_m=torch.tensor([row["height_m"]]),
+            dx_m=torch.tensor([row["dx_m"]]),
+            dy_m=torch.tensor([row["dy_m"]]),
+            stage=stage,
+        )
+        assert ok.item() is False, f"{name} should have failed the gate but passed"
+
+
+def test_ik_gate_pass_boundary_is_inclusive():
+    """Exactly-at-threshold must PASS (<=/>=, not </>) -- so a threshold copied verbatim from a
+    measured percentile does not itself reject the samples that defined it.
+    """
+    stage = _stage()
+    ok = ik_gate_pass(
+        pos_err_m=torch.tensor([stage.max_pos_err_m]),
+        ori_err_rad=torch.tensor([stage.max_ori_err_rad]),
+        joint_margin_rad=torch.tensor([stage.min_joint_margin_rad]),
+        height_m=torch.tensor([stage.z_lo]),
+        dx_m=torch.tensor([stage.xy_half_width]),
+        dy_m=torch.tensor([-stage.xy_half_width]),
+        stage=stage,
+    )
+    assert ok.item() is True
+
+
+def test_worst_case_composed_angle_exceeds_the_per_axis_tilt():
+    """Promoted from the inline formula in
+    test_per_axis_tilt_extremes_do_not_bound_the_composed_rotation_to_tilt into a reusable
+    function, because the fix's banner must print this number (critic review item 4: "state the
+    composed-angle fact in the banner ... do not substitute a cone"). At the shipped 45 deg
+    default this must be the same ~64.7 deg measured there, not a coincidence of two independent
+    formulas.
+    """
+    angle = worst_case_composed_angle_rad(math.radians(45.0))
+    assert math.isclose(math.degrees(angle), 64.74, abs_tol=0.1)
+    assert angle > math.radians(45.0)
+
+
 def test_anchor_is_the_goal_range_midpoint_not_the_leg():
     """RESET_SPEC_V2.md: nominal point is above the goal/bore XY, not above the leg. This dexlift
     env's stand-in for that anchor is commands.object_pose.ranges' own midpoint -- see this task's
@@ -174,6 +349,10 @@ def test_per_axis_tilt_extremes_do_not_bound_the_composed_rotation_to_tilt():
     against 45 deg alone.
     """
 
+    # worst_case_composed_angle_rad (promoted below into c1_hand_pose_core.py, since the fix's
+    # banner now needs this same number -- see test_worst_case_composed_angle_exceeds_the_per_axis_tilt)
+    # uses the identical formula this test used to inline; kept private here for the single-axis
+    # sanity check, which the production function has no reason to expose.
     def _quat_from_euler_xyz(roll, pitch, yaw):
         # Same formula as isaaclab.utils.math.quat_from_euler_xyz -- reproduced here because that
         # module cannot be imported without Isaac Sim (see this file's own docstring).
@@ -192,8 +371,7 @@ def test_per_axis_tilt_extremes_do_not_bound_the_composed_rotation_to_tilt():
         w = abs(float(q[0].clamp(-1.0, 1.0)))
         return 2.0 * math.degrees(math.acos(w))
 
-    worst_corner = _quat_from_euler_xyz(tilt, tilt, tilt)
-    worst_angle = _angle_from_identity(worst_corner)
+    worst_angle = math.degrees(worst_case_composed_angle_rad(tilt))
 
     # A single-axis perturbation at the same tilt reproduces exactly 45 deg, as a sanity check on
     # the formula/measurement.

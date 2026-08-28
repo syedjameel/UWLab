@@ -81,6 +81,7 @@ from uwlab_assets.robots.ur5e_delto import (
 
 from ..omnireset import mdp as omnireset_mdp
 from . import mdp
+from .mdp.c1_hand_pose_core import worst_case_composed_angle_rad as _c1_worst_case_composed_angle_rad
 
 # HAND-side names, imported rather than restated. The hand is the same graft on both arms, the
 # bodies keep their names through it, and these are read by the contact sensors, the contact-gated
@@ -1044,6 +1045,61 @@ def _apply_c1_hand_pose_stage(env_cfg) -> None:
     if not 0.0 <= tilt <= math.pi:
         raise ValueError(f"DEXRESET_C1_HAND_TILT must be in [0, pi] radians; got {tilt}")
 
+    # POST-SOLVE GATE thresholds (critic review of the first version of this function, commit
+    # 1654e2c): the original event wrote whatever the damped IK converged to, unchecked, and that
+    # measured at 17-19% of resets landing with the ACHIEVED palm height outside [z_lo, z_hi] (H100,
+    # n=512 x 2 runs) -- see ``c1_hand_pose_core.py``'s ``DEFAULT_MAX_POS_ERR_MM_RAW`` comment for
+    # exactly where these numbers were chosen from and ``c1_hand_pose.py``'s module docstring,
+    # "POST-SOLVE GATE", for the full defect. Parsed here in the SAME inline style as the four
+    # fields above rather than delegating to ``c1_hand_pose_core.parse_c1_hand_pose_env`` -- that
+    # function exists and is unit-tested (``test_c1_hand_pose_stage.py``), but this file already
+    # duplicates its own copy of the z/xy/tilt parsing rather than importing it (no other env_cfg
+    # module in this package imports a ``*_core`` module directly), and matching the file's
+    # EXISTING convention here is lower-risk than introducing a new one mid-fix.
+    max_pos_err_mm_raw = os.environ.get("DEXRESET_C1_HAND_MAX_POS_ERR_MM", "100.0")
+    try:
+        max_pos_err_mm = float(max_pos_err_mm_raw)
+    except ValueError as exc:
+        raise ValueError(
+            "DEXRESET_C1_HAND_MAX_POS_ERR_MM must be a single millimetres value, e.g. '100.0'; got"
+            f" {max_pos_err_mm_raw!r}"
+        ) from exc
+    if not max_pos_err_mm > 0.0:
+        raise ValueError(f"DEXRESET_C1_HAND_MAX_POS_ERR_MM must be > 0; got {max_pos_err_mm}")
+
+    max_ori_err_deg_raw = os.environ.get("DEXRESET_C1_HAND_MAX_ORI_ERR_DEG", "20.0")
+    try:
+        max_ori_err_deg = float(max_ori_err_deg_raw)
+    except ValueError as exc:
+        raise ValueError(
+            "DEXRESET_C1_HAND_MAX_ORI_ERR_DEG must be a single degrees value, e.g. '20.0'; got"
+            f" {max_ori_err_deg_raw!r}"
+        ) from exc
+    if not 0.0 < max_ori_err_deg <= 180.0:
+        raise ValueError(f"DEXRESET_C1_HAND_MAX_ORI_ERR_DEG must be in (0, 180] degrees; got {max_ori_err_deg}")
+
+    min_joint_margin_deg_raw = os.environ.get("DEXRESET_C1_HAND_MIN_JOINT_MARGIN_DEG", "1.0")
+    try:
+        min_joint_margin_deg = float(min_joint_margin_deg_raw)
+    except ValueError as exc:
+        raise ValueError(
+            "DEXRESET_C1_HAND_MIN_JOINT_MARGIN_DEG must be a single degrees value, e.g. '1.0'; got"
+            f" {min_joint_margin_deg_raw!r}"
+        ) from exc
+    if not min_joint_margin_deg >= 0.0:
+        raise ValueError(f"DEXRESET_C1_HAND_MIN_JOINT_MARGIN_DEG must be >= 0; got {min_joint_margin_deg}")
+
+    max_retries_raw = os.environ.get("DEXRESET_C1_HAND_MAX_RETRIES", "5")
+    try:
+        max_retries = int(max_retries_raw)
+    except ValueError as exc:
+        raise ValueError(
+            "DEXRESET_C1_HAND_MAX_RETRIES must be a non-negative integer, e.g. '5'; got"
+            f" {max_retries_raw!r}"
+        ) from exc
+    if max_retries < 0:
+        raise ValueError(f"DEXRESET_C1_HAND_MAX_RETRIES must be >= 0; got {max_retries_raw!r}")
+
     ranges = env_cfg.commands.object_pose.ranges
     pos_x, pos_y = tuple(ranges.pos_x), tuple(ranges.pos_y)
     anchor_x = 0.5 * (pos_x[0] + pos_x[1])
@@ -1058,8 +1114,19 @@ def _apply_c1_hand_pose_stage(env_cfg) -> None:
             "z_range": (z_lo, z_hi),
             "xy_half_width": xy_half_width,
             "tilt": tilt,
+            "max_pos_err_m": max_pos_err_mm / 1000.0,
+            "max_ori_err_rad": math.radians(max_ori_err_deg),
+            "min_joint_margin_rad": math.radians(min_joint_margin_deg),
+            "max_retries": max_retries,
         },
     )
+    # Worst-case composed rotation at this tilt (critic review item 4: "state the composed-angle
+    # fact in the banner ... per-axis +-tilt is what the user chose and it stays; do not
+    # substitute a cone"). This is NOT a gate threshold -- see
+    # ``c1_hand_pose_core.worst_case_composed_angle_rad``'s own docstring for why a cone bound
+    # would silently redefine what the spec asked for -- it is printed so nobody later reads
+    # "+-tilt deg per axis" as a bound on the achieved angle to world -Z.
+    worst_case_deg = math.degrees(_c1_worst_case_composed_angle_rad(tilt))
     print(
         "[dexlift] C1_HAND staged: hand reset height"
         f" [{z_lo:.4f}, {z_hi:.4f}] m above WORK_SURFACE_Z (no leg-tip correction -- this is a hand"
@@ -1068,12 +1135,22 @@ def _apply_c1_hand_pose_stage(env_cfg) -> None:
         f".ranges pos_x/pos_y midpoint -- pos_x={pos_x}, pos_y={pos_y}], palm pointing down"
         f" (gripper_approach_direction -> world -Z) +-{tilt:.4f} rad (+-{math.degrees(tilt):.2f} deg)"
         " per axis (roll, pitch, yaw independently sampled, composed as an extrinsic world-frame"
-        " rotation on top of the palm-down nominal), fingers UNCHANGED (existing DexSuite-style"
-        " reset_finger_root_joints / reset_robot_joints jitter still applies). Arm/wrist IK solved"
-        " against body 'rl_dg_mount' (PALM_BODY), joints ARM_JOINT_NAMES, 10 damped iterations at"
-        " step 0.25, joint-limit-wrapped. THIS OVERRIDES the arm/wrist half of"
-        " reset_robot_joints/reset_robot_elbow_joint's +-10 deg jitter for every reset (declared"
-        " last, later reset-mode terms win); finger joints from those same terms are untouched.",
+        f" rotation on top of the palm-down nominal -- WORST-CASE COMPOSED ANGLE {worst_case_deg:.2f}"
+        " deg, NOT a cone bound, see worst_case_composed_angle_rad), fingers UNCHANGED (existing"
+        " DexSuite-style reset_finger_root_joints / reset_robot_joints jitter still applies)."
+        " Arm/wrist IK solved against body 'rl_dg_mount' (PALM_BODY), joints ARM_JOINT_NAMES, 10"
+        " damped iterations at step 0.25, joint-limit-wrapped, gated post-solve: reject-and-resample"
+        f" (max_retries={max_retries}) unless commanded-vs-achieved position error <="
+        f" {max_pos_err_mm:.1f} mm AND orientation error <= {max_ori_err_deg:.1f} deg AND arm"
+        f" joint-limit margin >= {min_joint_margin_deg:.2f} deg AND the achieved pose itself lands"
+        " inside the height/XY band above -- an env that exhausts max_retries keeps its"
+        " best-of-attempts state and is reported, never silently accepted ungated. THIS OVERRIDES"
+        " the arm/wrist half of reset_robot_joints/reset_robot_elbow_joint's jitter for every reset"
+        " (declared last, later reset-mode terms win) -- +-10 deg by default, but +-0.5 rad"
+        " (reset_robot_joints) / +-0.2 rad (reset_robot_elbow_joint), plus the additionally-created"
+        " reset_robot_wrist_joint at +-0.5 rad on wrist_3_joint, under DEXLIFT_REF_RESET=1 (the"
+        " setting every production run uses -- see its own banner line for the numbers actually in"
+        " effect this run); finger joints from those same terms are untouched.",
         flush=True,
     )
 

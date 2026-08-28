@@ -29,22 +29,76 @@ DEXRESET_C1_HAND_ENV = "DEXRESET_C1_HAND"
 DEXRESET_C1_HAND_Z_ENV = "DEXRESET_C1_HAND_Z"
 DEXRESET_C1_HAND_XY_ENV = "DEXRESET_C1_HAND_XY"
 DEXRESET_C1_HAND_TILT_ENV = "DEXRESET_C1_HAND_TILT"
+DEXRESET_C1_HAND_MAX_POS_ERR_MM_ENV = "DEXRESET_C1_HAND_MAX_POS_ERR_MM"
+DEXRESET_C1_HAND_MAX_ORI_ERR_DEG_ENV = "DEXRESET_C1_HAND_MAX_ORI_ERR_DEG"
+DEXRESET_C1_HAND_MIN_JOINT_MARGIN_DEG_ENV = "DEXRESET_C1_HAND_MIN_JOINT_MARGIN_DEG"
+DEXRESET_C1_HAND_MAX_RETRIES_ENV = "DEXRESET_C1_HAND_MAX_RETRIES"
 
 DEFAULT_Z_RAW = "0.10,0.20"
 DEFAULT_XY_RAW = "0.15"
 DEFAULT_TILT_RAW = "0.7854"  # ~pi/4, 45 deg
+
+# POST-SOLVE GATE DEFAULTS -- critic review of commit 1654e2c (RESET_SPEC_V2.md sec 1 C1) found the
+# original event wrote whatever the 10-iteration damped IK converged to, unchecked. Measured on the
+# H100 (DL_H100, 2x H100 PCIe, 256 envs, 2 forced resets each, n=512): 95/512 (18.6%, run B,
+# xy_half_width=0.15) and 89/512 (17.4%, run C, xy_half_width=0.10) resets landed with the achieved
+# palm HEIGHT outside the commanded [z_lo, z_hi] band -- including a minimum achieved height of
+# -0.317 m, i.e. BELOW the tabletop. |dx|/|dy| exceeded xy_half_width on 21/512 (4.1%, run B) and
+# 34/512 (6.6%, run C) -- a HIGHER rate at the TIGHTER band, ruling out a proportional-to-box-size
+# error and pointing at absolute-scale IK divergence instead.
+#
+# DEXRESET_C1_HAND_MAX_POS_ERR_MM=100: the commanded-vs-achieved position residual's sorted-value
+# gaps start widening around the 95th-97th percentile in both runs (run B: p95=96.6mm,
+# p97=152.6mm; run C: p95=72.9mm, p97=117.6mm), well past the median the IK actually converges
+# well for (~24-26mm). 100mm sits just past that elbow in both runs -- loose enough not to reject
+# an ordinary DLS residual on a healthy solve, tight enough to catch the population that plainly
+# diverged (residuals up to 678mm/693mm were observed).
+#
+# DEXRESET_C1_HAND_MAX_ORI_ERR_DEG=20: sits at run B's own measured p95 orientation residual
+# (20.2 deg) and just above run C's (15.7 deg) -- both runs' orientation residual "elbows" land in
+# the same place their position residual does.
+#
+# NOTE ON WHAT THIS GATE DOES AND DOES NOT GUARANTEE: measured against the SAME data, the
+# commanded-vs-achieved RESIDUAL only partially predicts whether the ACHIEVED pose lands inside the
+# height/XY band -- some in-band samples had a large residual (a lucky solve into a different but
+# still in-band configuration) and some out-of-band samples had a small one (a well-converged solve
+# whose COMMANDED target itself sat right at the band edge). The residual+joint-margin gate is a
+# genuine IK-QUALITY check (did the solver actually reach what was asked, independent of any
+# particular band) and is what was asked for; it is deliberately NOT the only thing this stage now
+# gates on -- see :func:`~.c1_hand_pose.reset_end_effector_c1_hand_pose`'s docstring for the
+# achieved-height/XY band check added alongside it, which is what actually drives violations to
+# zero.
+#
+# DEXRESET_C1_HAND_MIN_JOINT_MARGIN_DEG=1.0: matches scripts_v2/tools/gen_ik_c4_reset_bank.py's own
+# --joint-limit-margin-deg default verbatim, on instruction ("in the style of
+# gen_ik_c4_reset_bank.py's --joint-limit-margin-deg").
+#
+# DEXRESET_C1_HAND_MAX_RETRIES=5: a bounded resample-and-resolve budget (6 total attempts including
+# the first). Retries must be bounded and the exhaustion count must be visible, not silently
+# absorbed -- see the event class's own docstring for how an exhausted env is handled (best-of-
+# attempts kept, count printed every reset).
+DEFAULT_MAX_POS_ERR_MM_RAW = "100.0"
+DEFAULT_MAX_ORI_ERR_DEG_RAW = "20.0"
+DEFAULT_MIN_JOINT_MARGIN_DEG_RAW = "1.0"
+DEFAULT_MAX_RETRIES_RAW = "5"
 
 
 @dataclass(frozen=True)
 class C1HandPoseStage:
     """One fully-validated set of staged C1 hand-pose ranges, in the units RESET_SPEC_V2.md states
     them: metres above the work surface (z), metres half-width (xy), radians half-angle (tilt).
+    Also carries the post-solve gate's thresholds (radians/metres internally, parsed from mm/deg
+    env vars -- see :func:`parse_c1_hand_pose_env`) and the bounded retry budget.
     """
 
     z_lo: float
     z_hi: float
     xy_half_width: float
     tilt: float
+    max_pos_err_m: float
+    max_ori_err_rad: float
+    min_joint_margin_rad: float
+    max_retries: int
 
 
 def parse_c1_hand_pose_env(env: dict) -> C1HandPoseStage | None:
@@ -97,7 +151,69 @@ def parse_c1_hand_pose_env(env: dict) -> C1HandPoseStage | None:
     if not 0.0 <= tilt <= math.pi:
         raise ValueError(f"{DEXRESET_C1_HAND_TILT_ENV} must be in [0, pi] radians; got {tilt}")
 
-    return C1HandPoseStage(z_lo=z_lo, z_hi=z_hi, xy_half_width=xy_half_width, tilt=tilt)
+    max_pos_err_mm_raw = env.get(DEXRESET_C1_HAND_MAX_POS_ERR_MM_ENV, DEFAULT_MAX_POS_ERR_MM_RAW)
+    try:
+        max_pos_err_mm = float(max_pos_err_mm_raw)
+    except ValueError as exc:
+        raise ValueError(
+            f"{DEXRESET_C1_HAND_MAX_POS_ERR_MM_ENV} must be a single millimetres value, e.g."
+            f" '{DEFAULT_MAX_POS_ERR_MM_RAW}'; got {max_pos_err_mm_raw!r}"
+        ) from exc
+    if not max_pos_err_mm > 0.0:
+        raise ValueError(f"{DEXRESET_C1_HAND_MAX_POS_ERR_MM_ENV} must be > 0; got {max_pos_err_mm}")
+
+    max_ori_err_deg_raw = env.get(DEXRESET_C1_HAND_MAX_ORI_ERR_DEG_ENV, DEFAULT_MAX_ORI_ERR_DEG_RAW)
+    try:
+        max_ori_err_deg = float(max_ori_err_deg_raw)
+    except ValueError as exc:
+        raise ValueError(
+            f"{DEXRESET_C1_HAND_MAX_ORI_ERR_DEG_ENV} must be a single degrees value, e.g."
+            f" '{DEFAULT_MAX_ORI_ERR_DEG_RAW}'; got {max_ori_err_deg_raw!r}"
+        ) from exc
+    if not 0.0 < max_ori_err_deg <= 180.0:
+        raise ValueError(
+            f"{DEXRESET_C1_HAND_MAX_ORI_ERR_DEG_ENV} must be in (0, 180] degrees; got {max_ori_err_deg}"
+        )
+
+    min_joint_margin_deg_raw = env.get(
+        DEXRESET_C1_HAND_MIN_JOINT_MARGIN_DEG_ENV, DEFAULT_MIN_JOINT_MARGIN_DEG_RAW
+    )
+    try:
+        min_joint_margin_deg = float(min_joint_margin_deg_raw)
+    except ValueError as exc:
+        raise ValueError(
+            f"{DEXRESET_C1_HAND_MIN_JOINT_MARGIN_DEG_ENV} must be a single degrees value, e.g."
+            f" '{DEFAULT_MIN_JOINT_MARGIN_DEG_RAW}'; got {min_joint_margin_deg_raw!r}"
+        ) from exc
+    if not min_joint_margin_deg >= 0.0:
+        raise ValueError(
+            f"{DEXRESET_C1_HAND_MIN_JOINT_MARGIN_DEG_ENV} must be >= 0; got {min_joint_margin_deg}"
+        )
+
+    max_retries_raw = env.get(DEXRESET_C1_HAND_MAX_RETRIES_ENV, DEFAULT_MAX_RETRIES_RAW)
+    try:
+        # int(str) rejects "1.5" (ValueError) same as it rejects "nope" -- exactly what a retry
+        # BUDGET (a count, not a measurement) should do; a fractional retry count is as malformed
+        # as a non-numeric one.
+        max_retries = int(max_retries_raw)
+    except ValueError as exc:
+        raise ValueError(
+            f"{DEXRESET_C1_HAND_MAX_RETRIES_ENV} must be a non-negative integer, e.g."
+            f" '{DEFAULT_MAX_RETRIES_RAW}'; got {max_retries_raw!r}"
+        ) from exc
+    if max_retries < 0:
+        raise ValueError(f"{DEXRESET_C1_HAND_MAX_RETRIES_ENV} must be >= 0; got {max_retries_raw!r}")
+
+    return C1HandPoseStage(
+        z_lo=z_lo,
+        z_hi=z_hi,
+        xy_half_width=xy_half_width,
+        tilt=tilt,
+        max_pos_err_m=max_pos_err_mm / 1000.0,
+        max_ori_err_rad=math.radians(max_ori_err_deg),
+        min_joint_margin_rad=math.radians(min_joint_margin_deg),
+        max_retries=max_retries,
+    )
 
 
 def anchor_xy_from_ranges(pos_x: tuple[float, float], pos_y: tuple[float, float]) -> tuple[float, float]:
@@ -143,6 +259,77 @@ def quat_apply(q: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
     qxyz = q[..., 1:4]
     t = 2.0 * torch.cross(qxyz, v, dim=-1)
     return v + qw * t + torch.cross(qxyz, t, dim=-1)
+
+
+def worst_case_composed_angle_rad(tilt: float) -> float:
+    """The total rotation angle (from the palm-down nominal) at the WORST corner of the per-axis
+    tilt box (roll = pitch = yaw = +tilt), under the SAME Tait-Bryan composition
+    ``isaaclab.utils.math.quat_from_euler_xyz`` and the event's own ``quat_mul(perturb, nominal)``
+    use.
+
+    Critic review of commit 1654e2c: RESET_SPEC_V2.md sec 1 C1 asks for "+-45 deg variation,
+    applied per-axis about the palm-down nominal", which the event reads as three INDEPENDENTLY
+    sampled per-axis angles composed into ONE rotation. Euler-angle composition is not additive,
+    so nothing bounds the RESULTING single-rotation angle to the per-axis tilt -- at the shipped
+    45 deg default the worst corner composes to ~64.74 deg, not 45. This is NOT a cone bound (the
+    achieved-angle distribution is not spherically symmetric about the nominal -- see
+    ``test_per_axis_tilt_extremes_do_not_bound_the_composed_rotation_to_tilt``), so it must not be
+    used as a rejection threshold (that would silently substitute a different definition than the
+    one RESET_SPEC_V2.md's user chose -- per-axis, not cone). Its only sanctioned use is
+    INFORMATIONAL: printed in the staging banner alongside "+-tilt deg per axis" so nobody later
+    reads that number as a bound on the achieved cone.
+    """
+    half = tilt * 0.5
+    c, s = math.cos(half), math.sin(half)
+    # Tait-Bryan roll-pitch-yaw -> quaternion, roll = pitch = yaw = tilt (the same formula
+    # isaaclab.utils.math.quat_from_euler_xyz documents; reproduced here because that module needs
+    # a running Isaac Sim process just to import -- see this module's own docstring).
+    qw = c * c * c + s * s * s
+    # |axis| is not needed: the rotation angle from identity is recovered from qw alone via
+    # angle = 2*acos(|qw|), the same relation :func:`quat_from_two_vectors`'s callers already use.
+    return 2.0 * math.acos(min(1.0, abs(qw)))
+
+
+def ik_gate_pass(
+    pos_err_m: torch.Tensor,
+    ori_err_rad: torch.Tensor,
+    joint_margin_rad: torch.Tensor,
+    height_m: torch.Tensor,
+    dx_m: torch.Tensor,
+    dy_m: torch.Tensor,
+    stage: C1HandPoseStage,
+) -> torch.Tensor:
+    """Per-env boolean: does this attempt satisfy every post-solve acceptance criterion?
+
+    Critic review of commit 1654e2c's headline finding: the original event wrote whatever IK
+    converged to, unchecked. Measured on the H100 (n=512 each), 17-19% of resets landed with the
+    ACHIEVED palm height outside the commanded band (min -0.317 m -- below the tabletop) and
+    4-7% outside the XY band, despite the SAMPLED target always being drawn inside both. Two
+    independent checks are combined here, both needed (see :data:`DEFAULT_MAX_POS_ERR_MM_RAW`'s
+    own comment for why residual alone under-catches band violations and vice versa):
+
+    1. IK QUALITY -- did the solver actually reach what was asked: ``pos_err_m`` /
+       ``ori_err_rad`` (achieved vs. the COMMANDED target, not vs. the anchor) within
+       ``stage.max_pos_err_m`` / ``stage.max_ori_err_rad``, and ``joint_margin_rad`` (min over the
+       controlled arm joints) at least ``stage.min_joint_margin_rad`` away from either limit --
+       same style as ``gen_ik_c4_reset_bank.py``'s ``--joint-limit-margin-deg``.
+    2. SPEC COMPLIANCE -- does the ACHIEVED pose actually land in RESET_SPEC_V2.md sec 1's own
+       height/XY band: this is the literal numeric criterion, not a substitution (contrast the
+       palm-angle cone, which sec 1 states per-axis and which this function deliberately does NOT
+       gate on -- see :func:`worst_case_composed_angle_rad`'s own docstring).
+
+    All bounds are INCLUSIVE (``<=``/``>=``): a threshold copied verbatim from a measured
+    percentile must not reject the very samples that defined it.
+    """
+    return (
+        (pos_err_m <= stage.max_pos_err_m)
+        & (ori_err_rad <= stage.max_ori_err_rad)
+        & (joint_margin_rad >= stage.min_joint_margin_rad)
+        & (height_m >= stage.z_lo)
+        & (height_m <= stage.z_hi)
+        & (dx_m.abs() <= stage.xy_half_width)
+        & (dy_m.abs() <= stage.xy_half_width)
+    )
 
 
 def palm_down_self_check(approach_local: torch.Tensor, atol: float = 1e-4) -> torch.Tensor:
