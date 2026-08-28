@@ -153,22 +153,27 @@ CLASS1: list[Asset] = [
         1, _FB,
         f"{STATUS_LOAD_BEARING} for dexlift / {STATUS_REJECTED} for OmniReset -- SAME asset, opposite "
         f"verdicts by consumer (F23, the exact trap this manifest exists to make impossible). "
-        f"dexlift: the CERTIFIED checkpoint's own dumped env.yaml names this leg -- it predates the "
-        f"2026-08-23 fix that repointed dexlift's own default to Sdf (see the Sdf entry above), so "
-        f"reproducing THAT checkpoint specifically requires Decomp, not today's HEAD default. "
-        f"OmniReset: REJECTED as a collider -- 56.15% of poses interpenetrate the collider PhysX "
-        f"actually uses (median -0.068 mm); depenetration ejects the leg within five steps even "
-        f"frozen, depth collapsing 13.7 -> 2.7 mm (F23).",
-        "No LIVE selector points here in HEAD (dexlift's own default moved to Sdf 2026-08-23; see "
-        "F24). DEXLIFT_LEG_DECOMP=1 IS exported by every certification launcher for dexlift certs "
-        "(cert_ft.sh:35, cert30.sh:7, cert_both.sh:7) and recorded in every historical cert JSON's "
-        "plant.dexlift_env -- that part is real, verified provenance, not invented. But it is a "
-        "VESTIGIAL export: cert_g3z4_finetune.sh:126-134's own comment states, and this script's "
-        "grep across every .py file confirms, there is no os.environ.get/os.environ[] site for "
-        "DEXLIFT_LEG_DECOMP anywhere in source/ -- the decomposed-leg USD selection it once gated is "
-        "now unconditional (see the Sdf entry's selector). Setting the var still happens; reading it "
-        "does not. Byte-identical top-level USD to the Sdf variant (same sha256, see table) -- only "
-        "the Props/instanceable_meshes.usd collision layer differs (convexDecomposition vs SDF).",
+        f"dexlift: FACT, not inference -- the certified checkpoint's own as-trained env.yaml records "
+        f"scene/object/spawn/usd_path = .../SquareTableLeg200mmDecomp/square_table_leg4_200mm.usd "
+        f"verbatim. Reproducing that checkpoint REQUIRES this leg, not today's HEAD default (Sdf, "
+        f"since 2026-08-23 -- see that entry). OmniReset: REJECTED as a collider -- 56.15% of poses "
+        f"interpenetrate the collider PhysX actually uses (median -0.068 mm); depenetration ejects "
+        f"the leg within five steps even frozen, depth collapsing 13.7 -> 2.7 mm (F23).",
+        "REQUIRED, not optional, to reproduce the certified checkpoint: set "
+        "DEXLIFT_TABLE_LEG_USD_PATH_OVERRIDE to this asset's path -- a real, functioning env-var "
+        "read (os.environ.get(...), dexlift_ur5e_delto_tableleg_env_cfg.py:52-53), unlike the two "
+        "dead flags below. Required because TABLE_LEG_USD_PATH's own DEFAULT has pointed at Sdf "
+        "since 2026-08-23 (see that entry), and DEXLIFT_LEG_DECOMP=1 -- exported by every "
+        "certification launcher for dexlift certs (cert_ft.sh:35, cert30.sh:7, cert_both.sh:7) and "
+        "recorded in every historical cert JSON's plant.dexlift_env, real verified provenance -- is "
+        "a VESTIGIAL export: cert_g3z4_finetune.sh:126-134's own comment states this, and this "
+        "script independently confirms it [R8: scope = bare-name substring search, "
+        "'DEXLIFT_LEG_DECOMP', across every *.py file in this repo, unrestricted to any single "
+        "line -- 0 hits outside this manifest file itself]. Byte-identical top-level USD to the Sdf "
+        "variant (same sha256, see table) -- only the Props/instanceable_meshes.usd collision layer "
+        "differs (convexDecomposition vs SDF). NOTE this manifest's own limit above: even with the "
+        "right USD selected, `physics:approximation` on the SHIPPED asset can silently fall back to "
+        "convexHull (F35) -- a sha256 match does not confirm the collider PhysX actually used.",
     ),
     Asset(
         "source/uwlab_assets/uwlab_assets/local/Props/FurnitureBench/SquareTableLeg200mmDecomp/Props/instanceable_meshes.usd",
@@ -179,9 +184,11 @@ CLASS1: list[Asset] = [
     Asset(
         "source/uwlab_assets/uwlab_assets/local/Props/FurnitureBench/SquareTableLeg200mmSdf1024/square_table_leg4_200mm.usd",
         1, _FB, STATUS_SUPERSEDED,
-        "Not wired to any live selector (this script's greps confirm). Resolution is NOT a reason to "
-        "prefer any of the three SDF resolutions: 256 / 1024 / 2048 settle at 16.564 / 16.594 / "
-        "16.633 mm, a 0.07 mm spread (F23). Kept for the record; do not offer as an option.",
+        "Not wired to any live selector [R8: scope = bare-name substring search, "
+        "'SquareTableLeg200mmSdf1024', across every *.py file in this repo -- 0 hits outside "
+        "conversion-tool comments]. Resolution is NOT a reason to prefer any of the three SDF "
+        "resolutions: 256 / 1024 / 2048 settle at 16.564 / 16.594 / 16.633 mm, a 0.07 mm spread "
+        "(F23). Kept for the record; do not offer as an option.",
     ),
     Asset(
         "source/uwlab_assets/uwlab_assets/local/Props/FurnitureBench/SquareTableLeg200mmSdf1024/Props/instanceable_meshes.usd",
@@ -190,8 +197,9 @@ CLASS1: list[Asset] = [
     Asset(
         "source/uwlab_assets/uwlab_assets/local/Props/FurnitureBench/SquareTableLeg200mmSdf2048/square_table_leg4_200mm.usd",
         1, _FB, STATUS_SUPERSEDED,
-        "Not wired to any live selector. Resolution sweep variant (2048) -- see the Sdf1024 entry's "
-        "note; same 0.07 mm-spread finding applies.",
+        "Not wired to any live selector [R8: same scope as the Sdf1024 entry, name "
+        "'SquareTableLeg200mmSdf2048' -- 0 hits outside conversion-tool comments]. Resolution sweep "
+        "variant (2048) -- see the Sdf1024 entry's note; same 0.07 mm-spread finding applies.",
     ),
     Asset(
         "source/uwlab_assets/uwlab_assets/local/Props/FurnitureBench/SquareTableLeg200mmSdf2048/Props/instanceable_meshes.usd",
@@ -201,9 +209,10 @@ CLASS1: list[Asset] = [
     Asset(
         "source/uwlab_assets/data/Props/FurnitureBench/SquareTableLeg200mmThreadSdfHybrid/square_table_leg4_200mm_thread_sdf_hybrid.usd",
         1, _FB, STATUS_REJECTED,
-        "Not wired to any live selector (produced by "
-        "scripts_v2/tools/conversions/build_leg_thread_sdf_hybrid_usd.py; conversion-tool output, not "
-        "a currently-selected training asset). MEASURED TO FAIL (F23): body hulls overshoot the "
+        "Not wired to any live selector [R8: scope = bare-name substring search, "
+        "'SquareTableLeg200mmThreadSdfHybrid', across every *.py file in this repo -- hits only in "
+        "build_leg_thread_sdf_hybrid_usd.py, the conversion tool that PRODUCES this asset, never in "
+        "a task config that consumes it]. MEASURED TO FAIL (F23): body hulls overshoot the "
         "body/thread seam by ~4 mm through hull inflation; lateral reaches 26 mm against 0.91 mm "
         "radial clearance and the leg exits the bore sideways. Keep as negative evidence, never a "
         "default.",
@@ -236,12 +245,19 @@ CLASS1: list[Asset] = [
         "in-git ur5e_delto.usd). ALSO the dexlift task family's unconditional hand-collider set "
         "(dexlift_ur5e_delto_env_cfg.py, no toggle). DEXLIFT_HULLFIX=1/2/3 IS exported by the "
         "certification launchers (run_certify.sh:26-28, cert_ft.sh, launch_task.sh:41-43) as if it "
-        "selected a collider variant -- that export is real, but VESTIGIAL: this script's grep across "
-        "every .py file in the tree finds zero os.environ.get/os.environ[] read sites for "
-        "DEXLIFT_HULLFIX anywhere (same defect class, and same certification-script author, as "
-        "DEXLIFT_LEG_DECOMP -- see the Decomp entry above; unlike that one, no comment in-tree "
-        "documents this one as dead, so this manifest is the first record of it). The dexlift plant "
-        "is genuinely unconditional hullfix3, confirmed by direct read of "
+        "selected a collider variant -- that export is real, but VESTIGIAL: zero os.environ.get/"
+        "os.environ[] read sites [R8: scope = bare-name substring search, 'DEXLIFT_HULLFIX', across "
+        "every *.py file in this repo (not line-restricted to lines also containing 'environ' -- that "
+        "narrower search is what missed a real multi-line read once already; searched instead for "
+        "the bare variable name and inspected every hit) -- 0 hits outside this manifest file itself] "
+        "(same defect class, and same certification-script author, as DEXLIFT_LEG_DECOMP -- see the "
+        "Decomp entry above; unlike that one, no comment in-tree documents this one as dead, so this "
+        "manifest is the first record of it). A FOURTH dead flag of the same class: "
+        "DEXLIFT_NO_SELFCOLL -- its only occurrence anywhere is a comment at "
+        "dexlift_ur5e_delto_env_cfg.py:434 ('Not a toggle. It was one (DEXLIFT_NO_SELFCOLL=1), and "
+        "turning it off is how a 94.9 percent [policy drove finger 3 through finger 4]'); "
+        "SELF_COLLISIONS_ENABLED is now a hardcoded True, same R8 scope, 0 read-site hits. The "
+        "dexlift plant is genuinely unconditional hullfix3, confirmed by direct read of "
         "dexlift_ur5e_delto_env_cfg.py:1444-1450 and its own comment 'colliders and self-collisions "
         "are no longer switchable.' Confirmed by the generator's own startup log too: smoke_s1_bmix.log "
         "and smoke_s2band.log (both on DL_H100, the only 2 of 6 v1 generator runs whose "
@@ -276,10 +292,13 @@ CLASS1: list[Asset] = [
         f"{STATUS_SUPERSEDED} -- THE CHEAT ASSET (F23). This is the plant in which a 0.9424 run fused "
         f"fingers 3 and 4 through each other. Labelled explicitly here so no headline number is ever "
         f"produced in it.",
-        "UNKNOWN via any currently-wired selector in source/ -- this script's greps found it only in "
-        "a reauthor_colliders.py DST path pointing at a DIFFERENT sibling repo (UWLab_ur5edelto, out "
-        "of scope for this manifest) and in asset_authoring/randenv.py's debug print of a "
-        "DEXLIFT_CONVEXHULL env var that no production config reads.",
+        "UNKNOWN via any currently-wired selector in source/ [R8: scope = bare-name substring search, "
+        "'DEXLIFT_CONVEXHULL' and 'convexhull', across every *.py file in this repo]: 2 hits total, "
+        "neither a production selector -- a reauthor_colliders.py DST path pointing at a DIFFERENT "
+        "sibling repo (UWLab_ur5edelto, out of scope for this manifest), and ONE real "
+        "os.environ.get('DEXLIFT_CONVEXHULL', 'unset') read, asset_authoring/randenv.py:73 -- but "
+        "that read only feeds a diagnostic print ('[randenv] convexhull=...'), never a branch that "
+        "selects this or any other asset. One reader, zero consumers of the value.",
     ),
 ]
 
@@ -505,6 +524,27 @@ def render_manifest(repo_root: str, assets_root: str) -> str:
     )
     lines.append(f"Asset bytes hashed from: `{assets_root}`\n")
     lines.append("Selector claims verified by grepping: `{}`\n".format(repo_root))
+
+    lines.append(
+        "## THIS MANIFEST'S OWN LIMIT\n\n"
+        "A sha256 proves which BYTES were on disk. It does not prove which PHYSICS the simulator "
+        "used from them. Two files with different content (e.g. SquareTableLeg200mmSdf vs "
+        "SquareTableLeg200mmDecomp) are distinguished here only because they happen to be different "
+        "files -- this manifest would NOT catch a run that resolved to a different variant than it "
+        "assumes, and it would NOT catch the same mesh re-authored with a different "
+        "`physics:approximation`.\n\n"
+        "The second case is not hypothetical: per F35 (DexReset V2_POSE_FINDINGS.md), the shipped "
+        "leg asset carries no `physics:approximation`, so PhysX silently falls back to `convexHull` "
+        "and fills the thread relief -- and the reference USD is **md5-identical** to the shipped "
+        "one. Identical hash, different effective collider. What this manifest hashes is necessary "
+        "but not sufficient evidence of reproducibility.\n\n"
+        "What actually closes this gap is NOT a file hash: it is the **runtime assertion** "
+        "(`assert_omnireset_leg_literals_agree` / `_assert_offset_matches_pinned_literals`, both in "
+        "this repo, both fatal) and the `[dexlift] PLANT` startup banner "
+        "(`dexlift_ur5e_delto_env_cfg.py`, prints colliders/self-collisions/actuators/usd every run) "
+        "-- read those at run time, not this document, to know what physics a given run actually "
+        "got.\n"
+    )
 
     total_bytes = 0
     total_count = 0
