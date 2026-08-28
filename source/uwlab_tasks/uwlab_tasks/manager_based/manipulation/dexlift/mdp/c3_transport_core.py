@@ -72,14 +72,34 @@ DEFAULT_TRANSPORT_GOAL_TILT_RAD = 0.35  # ~20 deg, same default _apply_goal_vert
 DEFAULT_TRANSPORT_GOAL_Z_RANGE_M = (0.13, 0.27)  # root frame; tip 24-164 mm, same band as GOAL_VERTICAL
 
 
-def tip_z_from_root_z(root_z_m: float) -> float:
-    """Convert a ROOT-frame height to the TIP-frame height it implies at (near) tip-down."""
-    return root_z_m - ROOT_ABOVE_TIP_M
+def tip_z_from_root_z(root_z_m: float, *, tilt_rad: float) -> float:
+    """Convert a ROOT-frame height to the TIP-frame height it implies at axis-only tilt
+    ``tilt_rad`` from tip-down (the SAME "angle between the rotated local tip axis and world -Z"
+    metric ``scripts_v2/tools/measure_v2_pose_distribution.py``'s ``axis_tilt_from_tipdown_deg``
+    already uses -- not roll/spin about the tip axis).
+
+    EXACT for any tilt: ``root_z - tip_z = ROOT_ABOVE_TIP_M * cos(tilt_rad)`` (F49,
+    V2_POSE_FINDINGS.md, team-lead review 2026-08-29). ``tilt_rad`` is REQUIRED, not defaulted --
+    the bug this fixes was exactly a silent ``cos(tilt) == 1`` assumption (equivalently, a bare
+    ``root_z - ROOT_ABOVE_TIP_M``) reused outside the tip-down pose it is only exact at: measured
+    against F43's own data, that assumption was off by up to 20 mm even on THIS module's own
+    +-20 deg default tilt band, and by 87-125 mm on the mixture's near-horizontal (classic/
+    low-goal) branches, where it should never have been applied at all. Requiring the caller to
+    name ``tilt_rad`` here is the guard against a future reader lifting this function into a
+    context this module's own tip-down-by-construction goals do not share.
+    """
+    if not 0.0 <= tilt_rad <= math.pi:
+        raise ValueError(f"tilt_rad must be in [0, pi] radians; got {tilt_rad}")
+    return root_z_m - ROOT_ABOVE_TIP_M * math.cos(tilt_rad)
 
 
-def root_z_from_tip_z(tip_z_m: float) -> float:
-    """Convert a TIP-frame height to the ROOT-frame height that commands it at (near) tip-down."""
-    return tip_z_m + ROOT_ABOVE_TIP_M
+def root_z_from_tip_z(tip_z_m: float, *, tilt_rad: float) -> float:
+    """Convert a TIP-frame height to the ROOT-frame height that commands it at axis-only tilt
+    ``tilt_rad`` from tip-down. Exact inverse of :func:`tip_z_from_root_z` -- see its docstring
+    for the F49 citation and why ``tilt_rad`` has no default."""
+    if not 0.0 <= tilt_rad <= math.pi:
+        raise ValueError(f"tilt_rad must be in [0, pi] radians; got {tilt_rad}")
+    return tip_z_m + ROOT_ABOVE_TIP_M * math.cos(tilt_rad)
 
 
 @dataclass(frozen=True)
@@ -155,16 +175,25 @@ def transport_goal_banner(
 
     Returned as a string (not printed here) so a test can assert on it byte-for-byte, same
     technique as the C1 gate's corrected banner (V2_POSE_FINDINGS.md F46b).
+
+    THE TIP-Z NUMBERS ARE A FLOOR, NOT THE BAND (F49). ``tip_z_from_root_z`` is called here at
+    ``tilt_rad=0.0`` -- exact tip-down, the deepest the tip can be for a given root z, since
+    ``root_z - tip_z = ROOT_ABOVE_TIP_M * cos(tilt)`` is maximal at tilt 0 and shrinks toward 0 as
+    tilt grows. An env drawn anywhere in this branch's own +-tilt band sits at a tip z somewhat
+    ABOVE this number, never below it. Said explicitly in the banner text so a reader cannot mistake
+    "leg TIP ... above the work surface" for the achieved band the way an earlier version of this
+    same conversion was mistaken for one on the classic/low-goal branches (F49).
     """
     ranges = transport_goal_ranges(tilt)
     return (
         f"[dexlift] TRANSPORT GOAL branch staged: {transport_goal_prob:.3f} of episodes draw a"
         f" tip-down goal (pitch {ranges.pitch[0]:.4f} to {ranges.pitch[1]:.4f} rad = -90 +-"
         f" {math.degrees(tilt):.1f} deg, roll +-{math.degrees(tilt):.1f} deg, yaw 0) at root height"
-        f" [{z_lo:.3f}, {z_hi:.3f}] m, i.e. leg TIP {tip_z_from_root_z(z_lo):.3f} to"
-        f" {tip_z_from_root_z(z_hi):.3f} m above the work surface, ANCHORED to the object's own"
-        " spawn x/y (never independent -- see this module's core docstring for the 148-attempts/"
-        "0-states measurement that anchoring fixes). The object spawns via the ORDINARY (classic/"
-        "low-goal) draw, arbitrary orientation, so this is a genuine transport task: the goal is"
-        " tip-down and the leg does not start there."
+        f" [{z_lo:.3f}, {z_hi:.3f}] m, i.e. leg TIP (at tilt=0, the floor of this branch's own tilt"
+        f" band -- F49) {tip_z_from_root_z(z_lo, tilt_rad=0.0):.3f} to"
+        f" {tip_z_from_root_z(z_hi, tilt_rad=0.0):.3f} m above the work surface, ANCHORED to the"
+        " object's own spawn x/y (never independent -- see this module's core docstring for the"
+        " 148-attempts/0-states measurement that anchoring fixes). The object spawns via the"
+        " ORDINARY (classic/low-goal) draw, arbitrary orientation, so this is a genuine transport"
+        " task: the goal is tip-down and the leg does not start there."
     )

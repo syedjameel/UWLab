@@ -46,15 +46,53 @@ def test_root_above_tip_offset_matches_f43_measurement():
     assert math.isclose(ROOT_ABOVE_TIP_M, 0.106203, abs_tol=1e-6)
 
 
-def test_tip_z_from_root_z_subtracts_the_offset():
-    assert math.isclose(tip_z_from_root_z(0.13), 0.13 - 0.106203, abs_tol=1e-9)
-    assert math.isclose(tip_z_from_root_z(0.27), 0.27 - 0.106203, abs_tol=1e-9)
+def test_tip_z_from_root_z_at_exact_tip_down_subtracts_the_full_offset():
+    # F49: root_z - tip_z = ROOT_ABOVE_TIP_M * cos(tilt); at tilt=0 (exact tip-down) cos(tilt)=1,
+    # so the full offset applies -- this is the ONLY tilt at which the old scalar-only form was
+    # exact (V2_POSE_FINDINGS.md F49, team-lead review).
+    assert math.isclose(tip_z_from_root_z(0.13, tilt_rad=0.0), 0.13 - 0.106203, abs_tol=1e-9)
+    assert math.isclose(tip_z_from_root_z(0.27, tilt_rad=0.0), 0.27 - 0.106203, abs_tol=1e-9)
 
 
-def test_root_z_from_tip_z_is_the_inverse():
+def test_tip_z_from_root_z_requires_an_explicit_tilt():
+    # No default: a caller must state the pose it is converting for, so this cannot be silently
+    # reused in a near-horizontal context the way the pre-F49 scalar-only version was (team-lead
+    # review: "the next reader cannot lift it into a near-horizontal context").
+    import pytest
+
+    with pytest.raises(TypeError):
+        tip_z_from_root_z(0.13)
+
+
+def test_tip_z_from_root_z_scales_the_offset_by_cos_tilt():
+    # F49's sharpened rule, reproduced from the team-lead's own measured table: root_z - tip_z =
+    # 0.106203 * cos(tilt). At tilt=pi/2 (fully horizontal) the offset vanishes to 0.
+    for tilt in (0.35, math.pi / 4, math.pi / 2):
+        root_z = 0.20
+        expected_tip_z = root_z - 0.106203 * math.cos(tilt)
+        assert math.isclose(tip_z_from_root_z(root_z, tilt_rad=tilt), expected_tip_z, abs_tol=1e-9)
+
+
+def test_tip_z_from_root_z_rejects_tilt_outside_zero_to_pi():
+    import pytest
+
+    for bad in (-0.01, math.pi + 0.01):
+        with pytest.raises(ValueError):
+            tip_z_from_root_z(0.13, tilt_rad=bad)
+
+
+def test_root_z_from_tip_z_is_the_inverse_at_a_range_of_tilts():
     for tip_z in (0.0, 0.024, 0.164):
-        root_z = root_z_from_tip_z(tip_z)
-        assert math.isclose(tip_z_from_root_z(root_z), tip_z, abs_tol=1e-9)
+        for tilt in (0.0, 0.35, math.pi / 2):
+            root_z = root_z_from_tip_z(tip_z, tilt_rad=tilt)
+            assert math.isclose(tip_z_from_root_z(root_z, tilt_rad=tilt), tip_z, abs_tol=1e-9)
+
+
+def test_root_z_from_tip_z_requires_an_explicit_tilt():
+    import pytest
+
+    with pytest.raises(TypeError):
+        root_z_from_tip_z(0.024)
 
 
 def test_transport_goal_ranges_centres_pitch_on_tip_down():
@@ -130,9 +168,13 @@ def test_transport_goal_banner_names_the_probability_tilt_and_tip_band():
     assert "0.200" in text
     assert f"{math.degrees(0.35):.1f} deg" in text
     assert "0.130" in text and "0.270" in text
-    # tip band: 0.13 - 0.106203 = 0.023797, 0.27 - 0.106203 = 0.163797
+    # tip band reported AT tilt=0 (nominal tip-down), the only tilt where the pre-F49 scalar-only
+    # form is exact: 0.13 - 0.106203 = 0.023797, 0.27 - 0.106203 = 0.163797. Away from tilt=0 the
+    # true tip z is HIGHER (root_z - 0.106203*cos(tilt)), never lower, so this is a floor, not the
+    # whole band -- the banner must say so (F49, team-lead review).
     assert "0.024" in text
     assert "0.164" in text
+    assert "at tilt=0, the floor" in text
     assert "ANCHORED to the object's own" in text
 
 
