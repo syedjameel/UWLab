@@ -159,8 +159,15 @@ CLASS1: list[Asset] = [
         f"OmniReset: REJECTED as a collider -- 56.15% of poses interpenetrate the collider PhysX "
         f"actually uses (median -0.068 mm); depenetration ejects the leg within five steps even "
         f"frozen, depth collapsing 13.7 -> 2.7 mm (F23).",
-        "No selector currently points here in HEAD (dexlift's own default moved to Sdf 2026-08-23; "
-        "see F24). Byte-identical top-level USD to the Sdf variant (same sha256, see table) -- only "
+        "No LIVE selector points here in HEAD (dexlift's own default moved to Sdf 2026-08-23; see "
+        "F24). DEXLIFT_LEG_DECOMP=1 IS exported by every certification launcher for dexlift certs "
+        "(cert_ft.sh:35, cert30.sh:7, cert_both.sh:7) and recorded in every historical cert JSON's "
+        "plant.dexlift_env -- that part is real, verified provenance, not invented. But it is a "
+        "VESTIGIAL export: cert_g3z4_finetune.sh:126-134's own comment states, and this script's "
+        "grep across every .py file confirms, there is no os.environ.get/os.environ[] site for "
+        "DEXLIFT_LEG_DECOMP anywhere in source/ -- the decomposed-leg USD selection it once gated is "
+        "now unconditional (see the Sdf entry's selector). Setting the var still happens; reading it "
+        "does not. Byte-identical top-level USD to the Sdf variant (same sha256, see table) -- only "
         "the Props/instanceable_meshes.usd collision layer differs (convexDecomposition vs SDF).",
     ),
     Asset(
@@ -227,9 +234,19 @@ CLASS1: list[Asset] = [
         "_apply_ur5e_delto_generation_plant / _assert_ur5e_delto_generation_plant "
         "(ur5e_delto_cfg.py) UNLESS OMNIRESET_UR5EDELTO_LEGACY_PLANT=1 (falls back to the tracked, "
         "in-git ur5e_delto.usd). ALSO the dexlift task family's unconditional hand-collider set "
-        "(dexlift_ur5e_delto_env_cfg.py, no toggle -- no DEXLIFT_HULLFIX env var exists anywhere in "
-        "source/ despite that being how it is sometimes described verbally; this script's greps found "
-        "none, so this manifest states the verified mechanism above instead of that name). 'every "
+        "(dexlift_ur5e_delto_env_cfg.py, no toggle). DEXLIFT_HULLFIX=1/2/3 IS exported by the "
+        "certification launchers (run_certify.sh:26-28, cert_ft.sh, launch_task.sh:41-43) as if it "
+        "selected a collider variant -- that export is real, but VESTIGIAL: this script's grep across "
+        "every .py file in the tree finds zero os.environ.get/os.environ[] read sites for "
+        "DEXLIFT_HULLFIX anywhere (same defect class, and same certification-script author, as "
+        "DEXLIFT_LEG_DECOMP -- see the Decomp entry above; unlike that one, no comment in-tree "
+        "documents this one as dead, so this manifest is the first record of it). The dexlift plant "
+        "is genuinely unconditional hullfix3, confirmed by direct read of "
+        "dexlift_ur5e_delto_env_cfg.py:1444-1450 and its own comment 'colliders and self-collisions "
+        "are no longer switchable.' Confirmed by the generator's own startup log too: smoke_s1_bmix.log "
+        "and smoke_s2band.log (both on DL_H100, the only 2 of 6 v1 generator runs whose "
+        "[c4-seating-gate] banner fires -- see F24 log-provenance note below) print "
+        "leg_usd=.../SquareTableLeg200mmSdf/square_table_leg4_200mm.usd for both. 'every "
         "held reset bank and the certified checkpoint were generated on hullfix3' per that file's own "
         "assertion message.",
         [("source/uwlab_tasks/uwlab_tasks/manager_based/manipulation/omnireset/config/ur5e_robotiq_2f85/ur5e_delto_cfg.py",
@@ -346,37 +363,77 @@ def describe_class3() -> str:
     """CLASS 3 has no fixed file list -- unlike class 1/2, reset-bank .pt files are GENERATED
     training artifacts keyed by (insertive_usd, receptive_usd) via compute_pair_dir(), not assets
     pinned to a commit. Enumerating one experiment directory as "the" manifest would misrepresent
-    which bank actually backed any given result -- dozens of per-experiment Datasets_*/Resets/
-    directories exist on the training host, each valid only for the run that produced it.
+    which bank actually backed any given result.
+
+    Two DIFFERENT findings live here, for two DIFFERENT consumers -- conflating them was an error
+    in an earlier draft of this manifest, corrected below:
+
+      DexLift (lift_ep1950, repose_ep3600 -- the certified checkpoints): NOT APPLICABLE. DexLift
+      does not load a reset bank at all. Its as-trained env.yaml (saved beside each checkpoint) has
+      zero hits for dataset_dir/Resets/reset_state/reset_type/.pt/OneLegInsertionFixture, and the
+      scene itself contains no OneLegInsertionFixture -- a table and the leg only. The reset
+      distribution is PARAMETRIC, printed at startup by DEXLIFT_REF_RESET=1: "dexsuite start
+      distribution restored (base +-0.5 rad, elbow +-0.2, wrist_3 +-0.5 rad [NOT dexsuite's +-3.0],
+      object x [0.0, 0.2] far half [NOT dexsuite's +-0.2])". That printed line IS the complete reset
+      spec for these two checkpoints. An empty
+      ~/.cache/uwlab/assets/Datasets/OmniReset/Resets/OneLegInsertionFixture__SquareTableLeg200mmDecomp/
+      is therefore the CORRECT state of the world for them, not a gap -- nothing was lost, there is
+      no dependency to find, and "unrecoverable" would send a reader looking for a file that never
+      existed. Keep the narrower observation this cache emptiness DOES support: the
+      UWLAB_CLOUD_ASSETS_DIR default (below) was never the delivery path for anything real on this
+      host -- a pipeline fact, not a missing-file fact.
+
+      OmniReset (does load banks -- events.py:2301-2320, MultiResetManager and
+      reset_insertive_object_from_partial_assembly_dataset): provenance EXISTS per run but is a
+      POINTER TO A MUTABLE DIRECTORY, not a content record -- see the two defects below.
     """
     return (
         "CLASS 3 -- reset bank .pt files (mechanism documented, no fixed file list)\n"
         "\n"
+        "### DexLift (lift_ep1950, repose_ep3600): NOT APPLICABLE\n"
+        "\n"
+        "DexLift does not load a reset bank. Confirmed by both the certified checkpoints' own "
+        "as-trained env.yaml (zero hits for dataset_dir / Resets / reset_state / reset_type / .pt / "
+        "OneLegInsertionFixture) and by the scene itself (table + leg only, no fixture). The reset "
+        "distribution is parametric, entirely specified by the DEXLIFT_REF_RESET=1 startup banner: "
+        "'dexsuite start distribution restored (base +-0.5 rad, elbow +-0.2, wrist_3 +-0.5 rad [NOT "
+        "dexsuite's +-3.0], object x [0.0, 0.2] far half [NOT dexsuite's +-0.2])'. An empty "
+        "~/.cache/uwlab/assets/Datasets/OmniReset/Resets/OneLegInsertionFixture__SquareTableLeg200mmDecomp/ "
+        "on DL_H100 is therefore CORRECT for these checkpoints, not a gap.\n"
+        "\n"
+        "Narrower observation the empty cache DOES support: UWLAB_CLOUD_ASSETS_DIR's default "
+        "(f'{UWLAB_CLOUD_ASSETS_DIR}/Datasets/OmniReset', UWLAB_CLOUD_ASSETS_DIR = "
+        "https://huggingface.co/datasets/UW-Lab/uwlab-assets/resolve/main) was never the delivery "
+        "path for anything real on this host -- a pipeline fact (the default is unused; real inputs "
+        "were ad hoc), not a missing-file fact.\n"
+        "\n"
+        "### OmniReset: provenance exists per run, but points at a MUTABLE directory\n"
+        "\n"
         "Loaded by omnireset/mdp/events.py's MultiResetManager and "
         "reset_insertive_object_from_partial_assembly_dataset via "
         "utils.safe_retrieve_file_path(f'{dataset_dir}/Resets/{pair}/{name}.pt'), where "
-        "pair = utils.compute_pair_dir(insertive_usd_path, receptive_usd_path) (alphabetically "
-        "sorted per-asset directory names joined with '__', e.g. "
-        "'OneLegInsertionFixture__SquareTableLeg200mmDecomp').\n"
+        "pair = utils.compute_pair_dir(insertive_usd_path, receptive_usd_path). dataset_dir is an "
+        "EventTerm param; several UR5eDelto/UR10eDelto configs override the cloud default per-variant "
+        "via _apply_delto_dataset_dir to a local directory, and a tracking board records one per run "
+        "(e.g. armU: dataset_dir=./Datasets_ur5e_delto/OmniReset). That record is real, but is much "
+        "weaker evidence than it looks, for two reasons:\n"
         "\n"
-        "SELECTOR: dataset_dir is an EventTerm param. Its default across the OmniReset registries "
-        "(rl_state_cfg.py, reset_states_cfg.py, data_collection_rgb_cfg.py) is "
-        "f'{UWLAB_CLOUD_ASSETS_DIR}/Datasets/OmniReset' (UWLAB_CLOUD_ASSETS_DIR = "
-        "https://huggingface.co/datasets/UW-Lab/uwlab-assets/resolve/main). Several UR5eDelto and "
-        "UR10eDelto configs override it per-variant via _apply_delto_dataset_dir / "
-        "cfg.events.*.params['dataset_dir'] to a local directory instead. Downloads land in "
-        "~/.cache/uwlab/assets/Datasets/OmniReset/Resets/<pair>/ (resolve_cloud_path's cache "
-        "convention).\n"
+        "1. It is a RELATIVE path, resolved against a working directory the config does not record. "
+        "That it resolves under a given repo root today is an inference from where the tree currently "
+        "sits, not a stored fact.\n"
+        "2. The path is not the artifact. Confirmed on DL_H100 (read-only) inside "
+        "~/github.com/orel/UWLab_ur5edelto/Datasets_ur5e_delto/OmniReset/: the live Resets/ directory "
+        "holds 6 pair-dirs (Decomp, Sdf, Sdf1024, Sdf2048, ThreadSdfHybrid, "
+        "Decomp_validate_scratch/Sdf_validate_scratch siblings), AND there are two separate backup "
+        "snapshots of the same tree -- Resets_backup_c2rewind_20260825_045513/ and "
+        "Resets_backup_c2rewind_20260825_061316/ -- each also containing a Decomp pair-dir. Banks are "
+        "regenerated and backed up IN PLACE, so the same dataset_dir string maps to different "
+        "contents at different times. Knowing the path does not tell you which states a run consumed.\n"
         "\n"
-        "AUDITED 2026-08-29 on DL_H100 (~/github.com/orel/UWLab_v2's live cache): the canonical "
-        "cloud-dir cache directory for the certified pair, "
-        "~/.cache/uwlab/assets/Datasets/OmniReset/Resets/OneLegInsertionFixture__SquareTableLeg200mmDecomp/, "
-        "is EMPTY -- no reset bank has been fetched from UWLAB_CLOUD_ASSETS_DIR for this pair on "
-        "this host. Actual training runs on this host instead point dataset_dir at one of several "
-        "dozen ad hoc ~/Datasets_*/Resets/ directories (per-experiment, per-chunk). This script does "
-        "NOT guess which one backed any specific certified checkpoint -- that requires the actual "
-        "training launch command's dataset_dir value, not something inferable from the repo alone. "
-        "Treat this as an open finding, not a manifest gap this tool can close.\n"
+        "CONCLUSION: for OmniReset, provenance exists per run but is a pointer to a mutable "
+        "directory, not a content record. The v2 fix -- log the per-reset-type state count and a "
+        "hash of the bank tensor at load time, and absolute-ise the dataset_dir field -- is already "
+        "its own bead; this manifest recommends it rather than implementing it.\n"
     )
 
 
@@ -419,6 +476,21 @@ def describe_leg_literals_section(repo_root: str) -> str:
         "\nThey disagreed until 2026-08-23: while they did, generation could read one leg variant and "
         "training another, silently, with nothing in the logs to distinguish that from a normal run "
         "(same defect class as F8)."
+    )
+    lines.append(
+        "\n**Log-derived confirmation, and its limit.** The generator prints "
+        "'[c4-seating-gate] ENABLED ... leg_usd=... fixture_usd=...' at startup, but ONLY when the "
+        "seating gate is enabled -- this is NOT a property of runs in general. Of the 6 v1 generator "
+        "runs on DL_H100, exactly 2 carry it and are independently confirmed by their own log: "
+        "smoke_s1_bmix.log:191 and smoke_s2band.log:190, both "
+        "leg_usd=.../SquareTableLeg200mmSdf/square_table_leg4_200mm.usd, "
+        "fixture_usd=.../OneLegInsertionFixture/one_leg_insertion_fixture.usd. The other 4 -- "
+        "smoke_s2probe.log, smoke_boremix4300.log, tmp/c2fwd5.log, and the vertical-goal run -- print "
+        "no banner and carry NO in-log asset record at all; their asset selection is inferred from "
+        "source only (F24 table above), not independently confirmed by their own run. RECOMMENDATION "
+        "(already its own bead, not implemented here): print the resolved leg_usd/fixture_usd "
+        "unconditionally at startup, outside the gate banner, so every future run is self-describing "
+        "regardless of which gates are on."
     )
     return "\n".join(lines) + "\n"
 
