@@ -29,6 +29,7 @@ DEXRESET_C1_HAND_ENV = "DEXRESET_C1_HAND"
 DEXRESET_C1_HAND_Z_ENV = "DEXRESET_C1_HAND_Z"
 DEXRESET_C1_HAND_XY_ENV = "DEXRESET_C1_HAND_XY"
 DEXRESET_C1_HAND_TILT_ENV = "DEXRESET_C1_HAND_TILT"
+DEXRESET_C1_HAND_IK_ITERATIONS_ENV = "DEXRESET_C1_HAND_IK_ITERATIONS"
 DEXRESET_C1_HAND_MAX_POS_ERR_MM_ENV = "DEXRESET_C1_HAND_MAX_POS_ERR_MM"
 DEXRESET_C1_HAND_MAX_ORI_ERR_DEG_ENV = "DEXRESET_C1_HAND_MAX_ORI_ERR_DEG"
 DEXRESET_C1_HAND_MIN_JOINT_MARGIN_DEG_ENV = "DEXRESET_C1_HAND_MIN_JOINT_MARGIN_DEG"
@@ -47,38 +48,70 @@ DEFAULT_TILT_RAW = "0.7854"  # ~pi/4, 45 deg
 # 34/512 (6.6%, run C) -- a HIGHER rate at the TIGHTER band, ruling out a proportional-to-box-size
 # error and pointing at absolute-scale IK divergence instead.
 #
-# DEXRESET_C1_HAND_MAX_POS_ERR_MM=100: the commanded-vs-achieved position residual's sorted-value
-# gaps start widening around the 95th-97th percentile in both runs (run B: p95=96.6mm,
-# p97=152.6mm; run C: p95=72.9mm, p97=117.6mm), well past the median the IK actually converges
-# well for (~24-26mm). 100mm sits just past that elbow in both runs -- loose enough not to reject
-# an ordinary DLS residual on a healthy solve, tight enough to catch the population that plainly
-# diverged (residuals up to 678mm/693mm were observed).
+# SECOND PASS -- team-lead-requested controlled comparison, run BEFORE tuning any threshold (their
+# own instruction: "tuning a gate before knowing which [regime] is a good way to produce a number
+# that looks principled and is not"). Three regimes, tested directly rather than by inference, all
+# n=512, fixed seed=42, gate forced to a single ungated attempt (max_retries=0) so every attempt's
+# raw residual is measured, not filtered by a retry:
 #
-# DEXRESET_C1_HAND_MAX_ORI_ERR_DEG=20: sits at run B's own measured p95 orientation residual
-# (20.2 deg) and just above run C's (15.7 deg) -- both runs' orientation residual "elbows" land in
-# the same place their position residual does.
+#   1. WRONG STARTING POINT (DEXLIFT_REF_RESET=1 widens reset_robot_joints/_elbow_joint/
+#      _wrist_joint from +-10 deg to +-0.5/+-0.2/+-0.5 rad before C1's IK runs -- see F46b(b)).
+#      REJECTED: dropping DEXLIFT_REF_RESET barely moved anything (height-out-of-band 120/512 =
+#      23.4% vs 123/512 = 24.0% with it on; position-residual median 23.4mm vs 26.0mm). The wider
+#      starting joint configuration is not the driver.
+#   2. INSUFFICIENT ITERATION BUDGET (the original event's ik_iterations=10, unconditionally).
+#      LARGELY CONFIRMED for the BULK of the tail: sweeping 10/20/40 iterations (REF_RESET on)
+#      measured median position residual 26mm -> 1.5mm -> 0.005mm and height-out-of-band
+#      24% -> 2.3% -> 0.4%. Going 20 -> 40 shows strongly diminishing returns, though (the
+#      >10mm-residual population: 2.34% at 20 iters, 0.59% at 40; the true divergent tail,
+#      >100mm: 0.39% at BOTH 20 and 40, unchanged) -- so 20 is the point past which more
+#      iterations mostly just spends compute on population 3, not population 2.
+#   3. INHERENT UNREACHABILITY (a specific sampled target has no nearby IK solution at all).
+#      CONFIRMED for a SMALL (<1%) population: the extreme residual tail (max ~510mm) is
+#      essentially IDENTICAL at 20 and 40 iterations -- more budget does not touch it. This is
+#      what the post-solve gate + bounded retry (resampling a FRESH, likely-easier target) exists
+#      to handle; it is a real, if small, finding about the C1 workspace, not a bug.
 #
-# NOTE ON WHAT THIS GATE DOES AND DOES NOT GUARANTEE: measured against the SAME data, the
-# commanded-vs-achieved RESIDUAL only partially predicts whether the ACHIEVED pose lands inside the
-# height/XY band -- some in-band samples had a large residual (a lucky solve into a different but
-# still in-band configuration) and some out-of-band samples had a small one (a well-converged solve
-# whose COMMANDED target itself sat right at the band edge). The residual+joint-margin gate is a
-# genuine IK-QUALITY check (did the solver actually reach what was asked, independent of any
-# particular band) and is what was asked for; it is deliberately NOT the only thing this stage now
-# gates on -- see :func:`~.c1_hand_pose.reset_end_effector_c1_hand_pose`'s docstring for the
-# achieved-height/XY band check added alongside it, which is what actually drives violations to
-# zero.
+# DEXRESET_C1_HAND_IK_ITERATIONS=20 (new field/env var, was an unconfigurable Python default of 10
+# on __call__): the sweet spot identified above -- doubling the original budget captures almost
+# all of regime 2's benefit; doubling again (to 40) buys comparatively little and nothing at all
+# against regime 3, so is not worth defaulting to.
 #
-# DEXRESET_C1_HAND_MIN_JOINT_MARGIN_DEG=1.0: matches scripts_v2/tools/gen_ik_c4_reset_bank.py's own
-# --joint-limit-margin-deg default verbatim, on instruction ("in the style of
-# gen_ik_c4_reset_bank.py's --joint-limit-margin-deg").
+# DEXRESET_C1_HAND_MAX_POS_ERR_MM=10 (RETUNED from a first-pass value of 100, chosen against the
+# unconditional 10-iteration distribution before this comparison existed -- see git history if that
+# reasoning is ever needed again). Against the ik_iterations=20 distribution the healthy population
+# converges to fractions of a mm through single-digit mm (p95=5.8mm, p97=8.7mm), then jumps to
+# p99=27.2mm -- 10mm sits at that elbow.
 #
-# DEXRESET_C1_HAND_MAX_RETRIES=5: a bounded resample-and-resolve budget (6 total attempts including
-# the first). Retries must be bounded and the exhaustion count must be visible, not silently
+# DEXRESET_C1_HAND_MAX_ORI_ERR_DEG=5 (RETUNED from a first-pass value of 20, same reason). At
+# ik_iterations=20, p97=1.35 deg, p99=11.2 deg -- 5 deg sits between them.
+#
+# NOTE ON WHAT THIS GATE DOES AND DOES NOT GUARANTEE: measured against the ORIGINAL (10-iteration)
+# data, the commanded-vs-achieved RESIDUAL only partially predicted whether the ACHIEVED pose
+# landed inside the height/XY band -- some in-band samples had a large residual (a lucky solve into
+# a different but still in-band configuration) and some out-of-band samples had a small one (a
+# well-converged solve whose COMMANDED target itself sat right at the band edge). The
+# residual+joint-margin gate is a genuine IK-QUALITY check (did the solver actually reach what was
+# asked, independent of any particular band) and is what was asked for; it is deliberately NOT the
+# only thing this stage gates on -- see :func:`~.c1_hand_pose.reset_end_effector_c1_hand_pose`'s
+# docstring for the achieved-height/XY band check added alongside it, which is what actually drives
+# violations to zero regardless of which regime a given reset falls into.
+#
+# DEXRESET_C1_HAND_MIN_JOINT_MARGIN_DEG=1.0 (unchanged by the second pass -- independent of
+# iteration count): matches scripts_v2/tools/gen_ik_c4_reset_bank.py's own --joint-limit-margin-deg
+# default verbatim, on instruction ("in the style of gen_ik_c4_reset_bank.py's
+# --joint-limit-margin-deg").
+#
+# DEXRESET_C1_HAND_MAX_RETRIES=5 (unchanged by the second pass): a bounded resample-and-resolve
+# budget (6 total attempts including the first). At ik_iterations=20 the per-attempt failure rate
+# against the tightened residual thresholds is low enough (regime 3's <1%) that the probability of
+# exhausting all 6 attempts is astronomically small for anything but that genuinely-stuck
+# population. Retries must be bounded and the exhaustion count must be visible, not silently
 # absorbed -- see the event class's own docstring for how an exhausted env is handled (best-of-
 # attempts kept, count printed every reset).
-DEFAULT_MAX_POS_ERR_MM_RAW = "100.0"
-DEFAULT_MAX_ORI_ERR_DEG_RAW = "20.0"
+DEFAULT_IK_ITERATIONS_RAW = "20"
+DEFAULT_MAX_POS_ERR_MM_RAW = "10.0"
+DEFAULT_MAX_ORI_ERR_DEG_RAW = "5.0"
 DEFAULT_MIN_JOINT_MARGIN_DEG_RAW = "1.0"
 DEFAULT_MAX_RETRIES_RAW = "5"
 
@@ -95,6 +128,7 @@ class C1HandPoseStage:
     z_hi: float
     xy_half_width: float
     tilt: float
+    ik_iterations: int
     max_pos_err_m: float
     max_ori_err_rad: float
     min_joint_margin_rad: float
@@ -150,6 +184,18 @@ def parse_c1_hand_pose_env(env: dict) -> C1HandPoseStage | None:
         ) from exc
     if not 0.0 <= tilt <= math.pi:
         raise ValueError(f"{DEXRESET_C1_HAND_TILT_ENV} must be in [0, pi] radians; got {tilt}")
+
+    ik_iterations_raw = env.get(DEXRESET_C1_HAND_IK_ITERATIONS_ENV, DEFAULT_IK_ITERATIONS_RAW)
+    try:
+        # int(str) rejects "1.5" same as "nope" -- an iteration COUNT cannot be fractional.
+        ik_iterations = int(ik_iterations_raw)
+    except ValueError as exc:
+        raise ValueError(
+            f"{DEXRESET_C1_HAND_IK_ITERATIONS_ENV} must be a positive integer, e.g."
+            f" '{DEFAULT_IK_ITERATIONS_RAW}'; got {ik_iterations_raw!r}"
+        ) from exc
+    if ik_iterations <= 0:
+        raise ValueError(f"{DEXRESET_C1_HAND_IK_ITERATIONS_ENV} must be > 0; got {ik_iterations_raw!r}")
 
     max_pos_err_mm_raw = env.get(DEXRESET_C1_HAND_MAX_POS_ERR_MM_ENV, DEFAULT_MAX_POS_ERR_MM_RAW)
     try:
@@ -209,6 +255,7 @@ def parse_c1_hand_pose_env(env: dict) -> C1HandPoseStage | None:
         z_hi=z_hi,
         xy_half_width=xy_half_width,
         tilt=tilt,
+        ik_iterations=ik_iterations,
         max_pos_err_m=max_pos_err_mm / 1000.0,
         max_ori_err_rad=math.radians(max_ori_err_deg),
         min_joint_margin_rad=math.radians(min_joint_margin_deg),

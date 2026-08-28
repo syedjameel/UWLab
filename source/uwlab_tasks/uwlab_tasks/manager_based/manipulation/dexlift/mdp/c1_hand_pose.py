@@ -175,6 +175,7 @@ class reset_end_effector_c1_hand_pose(ManagerTermBase):
             z_hi=z_range[1],
             xy_half_width=xy_half_width,
             tilt=tilt,
+            ik_iterations=ik_iterations,
             max_pos_err_m=max_pos_err_m,
             max_ori_err_rad=max_ori_err_rad,
             min_joint_margin_rad=min_joint_margin_rad,

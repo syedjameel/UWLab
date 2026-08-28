@@ -126,20 +126,42 @@ def test_defaults_include_the_post_solve_gate_thresholds():
     """Repair for the missing-reachability-gate finding (critic review of commit 1654e2c): a
     reset that writes whatever IK converges to, unchecked, measured on the H100 at 17-19% of
     resets landing outside the RESET_SPEC_V2.md sec 1 height/XY band (run B/C, n=512 each;
-    min achieved height -0.317 m -- BELOW the tabletop). Defaults chosen from that same data:
-    DEXRESET_C1_HAND_MAX_POS_ERR_MM=100 sits just past the elbow where the sorted residual's
-    gaps widen (run B: p95=96.6mm, p97=152.6mm; run C: p95=72.9mm, p97=117.6mm) --
-    comfortably above the median (~24-26mm, the population IK actually converges well for) and
-    past the point good/bad populations mostly separate, without being so tight it rejects
-    ordinary DLS residual on a healthy solve. DEXRESET_C1_HAND_MAX_ORI_ERR_DEG=20 sits at
-    run B's own measured p95 (20.2 deg) / just above run C's p95 (15.7 deg).
-    DEXRESET_C1_HAND_MIN_JOINT_MARGIN_DEG=1.0 matches gen_ik_c4_reset_bank.py's own
-    --joint-limit-margin-deg default verbatim, on instruction. DEXRESET_C1_HAND_MAX_RETRIES=5
-    is a bounded retry budget -- see test_retry_budget_is_bounded_and_configurable.
+    min achieved height -0.317 m -- BELOW the tabletop).
+
+    THRESHOLDS BELOW ARE FROM THE SECOND MEASUREMENT PASS (team-lead-requested controlled
+    comparison, before tuning any threshold): B's exact config with DEXLIFT_REF_RESET dropped
+    (n=512) barely moved the residual distribution (height-out-of-band 120/512 = 23.4% vs
+    123/512 = 24.0% with REF_RESET on) -- ruling OUT "REF_RESET's wider starting joint
+    configuration" as the driver. Sweeping ik_iterations at 10/20/40 (REF_RESET on, n=512 each,
+    fixed seed=42, gate disabled so every attempt is measured ungated) found the true driver:
+    the 10-iteration budget was simply insufficient for most of the tail -- median residual
+    26mm -> 1.5mm -> 0.005mm across 10/20/40 iterations, height violations 24% -> 2.3% -> 0.4%.
+    20->40 iterations shows STRONGLY diminishing returns (the >10mm-residual population: 2.34%
+    at 20 iters, 0.59% at 40; the >100mm extreme tail: 0.39% at BOTH 20 and 40, unchanged) --
+    so a small (<1%) population is genuinely stuck regardless of iteration budget (the third
+    regime, inherent unreachability for that SPECIFIC sampled target), while the bulk of the
+    original tail was regime two (insufficient budget), not regime one (REF_RESET) or regime
+    three (unreachable).
+
+    DEXRESET_C1_HAND_IK_ITERATIONS=20 (new): the sweet spot -- 10->20 buys a ~17x median
+    residual improvement for 2x the compute; 20->40 buys comparatively little for another 2x,
+    and does nothing for the truly-stuck population, so 40 is not worth defaulting to.
+    DEXRESET_C1_HAND_MAX_POS_ERR_MM=10 (retuned from a first pass at 100, chosen against the
+    10-iteration distribution before this comparison existed): at 20 iterations the healthy
+    population's residual sits in fractions of a mm to single-digit mm (p95=5.8, p97=8.7), then
+    jumps to p99=27.2 -- 10mm sits at that elbow. DEXRESET_C1_HAND_MAX_ORI_ERR_DEG=5 (retuned
+    from 20): at 20 iterations p97=1.35 deg, p99=11.2 deg -- 5 deg sits between them.
+    DEXRESET_C1_HAND_MIN_JOINT_MARGIN_DEG=1.0 (unchanged) matches gen_ik_c4_reset_bank.py's own
+    --joint-limit-margin-deg default verbatim, on instruction -- independent of iteration count.
+    DEXRESET_C1_HAND_MAX_RETRIES=5 (unchanged) is a bounded retry budget -- see
+    test_retry_budget_is_bounded_and_configurable; at 20 iterations the per-attempt failure rate
+    against these tighter thresholds is low enough that the probability of exhausting 6 total
+    attempts (1 + 5 retries) is astronomically small for anything but the genuinely-stuck tail.
     """
     stage = parse_c1_hand_pose_env({"DEXRESET_C1_HAND": "1"})
-    assert math.isclose(stage.max_pos_err_m, 0.100, abs_tol=1e-9)
-    assert math.isclose(math.degrees(stage.max_ori_err_rad), 20.0, abs_tol=1e-6)
+    assert stage.ik_iterations == 20
+    assert math.isclose(stage.max_pos_err_m, 0.010, abs_tol=1e-9)
+    assert math.isclose(math.degrees(stage.max_ori_err_rad), 5.0, abs_tol=1e-6)
     assert math.isclose(math.degrees(stage.min_joint_margin_rad), 1.0, abs_tol=1e-6)
     assert stage.max_retries == 5
 
@@ -148,16 +170,28 @@ def test_gate_thresholds_are_configurable():
     stage = parse_c1_hand_pose_env(
         {
             "DEXRESET_C1_HAND": "1",
+            "DEXRESET_C1_HAND_IK_ITERATIONS": "40",
             "DEXRESET_C1_HAND_MAX_POS_ERR_MM": "50",
             "DEXRESET_C1_HAND_MAX_ORI_ERR_DEG": "10",
             "DEXRESET_C1_HAND_MIN_JOINT_MARGIN_DEG": "2.5",
             "DEXRESET_C1_HAND_MAX_RETRIES": "8",
         }
     )
+    assert stage.ik_iterations == 40
     assert math.isclose(stage.max_pos_err_m, 0.050, abs_tol=1e-9)
     assert math.isclose(math.degrees(stage.max_ori_err_rad), 10.0, abs_tol=1e-6)
     assert math.isclose(math.degrees(stage.min_joint_margin_rad), 2.5, abs_tol=1e-6)
     assert stage.max_retries == 8
+
+
+def test_bad_ik_iterations_raises():
+    for bad in ("-1", "0", "1.5", "nope"):
+        try:
+            parse_c1_hand_pose_env({"DEXRESET_C1_HAND": "1", "DEXRESET_C1_HAND_IK_ITERATIONS": bad})
+        except ValueError as exc:
+            assert bad in str(exc)
+        else:
+            raise AssertionError(f"DEXRESET_C1_HAND_IK_ITERATIONS={bad!r} should have raised ValueError")
 
 
 def test_bad_max_pos_err_mm_raises():
@@ -210,7 +244,8 @@ def test_retry_budget_is_bounded_and_configurable():
 def _stage(**overrides) -> C1HandPoseStage:
     base = dict(
         z_lo=0.10, z_hi=0.20, xy_half_width=0.15, tilt=0.7854,
-        max_pos_err_m=0.100, max_ori_err_rad=math.radians(20.0),
+        ik_iterations=20,
+        max_pos_err_m=0.010, max_ori_err_rad=math.radians(5.0),
         min_joint_margin_rad=math.radians(1.0), max_retries=5,
     )
     base.update(overrides)
@@ -220,8 +255,8 @@ def _stage(**overrides) -> C1HandPoseStage:
 def test_ik_gate_pass_all_criteria_satisfied():
     stage = _stage()
     ok = ik_gate_pass(
-        pos_err_m=torch.tensor([0.02, 0.05]),
-        ori_err_rad=torch.tensor([math.radians(5.0), math.radians(15.0)]),
+        pos_err_m=torch.tensor([0.002, 0.008]),
+        ori_err_rad=torch.tensor([math.radians(1.0), math.radians(4.0)]),
         joint_margin_rad=torch.tensor([math.radians(30.0), math.radians(2.0)]),
         height_m=torch.tensor([0.15, 0.11]),
         dx_m=torch.tensor([0.05, -0.14]),
@@ -237,7 +272,7 @@ def test_ik_gate_pass_rejects_each_criterion_independently():
     """
     stage = _stage()
     good = dict(
-        pos_err_m=0.02, ori_err_rad=math.radians(5.0), joint_margin_rad=math.radians(30.0),
+        pos_err_m=0.002, ori_err_rad=math.radians(1.0), joint_margin_rad=math.radians(30.0),
         height_m=0.15, dx_m=0.0, dy_m=0.0,
     )
     cases = {

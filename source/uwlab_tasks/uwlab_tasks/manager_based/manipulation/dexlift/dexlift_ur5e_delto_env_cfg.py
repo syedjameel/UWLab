@@ -1048,31 +1048,50 @@ def _apply_c1_hand_pose_stage(env_cfg) -> None:
     # POST-SOLVE GATE thresholds (critic review of the first version of this function, commit
     # 1654e2c): the original event wrote whatever the damped IK converged to, unchecked, and that
     # measured at 17-19% of resets landing with the ACHIEVED palm height outside [z_lo, z_hi] (H100,
-    # n=512 x 2 runs) -- see ``c1_hand_pose_core.py``'s ``DEFAULT_MAX_POS_ERR_MM_RAW`` comment for
-    # exactly where these numbers were chosen from and ``c1_hand_pose.py``'s module docstring,
-    # "POST-SOLVE GATE", for the full defect. Parsed here in the SAME inline style as the four
-    # fields above rather than delegating to ``c1_hand_pose_core.parse_c1_hand_pose_env`` -- that
-    # function exists and is unit-tested (``test_c1_hand_pose_stage.py``), but this file already
-    # duplicates its own copy of the z/xy/tilt parsing rather than importing it (no other env_cfg
-    # module in this package imports a ``*_core`` module directly), and matching the file's
-    # EXISTING convention here is lower-risk than introducing a new one mid-fix.
-    max_pos_err_mm_raw = os.environ.get("DEXRESET_C1_HAND_MAX_POS_ERR_MM", "100.0")
+    # n=512 x 2 runs). A follow-up, team-lead-requested controlled comparison (run BEFORE tuning any
+    # threshold, on instruction) separated three possible causes directly rather than by inference:
+    # DEXLIFT_REF_RESET's wider pre-IK starting joints (REJECTED -- dropping it barely moved the
+    # residual distribution), an insufficient ik_iterations budget (LARGELY CONFIRMED for the bulk
+    # of the tail -- 10/20/40-iteration sweep measured median residual 26mm/1.5mm/0.005mm), and
+    # inherent unreachability of specific sampled targets (CONFIRMED for a small <1% population
+    # whose residual does not improve AT ALL between 20 and 40 iterations). See
+    # ``c1_hand_pose_core.py``'s ``DEFAULT_IK_ITERATIONS_RAW``/``DEFAULT_MAX_POS_ERR_MM_RAW``
+    # comment for the full numbers and where every default below comes from, and
+    # ``c1_hand_pose.py``'s module docstring, "POST-SOLVE GATE", for the original defect. Parsed
+    # here in the SAME inline style as the four fields above rather than delegating to
+    # ``c1_hand_pose_core.parse_c1_hand_pose_env`` -- that function exists and is unit-tested
+    # (``test_c1_hand_pose_stage.py``), but this file already duplicates its own copy of the
+    # z/xy/tilt parsing rather than importing it (no other env_cfg module in this package imports a
+    # ``*_core`` module directly), and matching the file's EXISTING convention here is lower-risk
+    # than introducing a new one mid-fix.
+    ik_iterations_raw = os.environ.get("DEXRESET_C1_HAND_IK_ITERATIONS", "20")
+    try:
+        ik_iterations = int(ik_iterations_raw)
+    except ValueError as exc:
+        raise ValueError(
+            f"DEXRESET_C1_HAND_IK_ITERATIONS must be a positive integer, e.g. '20'; got"
+            f" {ik_iterations_raw!r}"
+        ) from exc
+    if ik_iterations <= 0:
+        raise ValueError(f"DEXRESET_C1_HAND_IK_ITERATIONS must be > 0; got {ik_iterations_raw!r}")
+
+    max_pos_err_mm_raw = os.environ.get("DEXRESET_C1_HAND_MAX_POS_ERR_MM", "10.0")
     try:
         max_pos_err_mm = float(max_pos_err_mm_raw)
     except ValueError as exc:
         raise ValueError(
-            "DEXRESET_C1_HAND_MAX_POS_ERR_MM must be a single millimetres value, e.g. '100.0'; got"
+            "DEXRESET_C1_HAND_MAX_POS_ERR_MM must be a single millimetres value, e.g. '10.0'; got"
             f" {max_pos_err_mm_raw!r}"
         ) from exc
     if not max_pos_err_mm > 0.0:
         raise ValueError(f"DEXRESET_C1_HAND_MAX_POS_ERR_MM must be > 0; got {max_pos_err_mm}")
 
-    max_ori_err_deg_raw = os.environ.get("DEXRESET_C1_HAND_MAX_ORI_ERR_DEG", "20.0")
+    max_ori_err_deg_raw = os.environ.get("DEXRESET_C1_HAND_MAX_ORI_ERR_DEG", "5.0")
     try:
         max_ori_err_deg = float(max_ori_err_deg_raw)
     except ValueError as exc:
         raise ValueError(
-            "DEXRESET_C1_HAND_MAX_ORI_ERR_DEG must be a single degrees value, e.g. '20.0'; got"
+            "DEXRESET_C1_HAND_MAX_ORI_ERR_DEG must be a single degrees value, e.g. '5.0'; got"
             f" {max_ori_err_deg_raw!r}"
         ) from exc
     if not 0.0 < max_ori_err_deg <= 180.0:
@@ -1114,6 +1133,7 @@ def _apply_c1_hand_pose_stage(env_cfg) -> None:
             "z_range": (z_lo, z_hi),
             "xy_half_width": xy_half_width,
             "tilt": tilt,
+            "ik_iterations": ik_iterations,
             "max_pos_err_m": max_pos_err_mm / 1000.0,
             "max_ori_err_rad": math.radians(max_ori_err_deg),
             "min_joint_margin_rad": math.radians(min_joint_margin_deg),
@@ -1138,8 +1158,11 @@ def _apply_c1_hand_pose_stage(env_cfg) -> None:
         f" rotation on top of the palm-down nominal -- WORST-CASE COMPOSED ANGLE {worst_case_deg:.2f}"
         " deg, NOT a cone bound, see worst_case_composed_angle_rad), fingers UNCHANGED (existing"
         " DexSuite-style reset_finger_root_joints / reset_robot_joints jitter still applies)."
-        " Arm/wrist IK solved against body 'rl_dg_mount' (PALM_BODY), joints ARM_JOINT_NAMES, 10"
-        " damped iterations at step 0.25, joint-limit-wrapped, gated post-solve: reject-and-resample"
+        f" Arm/wrist IK solved against body 'rl_dg_mount' (PALM_BODY), joints ARM_JOINT_NAMES,"
+        f" {ik_iterations} damped iterations at step 0.25 (see DEFAULT_IK_ITERATIONS_RAW's own"
+        " comment: a team-lead-requested controlled comparison found the ORIGINAL unconditional"
+        " 10-iteration budget, not DEXLIFT_REF_RESET's wider starting joints, was the main driver"
+        " of the pre-fix residual tail), joint-limit-wrapped, gated post-solve: reject-and-resample"
         f" (max_retries={max_retries}) unless commanded-vs-achieved position error <="
         f" {max_pos_err_mm:.1f} mm AND orientation error <= {max_ori_err_deg:.1f} deg AND arm"
         f" joint-limit margin >= {min_joint_margin_deg:.2f} deg AND the achieved pose itself lands"
