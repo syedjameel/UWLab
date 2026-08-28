@@ -194,6 +194,7 @@ from uwlab_tasks.manager_based.manipulation.omnireset.mdp.events import (
     reset_insertive_object_from_partial_assembly_dataset,
 )
 
+from . import c3_transport_core
 from .partial_assembly import DEXLIFT_ONELEGFIXTURE_USD_PATH, live_bore_deep_axis
 from .task_state_vis import TaskStateVisPoseCommand, TaskStateVisPoseCommandCfg
 
@@ -204,6 +205,7 @@ __all__ = [
     "EPISODE_KIND_CLASSIC",
     "EPISODE_KIND_LOW_GOAL",
     "EPISODE_KIND_PARTIAL_ASSEMBLY",
+    "EPISODE_KIND_TRANSPORT",
     "LOW_GOAL_POS_Z_RANGE",
     "PARKED_FIXTURE_POSE_RANGE",
     "assert_episode_mixture_is_sane",
@@ -219,6 +221,12 @@ __all__ = [
 EPISODE_KIND_CLASSIC = 0
 EPISODE_KIND_LOW_GOAL = 1
 EPISODE_KIND_PARTIAL_ASSEMBLY = 2
+EPISODE_KIND_TRANSPORT = 3
+"""TRANSPORT: ordinary (classic/low-goal-style) spawn, tip-down +- tilt goal ANCHORED to the
+object's own spawn x/y. See ``c3_transport_core``'s module docstring (bead dr-ai1.13, F43) for the
+full argument: this is the branch missing from the mixture that actually asks the policy to bring
+the leg to a tip-down pose, as opposed to holding it near-horizontal (classic/low-goal) or already
+being there with nothing to do (partial-assembly)."""
 
 LOW_GOAL_POS_Z_RANGE: tuple[float, float] = (0.02, 0.15)
 """Absolute z range (metres, robot-root frame) for the LOW goal band -- roughly table height.
@@ -286,7 +294,10 @@ def _get_episode_kind_buffer(env) -> torch.Tensor:
 
 
 def assert_episode_mixture_is_sane(
-    classic_goal_prob: float, low_goal_prob: float, partial_assembly_prob: float
+    classic_goal_prob: float,
+    low_goal_prob: float,
+    partial_assembly_prob: float,
+    transport_goal_prob: float = 0.0,
 ) -> None:
     """Fail loudly rather than train silently on a broken mixture.
 
@@ -298,26 +309,23 @@ def assert_episode_mixture_is_sane(
     for exactly why (the override lands on the cfg object between when ``__post_init__`` runs and
     when the manager that would read these values is constructed).
 
-    Two independent checks:
+    ``transport_goal_prob`` defaults to 0.0 so every EXISTING call site (and every existing config,
+    whose dataclass simply has no such field yet) keeps validating exactly as before -- see
+    ``c3_transport_core`` (bead dr-ai1.13, F43) for what this fourth branch is.
 
-    1. The three fractions must sum to 1.0 -- catches a CLI override of one field
-       (``env.classic_goal_prob=0.7``) without updating the other two, which ``update_class_from_dict``
+    Two independent checks, delegated to :func:`c3_transport_core.validate_episode_mixture_fractions`
+    so they are unit-testable without an Isaac Sim process (that module's own docstring explains the
+    split):
+
+    1. The four fractions must sum to 1.0 -- catches a CLI override of one field
+       (``env.classic_goal_prob=0.7``) without updating the others, which ``update_class_from_dict``
        would otherwise apply silently since every field already exists with a default (see this
        module's callers for why the fields must exist as literals in the first place).
     2. ``classic_goal_prob`` must stay strictly positive -- see the module docstring's "WHY A
        MIXTURE" section for the measured 55%/89%/pass@30mm-0.0000 collapse this guards against.
     """
-    total = classic_goal_prob + low_goal_prob + partial_assembly_prob
-    assert abs(total - 1.0) < 1e-6, (
-        "episode-mixture fractions must sum to 1.0 (a CLI override of one field without the others"
-        f" desyncs them silently otherwise); got classic_goal_prob={classic_goal_prob}"
-        f" low_goal_prob={low_goal_prob} partial_assembly_prob={partial_assembly_prob}, sum={total}"
-    )
-    assert classic_goal_prob > 0.0, (
-        "classic_goal_prob must be > 0. Driving it to 0 (100% low-goal/goal-at-spawn) has been"
-        " measured to destroy this policy: 55% of the skill gone in 50 epochs, 89% by 300, reaching"
-        " pass@30mm 0.0000, because the objective no longer contains the transport task. Keep a"
-        f" majority (or at least a real fraction) of episodes on the classic goal; got {classic_goal_prob}."
+    c3_transport_core.validate_episode_mixture_fractions(
+        classic_goal_prob, low_goal_prob, partial_assembly_prob, transport_goal_prob
     )
 
 
@@ -383,10 +391,17 @@ class MixtureResetObject(ManagerTermBase):
         self.classic_goal_prob: float = env.cfg.classic_goal_prob
         self.low_goal_prob: float = env.cfg.low_goal_prob
         self.partial_assembly_prob: float = env.cfg.partial_assembly_prob
-        assert_episode_mixture_is_sane(self.classic_goal_prob, self.low_goal_prob, self.partial_assembly_prob)
+        # transport_goal_prob (bead dr-ai1.13): 0.0 unless the config's dataclass declares the field
+        # AND a caller has set it positive -- getattr rather than a direct attribute read so this
+        # stays inert (and does not AttributeError) against any config that predates this branch.
+        self.transport_goal_prob: float = float(getattr(env.cfg, "transport_goal_prob", 0.0))
+        assert_episode_mixture_is_sane(
+            self.classic_goal_prob, self.low_goal_prob, self.partial_assembly_prob, self.transport_goal_prob
+        )
         print(
             f"[dexlift] episode mixture (validated post-override): classic_goal_prob={self.classic_goal_prob:.3f}"
-            f" low_goal_prob={self.low_goal_prob:.3f} partial_assembly_prob={self.partial_assembly_prob:.3f}",
+            f" low_goal_prob={self.low_goal_prob:.3f} partial_assembly_prob={self.partial_assembly_prob:.3f}"
+            f" transport_goal_prob={self.transport_goal_prob:.3f}",
             flush=True,
         )
 
@@ -430,6 +445,11 @@ class MixtureResetObject(ManagerTermBase):
         kind[draw < self.partial_assembly_prob] = EPISODE_KIND_PARTIAL_ASSEMBLY
         low_band = (draw >= self.partial_assembly_prob) & (draw < self.partial_assembly_prob + self.low_goal_prob)
         kind[low_band] = EPISODE_KIND_LOW_GOAL
+        transport_lo = self.partial_assembly_prob + self.low_goal_prob
+        transport_band = (draw >= transport_lo) & (draw < transport_lo + self.transport_goal_prob)
+        kind[transport_band] = EPISODE_KIND_TRANSPORT
+        # Whatever's left (draw >= transport_lo + transport_goal_prob) stays EPISODE_KIND_CLASSIC,
+        # the fill value -- same convention the three-band version already used.
         _get_episode_kind_buffer(env)[env_ids_t] = kind
 
         partial_ids = env_ids_t[kind == EPISODE_KIND_PARTIAL_ASSEMBLY]
@@ -530,6 +550,31 @@ class MixtureGoalPoseCommand(TaskStateVisPoseCommand):
                 flush=True,
             )
 
+        # -- TRANSPORT GOAL BRANCH (bead dr-ai1.13, F43). Read off env.cfg for the same
+        # post-override reason as everything above. Default transport_goal_prob is 0.0 (validated
+        # by assert_episode_mixture_is_sane above, called from MixtureResetObject.__init__, which
+        # runs before this term is constructed -- see EventManager ordering in that module's
+        # docstring), so this block is inert -- no banner, no ranges built -- unless a caller has
+        # actually raised the fraction above 0. See c3_transport_core's module docstring for why
+        # the ranges/tilt/z parsing lives there instead of being re-derived here.
+        self._transport_goal_prob: float = float(getattr(env.cfg, "transport_goal_prob", 0.0))
+        if self._transport_goal_prob > 0.0:
+            tilt = float(getattr(env.cfg, "transport_goal_tilt", c3_transport_core.DEFAULT_TRANSPORT_GOAL_TILT_RAD))
+            z_range = tuple(
+                float(v)
+                for v in getattr(env.cfg, "transport_goal_z", c3_transport_core.DEFAULT_TRANSPORT_GOAL_Z_RANGE_M)
+            )
+            c3_transport_core.validate_transport_goal_z(*z_range)
+            self._transport_ranges = c3_transport_core.transport_goal_ranges(tilt)
+            self._transport_z = z_range
+            print(
+                c3_transport_core.transport_goal_banner(self._transport_goal_prob, tilt, *z_range),
+                flush=True,
+            )
+        else:
+            self._transport_ranges = None
+            self._transport_z = None
+
     def _resample_command(self, env_ids: Sequence[int]):
         env_ids_t = env_ids if torch.is_tensor(env_ids) else torch.as_tensor(env_ids, device=self.device)
         if env_ids_t.numel() == 0:
@@ -539,6 +584,7 @@ class MixtureGoalPoseCommand(TaskStateVisPoseCommand):
         classic_ids = env_ids_t[kind == EPISODE_KIND_CLASSIC]
         low_ids = env_ids_t[kind == EPISODE_KIND_LOW_GOAL]
         partial_ids = env_ids_t[kind == EPISODE_KIND_PARTIAL_ASSEMBLY]
+        transport_ids = env_ids_t[kind == EPISODE_KIND_TRANSPORT]
 
         if classic_ids.numel() > 0:
             super()._resample_command(classic_ids)
@@ -546,6 +592,8 @@ class MixtureGoalPoseCommand(TaskStateVisPoseCommand):
             self._resample_low_goal(low_ids)
         if partial_ids.numel() > 0:
             self._resample_goal_at_spawn(partial_ids)
+        if transport_ids.numel() > 0:
+            self._resample_transport(transport_ids)
 
     def _resample_low_goal(self, env_ids: torch.Tensor):
         # Same shape as ObjectUniformPoseCommand._resample_command, pos_z swapped for the low band.
@@ -600,6 +648,45 @@ class MixtureGoalPoseCommand(TaskStateVisPoseCommand):
         )
         self.pose_command_b[env_ids, 0:3] = pos_b
         self.pose_command_b[env_ids, 3:7] = quat_b
+
+    def _resample_transport(self, env_ids: torch.Tensor):
+        """Goal for a TRANSPORT episode (bead dr-ai1.13, F43): tip-down +- tilt, x/y ANCHORED to
+        the object's own just-spawned position, z drawn from the transport height band.
+
+        See ``c3_transport_core``'s module docstring for why the anchor is not a toggle (the
+        148-attempts/0-states measurement an independent x/y produced for the near-identical
+        GOAL_VERTICAL band) and for the orientation convention (same shape as
+        ``goal_mixture.MixedGoalPoseCommand._resample_command``'s ``vertical_anchor_xy == "object"``
+        branch, ported here rather than reused because that class upgrades the WHOLE command term
+        and is incompatible with the episode mixture -- F38).
+
+        Assumes ``self._transport_ranges`` / ``self._transport_z`` are set -- true whenever any
+        env_id can carry :data:`EPISODE_KIND_TRANSPORT`, since both this command and
+        :class:`MixtureResetObject` read the identical ``env.cfg.transport_goal_prob`` after the
+        same Hydra override point.
+        """
+        assert self._transport_ranges is not None and self._transport_z is not None, (
+            "transport_ids is non-empty but transport_goal_prob was 0.0 (or unset) at this command's"
+            " own __init__ time -- the kind draw (MixtureResetObject) and this command have gone"
+            " out of sync on env.cfg.transport_goal_prob."
+        )
+        obj_pos_b, _ = subtract_frame_transforms(
+            self.robot.data.root_pos_w[env_ids],
+            self.robot.data.root_quat_w[env_ids],
+            self.object.data.root_pos_w[env_ids],
+        )
+        self.pose_command_b[env_ids, 0] = obj_pos_b[:, 0]
+        self.pose_command_b[env_ids, 1] = obj_pos_b[:, 1]
+
+        r = torch.empty(env_ids.shape[0], device=self.device)
+        self.pose_command_b[env_ids, 2] = r.uniform_(*self._transport_z)
+
+        euler_angles = torch.zeros(env_ids.shape[0], 3, device=self.device)
+        euler_angles[:, 0].uniform_(*self._transport_ranges.roll)
+        euler_angles[:, 1].uniform_(*self._transport_ranges.pitch)
+        euler_angles[:, 2].uniform_(*self._transport_ranges.yaw)
+        quat = quat_from_euler_xyz(euler_angles[:, 0], euler_angles[:, 1], euler_angles[:, 2])
+        self.pose_command_b[env_ids, 3:] = quat_unique(quat) if self.cfg.make_quat_unique else quat
 
 
 @configclass

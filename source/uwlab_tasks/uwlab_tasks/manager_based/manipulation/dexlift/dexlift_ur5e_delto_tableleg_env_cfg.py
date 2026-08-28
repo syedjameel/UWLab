@@ -996,6 +996,25 @@ class DexLiftUR5eDeltoRelJointPosTableLegReorientEnvCfg(
     # Negative displaces the goal back OUT of the bore mouth -- the S2 rung target -- so those
     # episodes teach something. Bounds [-0.200, +0.025] enforced in MixtureGoalPoseCommand.
     partial_goal_delta_m: float = 0.0
+    # -- TRANSPORT GOAL branch (bead dr-ai1.13, V2_POSE_FINDINGS.md F43): tip-down +- tilt, x/y
+    # anchored to the object's own spawn -- see mdp.c3_transport_core's module docstring and
+    # mdp.episode_mixture.MixtureGoalPoseCommand._resample_transport. 0.0 keeps this branch OFF by
+    # default, same idiom as partial_goal_delta_m above -- an existing run's mixture is unchanged
+    # unless a caller explicitly raises this. Validated (with the other three fractions) by
+    # assert_episode_mixture_is_sane inside MixtureResetObject.__init__.
+    transport_goal_prob: float = 0.0
+    # Half-width, radians, of the roll/pitch band around the tip-down nominal (yaw pinned to 0).
+    # Same default (0.35 rad = 20 deg) _apply_goal_vertical_mixture shipped for the analogous band
+    # -- mdp.c3_transport_core.DEFAULT_TRANSPORT_GOAL_TILT_RAD, inlined here rather than imported
+    # (the *_core modules are deliberately not exposed through the ``mdp`` namespace -- same choice
+    # ``_apply_c1_hand_pose_stage`` made for ``c1_hand_pose_core``). Ignored while
+    # transport_goal_prob == 0.0.
+    transport_goal_tilt: float = 0.35
+    # Root-frame z band (metres) the transport goal's height is drawn from. Default (0.13, 0.27) is
+    # the same band _apply_goal_vertical_mixture shipped for DEXLIFT_GOAL_VERTICAL_Z -- tip 24-164 mm
+    # above the work surface (mdp.c3_transport_core.DEFAULT_TRANSPORT_GOAL_Z_RANGE_M). Ignored while
+    # transport_goal_prob == 0.0.
+    transport_goal_z: tuple[float, float] = (0.13, 0.27)
 
     # -- PARTIALLY-ASSEMBLED SPAWN / GOAL-AT-SPAWN toggles: see
     # ``_apply_partial_assembly_and_goal_toggles``'s docstring above for the full argument (why two
@@ -1045,6 +1064,25 @@ class DexLiftUR5eDeltoRelJointPosTableLegReorientEnvCfg_PLAY(
     # Negative displaces the goal back OUT of the bore mouth -- the S2 rung target -- so those
     # episodes teach something. Bounds [-0.200, +0.025] enforced in MixtureGoalPoseCommand.
     partial_goal_delta_m: float = 0.0
+    # -- TRANSPORT GOAL branch (bead dr-ai1.13, V2_POSE_FINDINGS.md F43): tip-down +- tilt, x/y
+    # anchored to the object's own spawn -- see mdp.c3_transport_core's module docstring and
+    # mdp.episode_mixture.MixtureGoalPoseCommand._resample_transport. 0.0 keeps this branch OFF by
+    # default, same idiom as partial_goal_delta_m above -- an existing run's mixture is unchanged
+    # unless a caller explicitly raises this. Validated (with the other three fractions) by
+    # assert_episode_mixture_is_sane inside MixtureResetObject.__init__.
+    transport_goal_prob: float = 0.0
+    # Half-width, radians, of the roll/pitch band around the tip-down nominal (yaw pinned to 0).
+    # Same default (0.35 rad = 20 deg) _apply_goal_vertical_mixture shipped for the analogous band
+    # -- mdp.c3_transport_core.DEFAULT_TRANSPORT_GOAL_TILT_RAD, inlined here rather than imported
+    # (the *_core modules are deliberately not exposed through the ``mdp`` namespace -- same choice
+    # ``_apply_c1_hand_pose_stage`` made for ``c1_hand_pose_core``). Ignored while
+    # transport_goal_prob == 0.0.
+    transport_goal_tilt: float = 0.35
+    # Root-frame z band (metres) the transport goal's height is drawn from. Default (0.13, 0.27) is
+    # the same band _apply_goal_vertical_mixture shipped for DEXLIFT_GOAL_VERTICAL_Z -- tip 24-164 mm
+    # above the work surface (mdp.c3_transport_core.DEFAULT_TRANSPORT_GOAL_Z_RANGE_M). Ignored while
+    # transport_goal_prob == 0.0.
+    transport_goal_z: tuple[float, float] = (0.13, 0.27)
 
     def __post_init__(self):
         super().__post_init__()
