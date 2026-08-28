@@ -7,6 +7,7 @@
 
 import logging
 import os
+import re
 import time
 import toml
 import urllib.request
@@ -99,6 +100,93 @@ def resolve_cloud_path(path: str) -> str:
             time.sleep(delay)
 
     return local
+
+
+# ============================================================================================
+# OmniReset-leg five-literal reproducibility guard.
+#
+# The SquareTableLeg200mm* leg asset is named by FIVE separate hardcoded literals, in five
+# different files, because nothing imports a shared constant for it:
+#   rl_state_cfg.py, reset_states_cfg.py, grasp_sampling_cfg.py, partial_assemblies_cfg.py
+#   (the four OmniReset registries) and dexlift_ur5e_delto_tableleg_env_cfg.py's TABLE_LEG_USD_PATH.
+# They DISAGREED until 2026-08-23 (some pointed at SquareTableLeg200mmDecomp, which is REJECTED as
+# an OmniReset collider -- 56.15% pose interpenetration -- while others already pointed at the
+# correct SquareTableLeg200mmSdf). While they disagreed, generation could read one asset and
+# training read another with nothing in the logs to distinguish "verified on SDF, trained on
+# Decomp" from a normal run -- the exact defect class this function exists to make impossible again.
+#
+# This does not import the five modules (several drag in the full Isaac stack at import time, and a
+# given process may only ever import the subset its task family needs); it re-reads their SOURCE
+# TEXT directly by path, which is why it lives here in uwlab_assets -- the one lightweight package
+# every one of the five already depends on for UWLAB_LOCAL_ASSETS_DIR.
+# ============================================================================================
+
+_LEG_LITERAL_SOURCES = [
+    (
+        "source/uwlab_tasks/uwlab_tasks/manager_based/manipulation/omnireset/config/ur5e_robotiq_2f85/rl_state_cfg.py",
+        804,
+    ),
+    (
+        "source/uwlab_tasks/uwlab_tasks/manager_based/manipulation/omnireset/config/ur5e_robotiq_2f85/reset_states_cfg.py",
+        617,
+    ),
+    (
+        "source/uwlab_tasks/uwlab_tasks/manager_based/manipulation/omnireset/config/ur5e_robotiq_2f85/grasp_sampling_cfg.py",
+        206,
+    ),
+    (
+        "source/uwlab_tasks/uwlab_tasks/manager_based/manipulation/omnireset/config/ur5e_robotiq_2f85/partial_assemblies_cfg.py",
+        482,
+    ),
+    (
+        "source/uwlab_tasks/uwlab_tasks/manager_based/manipulation/dexlift/dexlift_ur5e_delto_tableleg_env_cfg.py",
+        48,
+    ),
+]
+_LEG_LITERAL_PATTERN = re.compile(r"Props/FurnitureBench/(SquareTableLeg200mm\w*)/square_table_leg4_200mm\.usd")
+
+# Repo root: this file is source/uwlab_assets/uwlab_assets/__init__.py, so two levels above
+# UWLAB_ASSETS_EXT_DIR (source/uwlab_assets) is the repo root (uwlab/).
+_REPO_ROOT = os.path.abspath(os.path.join(UWLAB_ASSETS_EXT_DIR, "..", ".."))
+
+
+def describe_leg_literals(repo_root: str = _REPO_ROOT) -> list[tuple[str, int, str]]:
+    """Read-only: returns [(rel_path, line, variant_name_or_error), ...] for all five sources,
+    without raising. Used by both the assertion below and external tooling (e.g. the asset
+    manifest generator) that wants to report the values without also enforcing them.
+    """
+    found: list[tuple[str, int, str]] = []
+    for rel_path, line in _LEG_LITERAL_SOURCES:
+        full_path = os.path.join(repo_root, rel_path)
+        try:
+            with open(full_path, encoding="utf-8") as f:
+                text = f.read()
+        except OSError as exc:
+            found.append((rel_path, line, f"UNREADABLE ({exc})"))
+            continue
+        match = _LEG_LITERAL_PATTERN.search(text)
+        found.append((rel_path, line, match.group(1) if match else "NO MATCH FOUND"))
+    return found
+
+
+def assert_omnireset_leg_literals_agree(repo_root: str = _REPO_ROOT) -> None:
+    """Fail loudly if the five hardcoded SquareTableLeg200mm* literals do not all name the same
+    leg variant. Fatal (raises), never a warning -- see module comment above for why.
+    """
+    found = describe_leg_literals(repo_root)
+    variants = {v for _, _, v in found}
+    if len(variants) != 1:
+        detail = "\n".join(f"  {rel}:{line} -> {variant}" for rel, line, variant in found)
+        raise RuntimeError(
+            "OmniReset leg literal MISMATCH: the five files that name the SquareTableLeg200mm* leg "
+            f"asset do not all agree (tolerance: none -- these are file paths, not floats):\n{detail}\n"
+            "They disagreed until 2026-08-23 (some pointed at the REJECTED SquareTableLeg200mmDecomp "
+            "collider -- 56.15% pose interpenetration as an OmniReset collider -- while others already "
+            "pointed at SquareTableLeg200mmSdf), which silently let generation read one asset while "
+            "training read another. EVERY reset bank, checkpoint, and success number produced while "
+            "these five disagree is INVALID -- do not proceed until all five name the same leg "
+            "variant. If you repoint one, repoint all five."
+        )
 
 
 # Configure the module-level variables

@@ -16,6 +16,8 @@ import isaaclab.utils.math as math_utils
 from isaaclab.assets import Articulation, RigidObject
 from isaaclab.managers import CommandTerm
 
+from uwlab_assets import assert_omnireset_leg_literals_agree
+
 from ..assembly_keypoints import Offset
 from . import utils
 
@@ -62,6 +64,15 @@ def _assert_offset_matches_pinned_literals(metadata: dict, usd_path: str, role: 
     No-op for any other asset (this command term is generic; the pinned literals are not).
     """
     object_name = utils.object_name_from_usd(usd_path)
+    if object_name.startswith("SquareTableLeg200mm"):
+        # Second, independent guard for this same asset family: the five hardcoded literals that
+        # NAME this leg (in the four OmniReset registries and dexlift's TABLE_LEG_USD_PATH) must
+        # also agree with each other, not just with metadata.yaml. See
+        # assert_omnireset_leg_literals_agree's docstring (uwlab_assets/__init__.py) -- they
+        # disagreed until 2026-08-23, which let generation and training silently use different
+        # leg variants. Fatal, same as the assembled_offset check below.
+        assert_omnireset_leg_literals_agree()
+
     expected = _PINNED_OFFSET_LITERALS.get(object_name)
     if expected is None:
         return  # not the audited pair -- nothing to compare against

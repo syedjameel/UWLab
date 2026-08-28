@@ -36,12 +36,18 @@ from isaaclab.managers import TerminationTermCfg as DoneTerm
 from isaaclab.utils import configclass
 from isaaclab_tasks.manager_based.manipulation.dexsuite import dexsuite_env_cfg as dexsuite
 
-from uwlab_assets import UWLAB_LOCAL_ASSETS_DIR
+from uwlab_assets import UWLAB_LOCAL_ASSETS_DIR, assert_omnireset_leg_literals_agree
 
 from . import mdp
 from .dexlift_ur10e_delto_env_cfg import TIP_NAMES, THUMB_TIP_NAMES
 from .dexlift_ur5e_delto_env_cfg import Ur5eDeltoEventCfg, Ur5eDeltoRelJointPosMixinCfg
 from .dexlift_ur5e_delto_osc_env_cfg import Ur5eDeltoOscEventCfg, Ur5eDeltoOscMixinCfg
+
+# Fatal, at import time, not a warning: this is the dexlift-side half of the five-literal guard --
+# see assert_omnireset_leg_literals_agree's own docstring (uwlab_assets/__init__.py) for the full
+# defect this catches. Runs BEFORE TABLE_LEG_USD_PATH below is even read, so a stale literal here
+# or in any of the four OmniReset registries is caught before this module finishes importing.
+assert_omnireset_leg_literals_agree()
 
 TABLE_LEG_USD_PATH = os.environ.get(
     "DEXLIFT_TABLE_LEG_USD_PATH_OVERRIDE",
