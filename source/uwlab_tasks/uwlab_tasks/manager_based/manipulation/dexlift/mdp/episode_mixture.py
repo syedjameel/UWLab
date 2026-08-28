@@ -194,6 +194,7 @@ from uwlab_tasks.manager_based.manipulation.omnireset.mdp.events import (
     reset_insertive_object_from_partial_assembly_dataset,
 )
 
+from .partial_assembly import DEXLIFT_ONELEGFIXTURE_USD_PATH, live_bore_deep_axis
 from .task_state_vis import TaskStateVisPoseCommand, TaskStateVisPoseCommandCfg
 
 if TYPE_CHECKING:
@@ -487,6 +488,48 @@ class MixtureGoalPoseCommand(TaskStateVisPoseCommand):
       to ``partial_assembly.GoalAtSpawnPoseCommand._resample_command``.
     """
 
+    def __init__(self, cfg, env):
+        super().__init__(cfg, env)
+
+        # -- PARTIAL-ASSEMBLY GOAL DISPLACEMENT (bead UWLab-nnlv.5). This lives on the COMMAND term,
+        # not the event term: the two are different objects, and an earlier revision set it on the
+        # event and crashed here with AttributeError the first time a partial episode resampled.
+        # Default 0.0 reproduces goal-AT-spawn byte for byte, so no existing config changes.
+        #
+        # Read off env.cfg for the same reason the mixture probabilities are: by now a Hydra
+        # override has landed on env.cfg, whereas anything captured at __post_init__ would be a
+        # pre-override snapshot forever.
+        self._partial_delta_m: float = float(getattr(env.cfg, "partial_goal_delta_m", 0.0))
+        if not -0.200 <= self._partial_delta_m <= 0.025:
+            raise ValueError(
+                f"partial_goal_delta_m={self._partial_delta_m} is outside [-0.200, +0.025] m. "
+                "Positive displaces the goal DEEPER into the bore (ceiling = the 25 mm engaged "
+                "span); negative displaces it OUT of the mouth, above it (floor = headroom around "
+                "the S2' rung's 20-120 mm band). Same bounds as GoalBelowSpawnPoseCommand."
+            )
+        self._fixture = None
+        self._fixture_local_deep_axis = None
+        if self._partial_delta_m != 0.0:
+            if "receptive_object" not in env.scene.rigid_objects:
+                raise ValueError(
+                    "partial_goal_delta_m is set but 'receptive_object' (the fixture) is not in the "
+                    "scene, so the bore's deep axis has nothing to be read off. This needs the "
+                    "partial-assembly scene (DEXLIFT_PARTIAL_ASSEMBLY / the episode mixture)."
+                )
+            self._fixture = env.scene["receptive_object"]
+            self._fixture_local_deep_axis = torch.tensor([0.0, 0.0, -1.0], device=self.device)
+            print(
+                f"[dexlift] MIXTURE PARTIAL GOAL DELTA: {self._partial_delta_m * 1000.0:+.2f} mm "
+                + (
+                    "DEEPER INTO the bore"
+                    if self._partial_delta_m > 0
+                    else "OUT OF the mouth (ABOVE it)"
+                )
+                + " from spawn, on the partial-assembly episodes only. delta 0 would pin the goal AT"
+                " spawn, which satisfies tracking at t=0 and teaches nothing.",
+                flush=True,
+            )
+
     def _resample_command(self, env_ids: Sequence[int]):
         env_ids_t = env_ids if torch.is_tensor(env_ids) else torch.as_tensor(env_ids, device=self.device)
         if env_ids_t.numel() == 0:
@@ -518,16 +561,41 @@ class MixtureGoalPoseCommand(TaskStateVisPoseCommand):
         self.pose_command_b[env_ids, 3:] = quat_unique(quat) if self.cfg.make_quat_unique else quat
 
     def _resample_goal_at_spawn(self, env_ids: torch.Tensor):
+        """Goal for a PARTIAL-ASSEMBLY episode: the leg's spawn pose, optionally DISPLACED along
+        the bore's own axis by :attr:`partial_delta_m`.
+
+        WHY THE DISPLACEMENT EXISTS (bead UWLab-nnlv.5). With delta 0 -- the original and still the
+        default -- the goal is pinned exactly at the leg's spawn pose, so tracking is SATISFIED AT
+        t=0 and the episode carries NO GRADIENT: the objective reduces to "stay where you already
+        are". That is not a hypothesis; it is the mechanism behind this mixture's own measured
+        result, a finetune that certified 20 POINTS WORSE while a quarter of its episodes were
+        teaching nothing. A negative delta displaces the goal back OUT of the mouth, which is the
+        S2' rung's actual target and gives those episodes something to learn.
+
+        The sign convention, the axis and the runtime guard all come from
+        :func:`~.partial_assembly.live_bore_deep_axis` -- the same function
+        :class:`~.partial_assembly.GoalBelowSpawnPoseCommand` uses -- so the two cannot disagree
+        about which way "deeper" points.
+        """
         # Identical to partial_assembly.GoalAtSpawnPoseCommand._resample_command -- see that
         # class's docstring / the module's "Y3" section for why the goal must be read here (a
         # command hook) rather than written by the spawn event, which CommandManager.reset() would
         # silently overwrite a few lines later in the same reset call.
         object_pos_w = self.object.data.root_pos_w[env_ids]
         object_quat_w = self.object.data.root_quat_w[env_ids]
+
+        goal_pos_w = object_pos_w
+        if self._partial_delta_m != 0.0:
+            axis_world = live_bore_deep_axis(self._fixture, self._fixture_local_deep_axis, env_ids)
+            # Same single expression for both signs, exactly as GoalBelowSpawnPoseCommand does it:
+            # axis_world points INTO the bore, so a negative delta adds along -axis_world, i.e. back
+            # out of the mouth and above it. Nothing downstream branches on the sign.
+            goal_pos_w = object_pos_w + self._partial_delta_m * axis_world
+
         pos_b, quat_b = subtract_frame_transforms(
             self.robot.data.root_pos_w[env_ids],
             self.robot.data.root_quat_w[env_ids],
-            object_pos_w,
+            goal_pos_w,
             object_quat_w,
         )
         self.pose_command_b[env_ids, 0:3] = pos_b

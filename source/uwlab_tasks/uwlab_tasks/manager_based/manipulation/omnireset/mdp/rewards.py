@@ -159,14 +159,19 @@ class ProgressContext(ManagerTermBase):
         return torch.zeros(env.num_envs, device=env.device)
 
 
-def dense_success_reward(env: ManagerBasedRLEnv, std: float, context: str = "progress_context") -> torch.Tensor:
+def dense_success_reward(
+    env: ManagerBasedRLEnv, std: float, std_angle: float | None = None, context: str = "progress_context"
+) -> torch.Tensor:
 
     context_term: ManagerTermBase = env.reward_manager.get_term_cfg(context).func  # type: ignore
     angle_diff: torch.Tensor = getattr(context_term, "euler_xy_distance")
     xyz_distance: torch.Tensor = getattr(context_term, "xyz_distance")
 
-    # Normalize the distances by std
-    angle_diff = torch.exp(-angle_diff / std)
+    # Normalize each distance by its own std: position (metres) and angle (radians) live on
+    # different scales, so a single shared std can flatten one of the two terms.
+    if std_angle is None:
+        std_angle = std
+    angle_diff = torch.exp(-angle_diff / std_angle)
     xyz_distance = torch.exp(-xyz_distance / std)
     stacked = torch.stack([angle_diff, xyz_distance], dim=0)
     return torch.mean(stacked, dim=0)

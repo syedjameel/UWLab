@@ -602,12 +602,19 @@ variants = {
         # mass_props to 0.001 kg regardless of what the USD authors -- a 1 g leg is flung by
         # ordinary contact, and a policy "grasping" it can look successful while holding nothing.
         # This leg's root prim (/square_table_leg4_200mm_merged) carries its own MassAPI at
-        # 0.02275 kg (measured directly off the USD with pxr, not inferred from a script or a
-        # config file); override_mass=False is what keeps that number instead of overwriting it.
+        # 0.11999999731779099 kg -- i.e. 0.12 kg at float32 precision (re-measured directly off
+        # the deployed USD with pxr on 2026-08-22, not inferred from a script or a config file);
+        # override_mass=False is what keeps that number instead of overwriting it. An EARLIER
+        # revision of this comment cited 0.02275 kg (22.75 g) -- that was this project's
+        # PRE-correction mass (still preserved as square_table_leg4_200mm.usd.bak_mass0.02275,
+        # same directory, also re-measured with the same pxr call to confirm), from before this
+        # leg's density was fixed from styrofoam-light to something an ordinary grasp does not
+        # fling. The MECHANISM this comment describes (override_mass=False preserves whatever
+        # is authored) was always correct; only the cited NUMBER was stale.
         # disable_gravity is NOT set here or anywhere in make_insertive_object (it is hard-False,
         # same as every other variant) -- no gravity override applies to this object.
         "leg200mm": make_insertive_object(
-            f"{UWLAB_LOCAL_ASSETS_DIR}/Props/FurnitureBench/SquareTableLeg200mmDecomp/square_table_leg4_200mm.usd",
+            f"{UWLAB_LOCAL_ASSETS_DIR}/Props/FurnitureBench/SquareTableLeg200mmSdf/square_table_leg4_200mm.usd",
             override_mass=False,
         ),
     },

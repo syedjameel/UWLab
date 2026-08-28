@@ -11,6 +11,8 @@ import torch
 import isaaclab.utils.math as math_utils
 from isaaclab.managers.recorder_manager import RecorderTerm
 
+from ..reset_state_schema import add_joint_targets
+
 
 class StableStateRecorder(RecorderTerm):
     def record_pre_reset(self, env_ids):
@@ -20,7 +22,25 @@ class StableStateRecorder(RecorderTerm):
                 return {k: extract_env_ids_values(v) for k, v in value.items()}
             return value[env_ids]
 
-        return "initial_state", extract_env_ids_values(self._env.scene.get_state(is_relative=True))
+        state = self._env.scene.get_state(is_relative=True)
+        # -- PD SET POINT (bead UWLab-algw.7). ``scene.get_state()`` above carries only the
+        # CONFIGURATION (root_pose/root_velocity/joint_position/joint_velocity) -- not what the PD
+        # actuator was actually commanded to hold, which is what determines applied grip force on
+        # replay. Read directly off each live Articulation's OWN data buffer -- the un-indexed,
+        # full-batch ``joint_pos_target``/``joint_vel_target`` are exactly what the last
+        # set_joint_position_target/set_joint_velocity_target call (or the actuator's own init
+        # value, if neither was ever called) wrote, not a re-derivation of it. Added BEFORE
+        # extract_env_ids_values runs, so the same recursion indexes these two new leaves by
+        # env_ids identically to every other field -- including the multi-env-per-call case (this
+        # recorder's own record_pre_reset can bundle more than one accepted state under one call).
+        for name, articulation in self._env.scene._articulations.items():
+            add_joint_targets(
+                state["articulation"][name],
+                articulation.data.joint_pos_target,
+                articulation.data.joint_vel_target,
+            )
+
+        return "initial_state", extract_env_ids_values(state)
 
 
 class GraspRelativePoseRecorder(RecorderTerm):

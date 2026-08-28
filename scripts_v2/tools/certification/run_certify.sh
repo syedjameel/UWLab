@@ -41,11 +41,27 @@ TAG=${1:?usage: run_certify.sh <tag> <checkpoint>}
 CKPT=${2:?}
 [ -f "$CKPT" ] || { echo "REFUSING: checkpoint $CKPT does not exist"; exit 1; }
 
-cd "$HOME/UWLab_ur5edelto" || exit 1
+# BOX LAYOUT IS NOW OVERRIDABLE, DEFAULTS UNCHANGED. Every default below reproduces exactly what
+# this script did before, so the existing cert drivers keep working untouched. The overrides exist
+# because the three paths this script used to hard-code (the repo at $HOME/UWLab_ur5edelto, the
+# interpreter at $HOME/UWLab/env_uwlab/bin/python, the entry point at $HOME/certify_pose.py) are
+# all ABSENT on at least one box this project actually runs on -- verified by listing them, not
+# assumed. The failure that caused was not loud: `cd ... || exit 1` returns 1, a caller that pipes
+# this script's output to tee without checking the status then proceeds to its next run, and the
+# driver prints its own ALL_DONE marker having certified nothing at all.
+REPO_DIR=${REPO_DIR:-$HOME/UWLab_ur5edelto}
+PYTHON_BIN=${PYTHON_BIN:-$HOME/UWLab/env_uwlab/bin/python}
+CERTIFY_PY=${CERTIFY_PY:-$HOME/certify_pose.py}
+OUT_DIR=${OUT_DIR:-$HOME}
+
+cd "$REPO_DIR" || { echo "REFUSING: REPO_DIR=$REPO_DIR does not exist"; exit 1; }
+[ -x "$PYTHON_BIN" ] || { echo "REFUSING: PYTHON_BIN=$PYTHON_BIN is not an executable"; exit 1; }
+[ -f "$CERTIFY_PY" ] || { echo "REFUSING: CERTIFY_PY=$CERTIFY_PY does not exist"; exit 1; }
+mkdir -p "$OUT_DIR" || { echo "REFUSING: cannot create OUT_DIR=$OUT_DIR"; exit 1; }
 export PYTHONPATH="$PWD/source/uwlab:$PWD/source/uwlab_tasks:$PWD/source/uwlab_assets:$PWD/source/uwlab_rl"
 
-LOG="$HOME/cert_$TAG.log"; OUT="$HOME/cert_$TAG.json"
-timeout -s KILL 7200 "$HOME/UWLab/env_uwlab/bin/python" -u "$HOME/certify_pose.py" \
+LOG="$OUT_DIR/cert_$TAG.log"; OUT="$OUT_DIR/cert_$TAG.json"
+timeout -s KILL 7200 "$PYTHON_BIN" -u "$CERTIFY_PY" \
     --task "${TASK:?set TASK}" --checkpoint "$CKPT" \
     --num_envs "${NUM_ENVS:-256}" --episodes "${EPISODES:-256}" \
     --pos_tol "${POS_TOL:-0.01}" --adr_difficulty "${ADR_DIFFICULTY:-max}" \

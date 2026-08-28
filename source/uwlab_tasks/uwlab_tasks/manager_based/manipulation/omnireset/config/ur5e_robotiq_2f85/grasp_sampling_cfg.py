@@ -203,7 +203,7 @@ variants = {
         # directly off the USD with pxr) instead of the 1 g default -- see the deltoblock comment
         # above and reset_states_cfg.py:589-595 for why that default is a trap here.
         "leg200mm": make_object(
-            f"{UWLAB_LOCAL_ASSETS_DIR}/Props/FurnitureBench/SquareTableLeg200mmDecomp/square_table_leg4_200mm.usd",
+            f"{UWLAB_LOCAL_ASSETS_DIR}/Props/FurnitureBench/SquareTableLeg200mmSdf/square_table_leg4_200mm.usd",
             override_mass=False,
         ),
     }

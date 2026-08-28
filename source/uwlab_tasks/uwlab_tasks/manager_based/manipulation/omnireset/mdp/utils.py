@@ -326,7 +326,11 @@ def get_temp_dir(rank: int | None = None) -> str:
     uid = os.getuid()
     job_id = os.getenv("SLURM_JOB_ID") or os.getenv("PBS_JOBID") or "local"
 
-    download_dir = os.path.join("/tmp", "uwlab", str(uid), str(job_id), f"rank_{rank}")
+    # UWLAB_TMP_ROOT lets a user relocate this off /tmp. Needed on shared hosts where
+    # /tmp/uwlab is owned by another uid and is not group-writable, which makes the
+    # per-uid subdirectory impossible to create. Default is unchanged.
+    tmp_root = os.getenv("UWLAB_TMP_ROOT", "/tmp")
+    download_dir = os.path.join(tmp_root, "uwlab", str(uid), str(job_id), f"rank_{rank}")
     os.makedirs(download_dir, mode=0o700, exist_ok=True)
 
     return download_dir

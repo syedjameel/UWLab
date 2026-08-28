@@ -288,3 +288,90 @@ def object_upward_velocity_bonus(
             max_unwanted_contact_force,
         ).float()
     )
+
+
+def axial_displacement_error_tanh(
+    env: ManagerBasedRLEnv,
+    std: float,
+    command_name: str,
+    asset_cfg: SceneEntityCfg,
+    align_asset_cfg: SceneEntityCfg,
+    receptive_object_cfg: SceneEntityCfg,
+    thumb_contact_name: str | list[str] | tuple[str, ...],
+    tip_contact_names: tuple[str, ...],
+    threshold: float = 1.0,
+) -> torch.Tensor:
+    """C4 seating-aware training, axial follow-up term (bead: C4 seating retrain, team-lead
+    diagnosis 2026-08-21). Contact-gated tanh reward on the object's AXIAL DISPLACEMENT FROM SPAWN,
+    projected onto the fixture's own LIVE insertion axis.
+
+    DISPLACEMENT, NOT DEPTH -- READ THIS BEFORE TOUCHING EITHER SIDE. This function and
+    ``generate_reset_states_policy.py``'s ``SeatedHeldWithProbe`` both get called "axial depth" in
+    conversation; they compute DIFFERENT quantities for different purposes and must not be
+    conflated or "unified":
+      * ``SeatedHeldWithProbe._decompose`` (the GENERATOR) computes ABSOLUTE depth below the bore
+        MOUTH -- it needs the engaged span (a CLI constant, not in any metadata.yaml) and BOTH
+        objects' ``assembled_offset`` (position AND orientation), read from metadata.yaml at
+        runtime, because it is a STRICT accept/reject gate over the whole 25mm engaged band.
+      * THIS function (the TRAINING reward) computes how far the object has moved along the bore
+        axis RELATIVE TO WHERE THIS EPISODE'S OWN SPAWN PUT IT -- i.e. ``axial_displacement_m``,
+        not ``depth_m``. It needs no metadata read and no engaged-span constant: only the fixture's
+        LIVE world orientation (already in this scene once ``DEXLIFT_PARTIAL_ASSEMBLY=1``) and the
+        SAME ``pos_err`` vector ``success_reward``/``rewards.c4_seating_hold`` already compute
+        against the goal-at-spawn command.
+    A future edit that tries to make these two share one implementation would either import
+    metadata-reading machinery a per-step training reward does not need, or quietly strip the
+    generator's strict absolute-depth gate down to a spawn-relative one -- keep them separate.
+
+    WHY THIS EXISTS, separate from ``rewards.c4_seating_hold`` (which reuses ``success_reward``
+    unmodified). Measured on the first C4 seating-retrain checkpoint: radial (lateral) error
+    converged to ~1.1mm while axial (insertion-depth) error stayed near 10mm -- final depth
+    independent of spawn depth (fit slope -0.21, R^2 0.08 across 10.4-20.8mm spawns). But
+    ``c4_seating_hold``'s ``pos_dist`` is a SINGLE ISOTROPIC 3D norm of the same ``pos_err``: at
+    pos_std=0.02 that checkpoint still collected ``(1-tanh(0.01006/0.02)) ~= 0.54`` of
+    ``c4_seating_hold``'s payout -- more than half -- while having pulled the leg roughly two-thirds
+    of the way out of a 25mm bore, because the ALREADY-SOLVED radial axis and the STILL-FAILING
+    axial axis share one scalar and one tolerance. A single isotropic term cannot give the failing
+    axis a tighter, more discriminating tolerance without also re-tightening the axis that is
+    already fine. This term targets axial error alone so it can be tuned against the failure
+    specifically, weighted independently, ADDED alongside (not replacing) ``c4_seating_hold``, which
+    keeps doing the radial/orientation job it is already doing well.
+
+    AXIS SOURCE, reused not re-derived: the fixture-local -Z ("deep", mouth -> further in) axis
+    convention is the SAME one ``SeatedHeldWithProbe._decompose`` uses (validated there by
+    reproducing the known partial-assembly spawn distribution). That class ports its own
+    quaternion-to-matrix math from scratch specifically to preserve ``c4_depth_decompose.py``'s
+    exact validated formula for a STRICT generation-time accept/reject gate -- reusing that
+    implementation here, in a per-step TRAINING shaping term, would import standalone helpers into
+    a module (``dexlift/mdp/rewards.py``) that already imports and uses ``isaaclab.utils.math``
+    everywhere else (``combine_frame_transforms``/``compute_pose_error``, both used two functions
+    up by ``success_reward``). This function rotates the SAME local axis with
+    ``math_utils.quat_apply`` instead -- the identical rotation, the module-idiomatic way to do it,
+    not a second uncoordinated implementation of the same math.
+
+    Contact-gated exactly like every other term here (``contacts()``, the same hard multiplicative
+    gate): a policy that never touches the leg scores exactly 0 from this term, same as it already
+    does from ``success``/``position_tracking``/``good_finger_contact``/``c4_seating_hold``.
+    """
+    asset: RigidObject = env.scene[asset_cfg.name]
+    object: RigidObject = env.scene[align_asset_cfg.name]
+    fixture: RigidObject = env.scene[receptive_object_cfg.name]
+    command = env.command_manager.get_command(command_name)
+    des_pos_w, des_quat_w = combine_frame_transforms(
+        asset.data.root_pos_w, asset.data.root_quat_w, command[:, :3], command[:, 3:7]
+    )
+    pos_err, _ = compute_pose_error(des_pos_w, des_quat_w, object.data.root_pos_w, object.data.root_quat_w)
+
+    # Fixture-local -Z ("deep") axis, rotated into world by the fixture's LIVE orientation -- same
+    # convention as SeatedHeldWithProbe._decompose's bore_deep_axis_world, via math_utils.quat_apply
+    # rather than that class's standalone port -- see this function's own "AXIS SOURCE" section.
+    local_deep_axis = torch.tensor([0.0, 0.0, -1.0], device=env.device).expand(env.num_envs, 3)
+    insertion_axis_world = math_utils.quat_apply(fixture.data.root_quat_w, local_deep_axis)
+    insertion_axis_world = insertion_axis_world / torch.linalg.norm(insertion_axis_world, dim=-1, keepdim=True)
+
+    # Signed displacement along the axis; abs() because both directions (further withdrawn OR
+    # driven deeper than spawn) are equally undesirable disturbance for this reward's purposes.
+    axial_displacement_m = (pos_err * insertion_axis_world).sum(dim=-1)
+    return (1 - torch.tanh(torch.abs(axial_displacement_m) / std)) * contacts(
+        env, threshold, thumb_contact_name, tip_contact_names
+    ).float()

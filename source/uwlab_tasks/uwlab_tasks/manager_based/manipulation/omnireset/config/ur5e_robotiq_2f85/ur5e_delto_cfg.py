@@ -53,6 +53,9 @@ camera on ``rl_dg_mount``) that nobody has done for this arm yet.
 
 from __future__ import annotations
 
+import os
+import pathlib
+
 from isaaclab.utils import configclass
 
 import uwlab_assets.robots.ur5e_delto as ur5e_delto
@@ -67,6 +70,7 @@ from .reset_states_cfg import (
     ObjectRestingEEGraspedResetStatesCfg,
 )
 from .rl_state_cfg import (
+    ThresholdCurriculumCfg,
     Ur5eRobotiq2f85RelCartesianOSCEvalCfg,
     Ur5eRobotiq2f85RelCartesianOSCFinetuneCfg,
     Ur5eRobotiq2f85RelCartesianOSCFinetuneEvalCfg,
@@ -85,6 +89,120 @@ from .rl_state_cfg import (
 _UR5E_DELTO_RESET_DIR = "./Datasets_ur5e_delto/OmniReset"
 
 # ---------------------------------------------------------------------------------------
+# GENERATION PLANT ALIGNMENT (bead UWLab-snuv follow-on)
+#
+# ``ur5e_delto.IMPLICIT_UR5E_DELTO`` / ``EXPLICIT_UR5E_DELTO`` -- what every class below spawns
+# via ``_apply_delto`` -- carry the ASSET DEFAULT hand collider set (23 sdf + 5 convexHull) and
+# the IDENTIFIED hand actuator (0.06-0.17 N.m / 3.0 rad/s). Every reset bank this project reads
+# under ``_UR5E_DELTO_RESET_DIR``, and the certified checkpoint (``ep_3600_rew_38.38917``), were
+# instead produced by dexlift's certified generation route, which unconditionally spawns
+# ``ur5e_delto_hullfix3.usd`` and the reference hand-actuator block (30 N.m / 10000 rad/s) -- see
+# ``uwlab_assets.robots.ur5e_delto.UR5E_DELTO_HULLFIX3_USD_NAME`` and
+# ``.REFERENCE_HAND_ACTUATOR_KWARGS`` for the full derivation and why the asset default cannot be
+# used as-is (a plain convexHull hand explodes the articulation at reset; the identified actuator
+# caps below the closing speed a policy commands and cannot close the hand at all).
+#
+# Every OmniReset UR5eDelto env below needs the SAME plant its training data was generated on, so
+# ``_apply_ur5e_delto_generation_plant`` is called once per class, right after ``_apply_delto``
+# sets ``cfg.scene.robot``. It is NOT folded into ``_apply_delto`` itself (delto_cfg.py): that
+# helper is shared with the UR10eDelto family -- a different, stronger-armed robot with its own
+# plant -- and rewriting it here would silently change that family's resolved robot too.
+# --------------------------------------------------------------------------------------------
+
+_LEGACY_PLANT_ENV_VAR = "OMNIRESET_UR5EDELTO_LEGACY_PLANT"
+"""Set to ``"1"`` to fall back to the asset-default identified-hand plant (sdf colliders, 0.06-
+0.17 N.m / 3.0 rad/s hand actuator) instead of the generation plant every held reset bank and the
+certified checkpoint were produced under. The way back, for anyone who needs to reproduce a
+pre-alignment run; default is the generation plant."""
+
+
+def _apply_ur5e_delto_generation_plant(cfg) -> None:
+    """Point ``cfg.scene.robot`` at the hullfix3 colliders and the reference hand actuator.
+
+    Call AFTER ``_apply_delto`` (which sets ``cfg.scene.robot``) and BEFORE
+    ``_assert_ur5e_delto_generation_plant`` (which verifies the result).
+
+    Both source values are IMPORTED from ``uwlab_assets.robots.ur5e_delto``, never retyped here:
+    see that module for the full derivation and for why dexlift's own generation route consumes
+    the exact same two constants.
+
+    Mutates only ``cfg.scene.robot``'s OWN ``.spawn``/``.actuators`` attributes, and rebinds
+    ``.actuators`` to a NEW dict before writing into it, so nothing here reaches back into the
+    shared ``IMPLICIT_UR5E_DELTO``/``EXPLICIT_UR5E_DELTO`` module-level objects or their shared
+    ``DELTO_HAND_ACTUATOR`` instance -- same defensive rebind-then-write pattern
+    ``Ur5eDeltoMixinCfg.__post_init__`` (dexlift) and ``DeltoGraspSamplingCfg.__post_init__``'s
+    sampler-local hand-stiffness block (delto_cfg.py) already use for this exact reason.
+    """
+    robot_cfg = cfg.scene.robot
+    if os.environ.get(_LEGACY_PLANT_ENV_VAR) == "1":
+        print(
+            f"[ur5e_delto] LEGACY plant ({_LEGACY_PLANT_ENV_VAR}=1): asset-default hand colliders"
+            " + identified hand actuator (0.06-0.17 N.m / 3.0 rad/s) -- NOT what any held reset"
+            " bank or the certified checkpoint was generated under.",
+            flush=True,
+        )
+        return
+
+    hullfix3_path = pathlib.Path(robot_cfg.spawn.usd_path).with_name(ur5e_delto.UR5E_DELTO_HULLFIX3_USD_NAME)
+    if not hullfix3_path.is_file():
+        raise FileNotFoundError(
+            f"{hullfix3_path} does not exist. Generate it with scratchpad/reauthor_hullfix.py"
+            " (dexlift), which verifies the saved layer by re-reading it. The OmniReset UR5eDelto"
+            f" generation plant requires this asset; set {_LEGACY_PLANT_ENV_VAR}=1 to fall back to"
+            " the asset-default identified-hand plant instead."
+        )
+    robot_cfg.spawn = robot_cfg.spawn.replace(usd_path=str(hullfix3_path))
+
+    robot_cfg.actuators = dict(robot_cfg.actuators)
+    robot_cfg.actuators["hand"] = robot_cfg.actuators["hand"].replace(**ur5e_delto.REFERENCE_HAND_ACTUATOR_KWARGS)
+
+    print(
+        "[ur5e_delto] generation plant: hullfix3 colliders (25 convexHull + 3 convexDecomposition,"
+        f" zero sdf) + reference hand actuator (30 N.m / 10000 rad/s) usd={hullfix3_path.name}",
+        flush=True,
+    )
+
+
+def _assert_ur5e_delto_generation_plant(cfg) -> None:
+    """Fail loudly at CONSTRUCTION if the resolved robot is not on the intended plant.
+
+    Call last in every UR5eDelto task config's ``__post_init__``, after every other mutation of
+    ``cfg.scene.robot`` in that chain -- so a future edit that reintroduces the asset-default
+    plant, reorders these calls, or adds a call site that forgets
+    ``_apply_ur5e_delto_generation_plant`` cannot reach training silently.
+
+    Raising HERE, at construction, is deliberate rather than incidental: in this codebase an
+    exception raised while an event term is lazily instantiated is SWALLOWED, ``term_cfg.func``
+    is left as the raw class, and the failure resurfaces at the first reset as a misleading
+    "unexpected keyword argument" error with no trace back to the actual cause. A guard that dies
+    quietly is worse than none.
+    """
+    if os.environ.get(_LEGACY_PLANT_ENV_VAR) == "1":
+        return
+
+    robot_cfg = cfg.scene.robot
+    usd_path = robot_cfg.spawn.usd_path
+    if not usd_path.endswith(ur5e_delto.UR5E_DELTO_HULLFIX3_USD_NAME):
+        raise RuntimeError(
+            f"{type(cfg).__name__}: robot spawn usd_path is {usd_path!r}, expected it to end with"
+            f" {ur5e_delto.UR5E_DELTO_HULLFIX3_USD_NAME!r}. The UR5eDelto generation plant was not"
+            " applied (or was overwritten after being applied) -- every held reset bank and the"
+            f" certified checkpoint were generated on hullfix3. Set {_LEGACY_PLANT_ENV_VAR}=1 if"
+            " the asset-default identified-hand plant is genuinely intended here."
+        )
+    hand = robot_cfg.actuators["hand"]
+    for key, expected in ur5e_delto.REFERENCE_HAND_ACTUATOR_KWARGS.items():
+        actual = getattr(hand, key)
+        if actual != expected:
+            raise RuntimeError(
+                f"{type(cfg).__name__}: hand actuator {key!r} is {actual!r}, expected {expected!r}"
+                " (the reference block every held reset bank and the certified checkpoint were"
+                f" generated under). Set {_LEGACY_PLANT_ENV_VAR}=1 if the identified hand actuator"
+                " is genuinely intended here."
+            )
+
+
+# ---------------------------------------------------------------------------------------
 # Reset states (full UR5e + DELTO hand)
 # ---------------------------------------------------------------------------------------
 @configclass
@@ -92,8 +210,10 @@ class Ur5eDeltoObjectAnywhereEEAnywhereResetStatesCfg(ObjectAnywhereEEAnywhereRe
     def __post_init__(self):
         super().__post_init__()
         _apply_delto(self, ur5e_delto.IMPLICIT_UR5E_DELTO, Ur5eDeltoRelativeOSCAction())
+        _apply_ur5e_delto_generation_plant(self)
         _apply_delto_collision_stack_size(self)
         _apply_delto_dataset_dir(self, _UR5E_DELTO_RESET_DIR)
+        _assert_ur5e_delto_generation_plant(self)
 
 
 @configclass
@@ -101,8 +221,10 @@ class Ur5eDeltoObjectRestingEEGraspedResetStatesCfg(ObjectRestingEEGraspedResetS
     def __post_init__(self):
         super().__post_init__()
         _apply_delto(self, ur5e_delto.IMPLICIT_UR5E_DELTO, Ur5eDeltoRelativeOSCAction())
+        _apply_ur5e_delto_generation_plant(self)
         _apply_delto_collision_stack_size(self)
         _apply_delto_dataset_dir(self, _UR5E_DELTO_RESET_DIR)
+        _assert_ur5e_delto_generation_plant(self)
 
 
 @configclass
@@ -110,8 +232,10 @@ class Ur5eDeltoObjectAnywhereEEGraspedResetStatesCfg(ObjectAnywhereEEGraspedRese
     def __post_init__(self):
         super().__post_init__()
         _apply_delto(self, ur5e_delto.IMPLICIT_UR5E_DELTO, Ur5eDeltoRelativeOSCAction())
+        _apply_ur5e_delto_generation_plant(self)
         _apply_delto_collision_stack_size(self)
         _apply_delto_dataset_dir(self, _UR5E_DELTO_RESET_DIR)
+        _assert_ur5e_delto_generation_plant(self)
 
 
 @configclass
@@ -119,8 +243,10 @@ class Ur5eDeltoObjectPartiallyAssembledEEAnywhereResetStatesCfg(ObjectPartiallyA
     def __post_init__(self):
         super().__post_init__()
         _apply_delto(self, ur5e_delto.IMPLICIT_UR5E_DELTO, Ur5eDeltoRelativeOSCAction())
+        _apply_ur5e_delto_generation_plant(self)
         _apply_delto_collision_stack_size(self)
         _apply_delto_dataset_dir(self, _UR5E_DELTO_RESET_DIR)
+        _assert_ur5e_delto_generation_plant(self)
 
 
 @configclass
@@ -128,8 +254,10 @@ class Ur5eDeltoObjectPartiallyAssembledEEGraspedResetStatesCfg(ObjectPartiallyAs
     def __post_init__(self):
         super().__post_init__()
         _apply_delto(self, ur5e_delto.IMPLICIT_UR5E_DELTO, Ur5eDeltoRelativeOSCAction())
+        _apply_ur5e_delto_generation_plant(self)
         _apply_delto_collision_stack_size(self)
         _apply_delto_dataset_dir(self, _UR5E_DELTO_RESET_DIR)
+        _assert_ur5e_delto_generation_plant(self)
 
 
 # ---------------------------------------------------------------------------------------
@@ -137,13 +265,27 @@ class Ur5eDeltoObjectPartiallyAssembledEEGraspedResetStatesCfg(ObjectPartiallyAs
 # ---------------------------------------------------------------------------------------
 @configclass
 class Ur5eDeltoRelCartesianOSCTrainCfg(Ur5eRobotiq2f85RelCartesianOSCTrainCfg):
-    """Stage 1 training: implicit actuator, no curriculum."""
+    """Stage 1 training: implicit actuator.
+
+    ``curriculum`` is ``ThresholdCurriculumCfg`` (rl_state_cfg.py), not the inherited base's
+    ``NoCurriculumsCfg`` -- this is the fix for the 465-iteration / 0.0000-success run on
+    ``OmniReset-UR5eDelto-RelCartesianOSC-State-v0``: the shipped success gate (0.0025 m /
+    0.025 rad) is unreachable from a cold start, and this term ramps it in from a loose starting
+    rung instead. The wired term is OFF BY DEFAULT (``enabled=False`` in ``ThresholdCurriculumCfg``),
+    so this class, default-constructed, is byte-equivalent in behaviour to before this change --
+    see ``ThresholdCurriculumCfg``'s docstring for the exact Hydra override string that turns it on
+    and picks a starting rung.
+    """
+
+    curriculum: ThresholdCurriculumCfg = ThresholdCurriculumCfg()
 
     def __post_init__(self):
         super().__post_init__()
         _apply_delto(self, ur5e_delto.IMPLICIT_UR5E_DELTO, Ur5eDeltoRelativeOSCAction())
+        _apply_ur5e_delto_generation_plant(self)
         _apply_delto_collision_stack_size(self)
         _apply_delto_dataset_dir(self, _UR5E_DELTO_RESET_DIR)
+        _assert_ur5e_delto_generation_plant(self)
 
 
 @configclass
@@ -160,8 +302,10 @@ class Ur5eDeltoRelCartesianOSCFinetuneCfg(Ur5eRobotiq2f85RelCartesianOSCFinetune
     def __post_init__(self):
         super().__post_init__()
         _apply_delto(self, ur5e_delto.EXPLICIT_UR5E_DELTO, Ur5eDeltoRelativeOSCAction())
+        _apply_ur5e_delto_generation_plant(self)
         _apply_delto_collision_stack_size(self)
         _apply_delto_dataset_dir(self, _UR5E_DELTO_RESET_DIR)
+        _assert_ur5e_delto_generation_plant(self)
 
 
 @configclass
@@ -171,8 +315,10 @@ class Ur5eDeltoRelCartesianOSCEvalCfg(Ur5eRobotiq2f85RelCartesianOSCEvalCfg):
     def __post_init__(self):
         super().__post_init__()
         _apply_delto(self, ur5e_delto.IMPLICIT_UR5E_DELTO, Ur5eDeltoRelativeOSCAction())
+        _apply_ur5e_delto_generation_plant(self)
         _apply_delto_collision_stack_size(self)
         _apply_delto_dataset_dir(self, _UR5E_DELTO_RESET_DIR)
+        _assert_ur5e_delto_generation_plant(self)
 
 
 @configclass
@@ -186,5 +332,7 @@ class Ur5eDeltoRelCartesianOSCFinetuneEvalCfg(Ur5eRobotiq2f85RelCartesianOSCFine
     def __post_init__(self):
         super().__post_init__()
         _apply_delto(self, ur5e_delto.EXPLICIT_UR5E_DELTO, Ur5eDeltoRelativeOSCEvalAction())
+        _apply_ur5e_delto_generation_plant(self)
         _apply_delto_collision_stack_size(self)
         _apply_delto_dataset_dir(self, _UR5E_DELTO_RESET_DIR)
+        _assert_ur5e_delto_generation_plant(self)

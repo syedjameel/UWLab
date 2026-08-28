@@ -70,6 +70,47 @@ parser.add_argument("--light-intensity", type=float, default=1000.0,
                     help="dome light intensity. reset_states_cfg ships 10000 while the TRAINING scene"
                          " (rl_state_cfg) uses 1000; 10x is what washed the frames out. Default matches"
                          " training, so the picture is in-domain as well as legible.")
+parser.add_argument("--json-out", type=Path, default=None,
+                    help="directory for one JSON sidecar per rendered state (defaults to --out).")
+parser.add_argument("--bore-seat", type=float, nargs=3, default=None,
+                    help="fixture-LOCAL point to aim the tight camera at -- the bore MOUTH for a"
+                         " miss-legibility view, or the fitted seat (render_partial_assemblies.py's"
+                         " assembled_offset.pos) for a fully-assembled reference. When given, adds a"
+                         " third TIGHT 'bore' view per state, aimed at this fixed point rather than"
+                         " at the object, so an off-axis leg reads as off-axis instead of being"
+                         " re-centred by the camera.")
+parser.add_argument("--engagement-json", type=Path, default=None,
+                    help="optional {state_idx: {lateral_mm, depth_mm, tilt_deg}} file of ALREADY-"
+                         " MEASURED bore-engagement numbers (not re-derived here) to burn onto the"
+                         " frames and copy into each state's JSON sidecar verbatim.")
+parser.add_argument("--radial-clearance-mm", type=float, default=0.912,
+                    help="bore radius minus leg pilot radius; lateral_mm below this (and depth in"
+                         " [0, --engaged-span-mm)) is the only way the tip is actually IN the bore.")
+parser.add_argument("--engaged-span-mm", type=float, default=25.0)
+parser.add_argument("--assembled-control", action="store_true",
+                    help="render ONE extra control frame first: the leg teleported to the pose the"
+                         " metadata calls fully assembled, composed through the production Offset"
+                         " class (never a hand-rolled inverse). Without this control a picture of a"
+                         " leg near a hole is ambiguous between 'the dataset does not seat it',"
+                         " 'the fixture has no usable hole', and 'the seat constant is wrong'; with"
+                         " it those are distinguishable. Mirrors render_partial_assemblies.py's own"
+                         " CONTROL 2. Requires --fixture-assembled-offset / --leg-tip-offset /"
+                         " --leg-tip-quat (defaults match OneLegInsertionFixture / leg200mm).")
+parser.add_argument("--fixture-assembled-offset", type=float, nargs=3, default=[-0.056250, 0.056250, -0.009374],
+                    help="fixture assembled_offset.pos -- the fitted bore SEAT (bottom), fixture-local."
+                         " Default is OneLegInsertionFixture/metadata.yaml's own value.")
+parser.add_argument("--leg-tip-offset", type=float, nargs=3, default=[-0.106203, 0.0, 0.0],
+                    help="leg assembled_offset.pos -- the TIP in the leg's own mesh frame.")
+parser.add_argument("--leg-tip-quat", type=float, nargs=4, default=[0.70710678, 0.0, 0.70710678, 0.0],
+                    help="leg assembled_offset.quat, (w,x,y,z). Only used by --assembled-control.")
+parser.add_argument("--macro-near-miss-idx", type=int, nargs="*", default=[],
+                    help="dataset indices (bank order) to render a 5th MACRO view for: top-down"
+                         " along the bore axis at --macro-standoff-m, arm parked out of frame. For"
+                         " the near-miss states specifically -- a 40mm miss is unambiguous in the"
+                         " regular tight view, but at ~1mm against ~0.9mm of clearance the regular"
+                         " tight view is legible only because of its burned-in caption, not on its"
+                         " own; this view exists to make the gap itself visible. Requires --bore-seat.")
+parser.add_argument("--macro-standoff-m", type=float, default=0.05)
 AppLauncher.add_app_launcher_args(parser)
 args, _ = parser.parse_known_args()
 args.headless = True
@@ -83,17 +124,47 @@ state = raw["initial_state"]
 obj_pose = torch.stack(state["rigid_object"]["insertive_object"]["root_pose"])  # (N, 7)
 n_total = obj_pose.shape[0]
 
-# Farthest-point sampling over object position+orientation, so the selection spans the dataset
-# instead of showing near-identical poses (evenly spaced indices demonstrably do that here).
-feat = obj_pose[:, :7].clone()
-sel = [int(torch.argmin(obj_pose[:, 2]).item())]  # start from the LOWEST state: the resting end
-for _ in range(min(args.count, n_total) - 1):
-    d = torch.cdist(feat, feat[sel]).min(dim=1).values
-    d[torch.tensor(sel)] = -1.0
-    sel.append(int(torch.argmax(d).item()))
+# RESTORE THE STORED PD TARGETS, WHEN THE BANK HAS THEM. write_joint_state_to_sim (below) sets q and
+# qdot only; it does not touch the actuators' PD targets, which is exactly the defect this re-render
+# exists to fix -- a state replayed with the target left at its post-reset default commands the hand
+# open regardless of what the state itself recorded. If the bank carries joint_position_target /
+# joint_velocity_target (written once the recorder was fixed to capture them), those are commanded
+# verbatim; otherwise this falls back to the recorded joint_position q, exactly like before, with a
+# one-line notice so a state without them is never silently mistaken for one that has them.
+_robot_state = state["articulation"]["robot"]
+HAS_STORED_TARGETS = "joint_position_target" in _robot_state and "joint_velocity_target" in _robot_state
+if HAS_STORED_TARGETS:
+    print("[view] bank carries joint_position_target/joint_velocity_target -- commanding STORED targets", flush=True)
+else:
+    print("[view] NOTICE: bank has no joint_position_target/joint_velocity_target -- "
+          "falling back to commanding the recorded joint_position q as the target", flush=True)
+
+if args.count >= n_total:
+    # RENDER ALL, IN BANK ORDER. Farthest-point sampling over a set no larger than the request would
+    # still end up including every index -- it would just reorder them -- so there is nothing to
+    # explain about selection bias here; skip it and keep the bank's own order legible in the output.
+    sel = list(range(n_total))
+    print(f"[view] {n_total} states; count >= n_total, rendering ALL in bank order (no selection)", flush=True)
+else:
+    # Farthest-point sampling over object position+orientation, so the selection spans the dataset
+    # instead of showing near-identical poses (evenly spaced indices demonstrably do that here).
+    feat = obj_pose[:, :7].clone()
+    sel = [int(torch.argmin(obj_pose[:, 2]).item())]  # start from the LOWEST state: the resting end
+    for _ in range(args.count - 1):
+        d = torch.cdist(feat, feat[sel]).min(dim=1).values
+        d[torch.tensor(sel)] = -1.0
+        sel.append(int(torch.argmax(d).item()))
+    print(f"[view] {n_total} states; selected {sel}", flush=True)
 heights = obj_pose[sel, 2]
-print(f"[view] {n_total} states; selected {sel}", flush=True)
 print(f"[view] selected heights (m): {[round(float(h), 4) for h in heights]}", flush=True)
+
+# ALREADY-MEASURED bore-engagement numbers (lateral/depth/tilt), keyed by state idx as a string.
+# NOT re-derived here -- see --engagement-json help. Burned onto frames and copied into the sidecar.
+ENGAGEMENT: dict[str, dict] = {}
+if args.engagement_json is not None:
+    import json as _json
+    ENGAGEMENT = _json.loads(args.engagement_json.read_text())
+    print(f"[view] loaded {len(ENGAGEMENT)} pre-measured engagement entries from {args.engagement_json}", flush=True)
 
 target = obj_pose[sel, :3].mean(dim=0).tolist()
 eye = [target[0] - 0.55, target[1] + 0.45, target[2] + 0.40]
@@ -104,10 +175,22 @@ app = AppLauncher(args).app
 print(f"[view] app up {time.time()-t0:.1f}s", flush=True)
 
 import gymnasium as gym  # noqa: E402
+import isaaclab.utils.math as math_utils  # noqa: E402
 import numpy as np  # noqa: E402
 import uwlab_tasks  # noqa: F401,E402
+from isaaclab.sensors import ContactSensorCfg  # noqa: E402
 from isaaclab_tasks.utils import parse_env_cfg  # noqa: E402
 from PIL import Image  # noqa: E402
+
+# REUSED, NOT REIMPLEMENTED: dexlift's own fingertip-force reducer and the exact gate
+# held_with_probe uses (mdp/held_check.py's defaults), so a verdict computed here means the same
+# thing a verdict computed by the training-side termination would mean.
+from uwlab_tasks.manager_based.manipulation.dexlift.mdp.rewards import _sensor_force_magnitudes  # noqa: E402
+
+FORCE_THRESHOLD = 0.2  # N, matches held_with_probe's default force_threshold
+THUMB_TIP_NAMES = ("rl_dg_1_tip", "rl_dg_5_tip")
+TIP_NAMES = ("rl_dg_2_tip", "rl_dg_3_tip", "rl_dg_4_tip")
+ALL_TIP_NAMES = THUMB_TIP_NAMES + TIP_NAMES
 
 cfg = parse_env_cfg(args.task, device=args.device, num_envs=1)
 
@@ -119,6 +202,36 @@ for term in args.drop_terminations:
 cfg.scene.insertive_object = cfg.variants["scene.insertive_object"][args.insertive_variant]
 cfg.scene.receptive_object = cfg.variants["scene.receptive_object"][args.receptive_variant]
 print(f"[view] variants: {args.insertive_variant} / {args.receptive_variant}", flush=True)
+
+# ADD FINGERTIP CONTACT SENSORS. Verified empirically (probe of this exact task/variant pair) that
+# the OmniReset scene registers ZERO ContactSensors -- env.scene.sensors is {} -- unlike dexlift,
+# whose scene wires one `{tip}_object_s` ContactSensorCfg per fingertip so `_sensor_force_magnitudes`
+# has something to read. This is not a scene rewrite: it is the SAME per-tip ContactSensorCfg pattern
+# dexlift's own env cfg uses (prim_path "{ENV_REGEX_NS}/Robot/gripper/{tip}", filtered to the
+# manipulated object), added here at render time so the reused reducer works unmodified. The robot
+# prim path ("{ENV_REGEX_NS}/Robot/gripper/...") and the object prim path
+# ("{ENV_REGEX_NS}/InsertiveObject") were both confirmed against the live USD stage for this task
+# before wiring this in, not assumed by analogy with dexlift's own (differently-named) "Object".
+for _tip in ALL_TIP_NAMES:
+    setattr(
+        cfg.scene,
+        f"{_tip}_object_s",
+        ContactSensorCfg(
+            prim_path=f"{{ENV_REGEX_NS}}/Robot/gripper/{_tip}",
+            filter_prim_paths_expr=["{ENV_REGEX_NS}/InsertiveObject"],
+        ),
+    )
+print(f"[view] added {len(ALL_TIP_NAMES)} fingertip ContactSensors (scene shipped none)", flush=True)
+
+# CONTACT REPORTER API. A ContactSensor needs PhysxContactReportAPI on the prims it reads, which
+# the shared ur5e_delto asset ships OFF by default (ur5e_delto.py:61) -- dexlift only gets working
+# fingertip sensors because its own env cfg flips this on for both the robot AND the manipulated
+# object (dexlift_ur5e_delto_env_cfg.py ~1150, table_leg_env_cfg.py:227). Mirrored here for the
+# same two bodies; without it every sensor added above raises "could not find any bodies with
+# contact reporter API" at gym.make (confirmed empirically).
+cfg.scene.robot.spawn = cfg.scene.robot.spawn.replace(activate_contact_sensors=True)
+cfg.scene.insertive_object.spawn = cfg.scene.insertive_object.spawn.replace(activate_contact_sensors=True)
+print("[view] activated contact-report API on robot + insertive_object spawns", flush=True)
 
 patched = 0
 for name, term in vars(cfg.events).items():
@@ -168,6 +281,49 @@ args.out.mkdir(parents=True, exist_ok=True)
 scene_obj = env.scene["insertive_object"]
 robot = env.scene["robot"]
 rows = []
+
+def _quat_apply_wxyz(q: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+    """(w,x,y,z) scalar-first, same helper and convention as render_partial_assemblies.py."""
+    u = q[..., 1:]
+    t = 2.0 * torch.cross(u, v, dim=-1)
+    return v + q[..., 0:1] * t + torch.cross(u, t, dim=-1)
+
+fixture = env.scene["receptive_object"] if "receptive_object" in env.scene.rigid_objects else None
+fx_pos = fx_quat = None
+if fixture is not None:
+    fx_pos = fixture.data.root_pos_w[0:1].clone()
+    fx_quat = fixture.data.root_quat_w[0:1].clone()
+
+SEAT_W = None
+if args.bore_seat is not None:
+    assert fixture is not None, "[view] REFUSING: --bore-seat given but no receptive_object in scene"
+    seat_local = torch.tensor(args.bore_seat, device=env.device).unsqueeze(0)
+    SEAT_W = (fx_pos + _quat_apply_wxyz(fx_quat, seat_local))[0].tolist()
+    print(f"[view] bore seat (fixture-local {args.bore_seat}) -> world {[round(v,4) for v in SEAT_W]}", flush=True)
+
+try:
+    from PIL import ImageDraw, ImageFont
+    _FONT = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 22)
+except Exception as _e:
+    _FONT = None
+    print(f"[view] WARNING: no truetype font for burn-in text ({_e}); frames will have no overlay", flush=True)
+
+
+def _burn_text(img: np.ndarray, lines: list[str]) -> np.ndarray:
+    """Burn text into the TOP-LEFT of a frame over a translucent bar, so a card viewer cannot miss
+    the numbers even if the downstream card-builder drops the JSON sidecar on the floor."""
+    if _FONT is None or not lines:
+        return img
+    pil = Image.fromarray(img).convert("RGB")
+    draw = ImageDraw.Draw(pil, "RGBA")
+    pad = 6
+    line_h = 26
+    w = max(draw.textlength(line, font=_FONT) for line in lines) + 2 * pad
+    h = line_h * len(lines) + 2 * pad
+    draw.rectangle([0, 0, w, h], fill=(0, 0, 0, 170))
+    for i, line in enumerate(lines):
+        draw.text((pad, pad + i * line_h), line, font=_FONT, fill=(255, 255, 80, 255))
+    return np.asarray(pil)
 def write_state(idx: int) -> None:
     """Write one stored state verbatim: robot root + all 26 joints + every rigid object pose."""
     robot.write_root_pose_to_sim(state["articulation"]["robot"]["root_pose"][idx].unsqueeze(0).to(env.device))
@@ -191,7 +347,13 @@ def write_state(idx: int) -> None:
     # controller HOLD the grasp, which is what the stored state actually represents.
     q = state["articulation"]["robot"]["joint_position"][idx].unsqueeze(0).to(env.device)
     if not args.no_hold_targets:
-        robot.set_joint_position_target(q)
+        if HAS_STORED_TARGETS:
+            pt = state["articulation"]["robot"]["joint_position_target"][idx].unsqueeze(0).to(env.device)
+            vt = state["articulation"]["robot"]["joint_velocity_target"][idx].unsqueeze(0).to(env.device)
+            robot.set_joint_position_target(pt)
+            robot.set_joint_velocity_target(vt)
+        else:
+            robot.set_joint_position_target(q)
     env.scene.write_data_to_sim()
     env.sim.forward()
 
@@ -218,6 +380,100 @@ def target_gap_rad() -> float:
     """Max |PD target - actual joint position| in rad, to prove the targets were really applied."""
     return float((robot.data.joint_pos_target - robot.data.joint_pos).abs().max().item())
 
+
+# PALM BODY + TABLE DATUM, for the reference in-palm offset and the airborne/supported height.
+_palm_ids, _ = robot.find_bodies(["rl_dg_mount"])
+assert len(_palm_ids) == 1, f"expected exactly one rl_dg_mount body, got {_palm_ids}"
+PALM_ID = _palm_ids[0]
+_table_support = env.scene["ur5_metal_support"]
+
+args.json_out = args.json_out or args.out
+args.json_out.mkdir(parents=True, exist_ok=True)
+
+import json  # noqa: E402
+
+# CONTROL: FULLY ASSEMBLED, through the production Offset class, never a hand-rolled inverse. This
+# is what makes the twelve dataset states readable -- a photo of a leg near a hole is ambiguous
+# between "the dataset does not seat it", "the fixture has no usable hole" and "the seat constant is
+# wrong"; this control collapses that ambiguity by showing the geometry DOES seat cleanly when
+# composed correctly. Mirrors render_partial_assemblies.py's own CONTROL 2 verbatim (same library
+# calls, same constants), rendered here so it sits on the same page as the twelve.
+if args.assembled_control:
+    assert fixture is not None, "[view] REFUSING: --assembled-control needs receptive_object in scene"
+    from uwlab_tasks.manager_based.manipulation.omnireset.assembly_keypoints import Offset  # noqa: E402
+
+    # PARK THE ARM. The subject of this control is the leg/fixture geometry alone; the robot is
+    # still wherever env.reset() put it (an EE-anywhere-shaped pose here, since no write_state() has
+    # run yet), and it lands squarely between the camera and the bore on this rig -- confirmed by a
+    # first attempt at this frame, which rendered the hand fully occluding the leg. Fold to the
+    # default posture and re-command the target so it does not un-fold before the shot (same fix
+    # render_partial_assemblies.py's own --hide-robot applies for the identical reason).
+    _q0 = robot.data.default_joint_pos.clone()
+    robot.write_joint_state_to_sim(_q0, torch.zeros_like(_q0))
+    robot.set_joint_position_target(_q0)
+    env.scene.write_data_to_sim()
+    env.sim.forward()
+    print("[view] parked the arm at its default posture for the control frame", flush=True)
+
+    LEG_TIP = torch.tensor(args.leg_tip_offset, device=env.device)
+    fixture_off = Offset(pos=tuple(args.fixture_assembled_offset), quat=(1.0, 0.0, 0.0, 0.0))
+    leg_off = Offset(pos=tuple(args.leg_tip_offset), quat=tuple(args.leg_tip_quat))
+    tgt_pos, tgt_quat = fixture_off.combine(fx_pos, fx_quat)
+    asm_pos, asm_quat = leg_off.subtract(tgt_pos, tgt_quat)
+    scene_obj.write_root_pose_to_sim(torch.cat([asm_pos, asm_quat], dim=-1))
+    scene_obj.write_root_velocity_to_sim(torch.zeros((1, 6), device=env.device))
+    env.scene.write_data_to_sim()
+    env.sim.forward()
+
+    # Re-derive from what the simulator now HOLDS, not from the pre-Isaac arithmetic -- if the two
+    # disagree, the composition is wrong and the picture would be lying.
+    tip_w = scene_obj.data.root_pos_w[0:1] + _quat_apply_wxyz(scene_obj.data.root_quat_w[0:1], LEG_TIP.unsqueeze(0))
+    fseat_local = torch.tensor(args.fixture_assembled_offset, device=env.device).unsqueeze(0)
+    fseat_w = fx_pos + _quat_apply_wxyz(fx_quat, fseat_local)
+    c_dxy_mm = float(torch.linalg.norm((tip_w - fseat_w)[0, :2]).item()) * 1000.0
+    c_dz_mm = float((tip_w - fseat_w)[0, 2].item()) * 1000.0  # height above the SEAT (0 = fully seated)
+    c_axis = _quat_apply_wxyz(scene_obj.data.root_quat_w[0:1], torch.tensor([[-1.0, 0.0, 0.0]], device=env.device))
+    c_tilt = float(torch.rad2deg(torch.arccos((-c_axis[0, 2]).clamp(-1.0, 1.0))).item())
+    # depth-below-MOUTH convention, to match the twelve dataset cards: mouth is engaged_span_mm ABOVE
+    # the seat, so a leg exactly at the seat (c_dz_mm == 0) sits engaged_span_mm below the mouth.
+    c_depth_below_mouth_mm = args.engaged_span_mm - c_dz_mm
+
+    obj_now = scene_obj.data.root_pos_w[0].tolist()
+    control_views = {"front": ([1.0770121, -0.1679045, 0.4486344], obj_now)}
+    if SEAT_W is not None:
+        control_views["bore"] = ([SEAT_W[0] + 0.20, SEAT_W[1] - 0.17, SEAT_W[2] + 0.09], list(SEAT_W))
+    burn = [
+        "CONTROL: FULLY ASSEMBLED (production Offset composition)",
+        f"lateral {c_dxy_mm:.4f} mm  above-seat {c_dz_mm:.4f} mm  tilt {c_tilt:.4f} deg",
+        f"(depth below mouth {c_depth_below_mouth_mm:.2f} mm)",
+    ]
+    stem = f"control_assembled_dxy{c_dxy_mm:.4f}mm_dz{c_dz_mm:.4f}mm_tilt{c_tilt:.4f}deg"
+    for vname, (veye, vtarget) in control_views.items():
+        env.sim.set_camera_view(tuple(veye), tuple(vtarget))
+        env.sim.render()
+        img = np.asarray(env.render())[:, :, :3]
+        Image.fromarray(_burn_text(img, burn)).save(args.out / f"{stem}_{vname}.png")
+    with open(args.json_out / f"{stem}.json", "w") as f:
+        json.dump(
+            {
+                "kind": "assembled_control",
+                "lateral_mm": c_dxy_mm,
+                "above_seat_mm": c_dz_mm,
+                "depth_below_mouth_mm": c_depth_below_mouth_mm,
+                "tilt_deg": c_tilt,
+                "fixture_assembled_offset_local": args.fixture_assembled_offset,
+                "leg_tip_offset_local": args.leg_tip_offset,
+                "leg_tip_quat_wxyz": args.leg_tip_quat,
+                "png_stem": stem,
+            },
+            f,
+            indent=2,
+        )
+    print(f"[view] CONTROL fully-assembled: lateral={c_dxy_mm:.4f}mm above_seat={c_dz_mm:.4f}mm "
+          f"tilt={c_tilt:.4f}deg (depth below mouth {c_depth_below_mouth_mm:.2f}mm)", flush=True)
+    if c_dxy_mm > 0.1 or abs(c_dz_mm) > 0.1 or c_tilt > 0.05:
+        print("[view] WARNING: the assembled control does NOT land on its own seat within 0.1mm/0.05deg"
+              " -- the metadata offsets or the Offset algebra disagree with each other", flush=True)
 
 for ordinal, idx in enumerate(sel, start=1):
     # REPEAT THE SETTLE. PhysX runs on GPU with no seed set, so one settle of one state is a single
@@ -263,27 +519,221 @@ for ordinal, idx in enumerate(sel, start=1):
         "front": ([1.0770121, -0.1679045, 0.4486344], obj_now),
         "3q": ([obj_now[0] - dist, obj_now[1] + dist * 0.8, obj_now[2] + dist * 0.55], obj_now),
     }
+    seat_w_state = None
+    if SEAT_W is not None:
+        # RECOMPUTE THE SEAT PER STATE, FROM THE LIVE FIXTURE POSE. write_state(idx) just wrote
+        # THIS state's own stored receptive_object pose (this bank's fixture placement varies
+        # noticeably across states -- confirmed by inspecting the raw tensor, X spans roughly
+        # 0.29-0.59 m), so the pre-loop SEAT_W computed once from the post-reset() fixture pose is
+        # stale for every state whose fixture moved since then. At the wide ~0.27 m 'bore' standoff
+        # a stale-by-a-few-cm seat still kept the tray in frame, which is exactly how this bug hid
+        # through the first visual QA pass; at a tight macro standoff it missed the fixture entirely
+        # (caught by looking at the frame, not by trusting the numbers -- same lesson as the control
+        # frame's arm occlusion). Recomputed fresh here from env.scene["receptive_object"] every
+        # iteration fixes both the 'bore' view and the macro view identically.
+        fx_pos_state = fixture.data.root_pos_w[0:1].clone()
+        fx_quat_state = fixture.data.root_quat_w[0:1].clone()
+        seat_local = torch.tensor(args.bore_seat, device=env.device).unsqueeze(0)
+        seat_w_state = (fx_pos_state + _quat_apply_wxyz(fx_quat_state, seat_local))[0].tolist()
+        # TIGHT, aimed at the FITTED BORE AXIS, not at the object -- so a leg that misses the hole
+        # reads as off-centre instead of being re-centred by the camera (same principle
+        # render_partial_assemblies.py's own "bore" view uses). Distance is wider than that script's
+        # tuned constants (~0.18 m) because this bank's worst misses run to 40 mm laterally and a
+        # tighter frame would crop the leg tip out on exactly the states most worth seeing.
+        views["bore"] = (
+            [seat_w_state[0] + 0.20, seat_w_state[1] - 0.17, seat_w_state[2] + 0.09],
+            list(seat_w_state),
+        )
     frames = {}
     for vname, (veye, vtarget) in views.items():
         env.sim.set_camera_view(tuple(veye), tuple(vtarget))
         env.sim.render()
         frames[vname] = np.asarray(env.render())[:, :, :3]
 
-    # Verdict from the MEDIAN of the repeats, and the range is printed beside it so a
-    # borderline call is visibly borderline rather than silently rounded to a label.
-    verdict = "HELD" if drift_mm < 10.0 else ("SLIPPED" if drift_mm < 50.0 else "DROPPED")
-    stem = f"state{ordinal:02d}_idx{idx}_z{z_stored:.3f}m_drift{drift_mm:06.1f}mm_{verdict}"
-    for vname, img in frames.items():
-        Image.fromarray(img).save(args.out / f"{stem}_{vname}.png")
-    fn = args.out / f"{stem}_3q.png"
-    rows.append((ordinal, idx, z_stored, drift_mm, drift_lo, drift_hi, verdict))
-    print(f"[view] state {ordinal}/{len(sel)} idx={idx} z_stored={z_stored:.4f} drift median={drift_mm:.1f}mm range=[{drift_lo:.1f},{drift_hi:.1f}] n={len(drifts)} target_gap={gap:.3f}rad {verdict}", flush=True)
+    # VERDICT FROM FINGERTIP CONTACT NORMAL FORCE, NOT FROM DISPLACEMENT. A leg lying flat on the
+    # table satisfies "didn't move much over a settle" whether or not the hand is gripping it, so
+    # the old drift-based HELD/SLIPPED/DROPPED label carried no information about the grasp and is
+    # not reproduced here. Read AFTER the last repeat's settle, at the same simulation instant drift
+    # was measured at, using the SAME reducer and SAME 0.2 N gate held_with_probe itself uses.
+    thumb_force = _sensor_force_magnitudes(env, THUMB_TIP_NAMES)[0]  # (2,)
+    tip_force = _sensor_force_magnitudes(env, TIP_NAMES)[0]  # (3,)
+    all_force = {**dict(zip(THUMB_TIP_NAMES, thumb_force.tolist())), **dict(zip(TIP_NAMES, tip_force.tolist()))}
+    thumb_loaded = [n for n in THUMB_TIP_NAMES if all_force[n] > FORCE_THRESHOLD]
+    tip_loaded = [n for n in TIP_NAMES if all_force[n] > FORCE_THRESHOLD]
+    n_loaded = len(thumb_loaded) + len(tip_loaded)
+    opposed = bool(thumb_loaded) and bool(tip_loaded)
+    if opposed:
+        contact_verdict = "OPPOSED"
+    elif n_loaded > 0:
+        contact_verdict = "CONTACT_NO_OPPOSITION"
+    else:
+        contact_verdict = "NO_CONTACT"
 
-print("\n[view] SUMMARY  (drift = object displacement over real physics settle)", flush=True)
-for ordinal, idx, z, d, lo, hi, v in rows:
-    print(f"  state {ordinal:2d}  idx {idx:5d}  z {z:7.4f} m  drift {d:8.1f} mm  [{lo:7.1f},{hi:7.1f}]  {v}", flush=True)
-held = sum(1 for r in rows if r[6] == "HELD")
-print(f"[view] HELD {held}/{len(rows)}  frames in {args.out}", flush=True)
+    # OBJECT HEIGHT ABOVE THE TABLE DATUM (ur5_metal_support root z), so airborne vs supported is
+    # legible on the card without eyeballing the render.
+    table_datum_z = float(_table_support.data.root_pos_w[0, 2].item())
+    height_above_table_m = z_after - table_datum_z
+    supported = height_above_table_m < 0.01  # resting on/near the support surface
+
+    # REFERENCE-ONLY in-palm offset (object pose in the rl_dg_mount frame). NOT a hold verdict --
+    # a leg can sit at a stable in-palm offset while resting on the table just as well as while
+    # actually held; it is reported purely as a positional reference alongside the contact verdict.
+    p_palm = robot.data.body_pos_w[0:1, PALM_ID]
+    q_palm = robot.data.body_quat_w[0:1, PALM_ID]
+    obj_in_palm, _ = math_utils.subtract_frame_transforms(
+        p_palm, q_palm, scene_obj.data.root_pos_w[0:1], scene_obj.data.root_quat_w[0:1]
+    )
+    obj_in_palm = obj_in_palm[0].tolist()
+
+    # ALREADY-MEASURED bore engagement (lateral/depth/tilt), when supplied -- copied verbatim, not
+    # recomputed. IN/NOT-IN-bore is the same threshold render_partial_assemblies.py uses: lateral
+    # under the radial clearance AND depth within the engaged span.
+    eng = ENGAGEMENT.get(str(idx))
+    in_bore = None
+    eng_stem_bit = ""
+    if eng is not None:
+        in_bore = (eng["lateral_mm"] < args.radial_clearance_mm) and (0.0 <= eng["depth_mm"] < args.engaged_span_mm)
+        eng_stem_bit = f"_dxy{eng['lateral_mm']:.1f}mm_dz{eng['depth_mm']:.1f}mm_tilt{eng['tilt_deg']:.1f}deg"
+
+    stem = f"state{ordinal:02d}_idx{idx}_z{z_stored:.3f}m_{contact_verdict}{eng_stem_bit}"
+    loaded_names = thumb_loaded + tip_loaded
+    tips_line = ("tips>%.1fN: " % FORCE_THRESHOLD) + (
+        ", ".join(f"{n}({all_force[n]:.2f}N)" for n in loaded_names) if loaded_names else "none"
+    )
+    # TARGET-RESTORATION STATUS, ON EVERY CARD. The difference between "this state has a weak grip"
+    # and "we could not command its grip" is exactly whether the bank carried stored PD targets --
+    # burned in rather than left to a JSON field nobody reads, because it changes how every other
+    # number on the card should be interpreted.
+    target_line = (
+        "PD target: STORED (restored)" if HAS_STORED_TARGETS
+        else "PD target: NOT STORED -- fell back to target:=q"
+    )
+    burn_lines = [
+        f"idx {idx}  {contact_verdict}",
+        tips_line,
+        f"height above table {height_above_table_m * 1000:.1f} mm  "
+        f"({'SUPPORTED' if supported else 'AIRBORNE'})",
+        f"in-palm offset (REFERENCE ONLY): "
+        f"[{obj_in_palm[0]*1000:.1f}, {obj_in_palm[1]*1000:.1f}, {obj_in_palm[2]*1000:.1f}] mm",
+        target_line,
+    ]
+    if eng is not None:
+        burn_lines += [
+            f"lateral {eng['lateral_mm']:.2f} mm  (clearance {args.radial_clearance_mm:.3f} mm)",
+            f"depth below mouth {eng['depth_mm']:.2f} mm   tilt {eng['tilt_deg']:.2f} deg",
+            "IN BORE" if in_bore else "NOT IN BORE",
+        ]
+    for vname, img in frames.items():
+        Image.fromarray(_burn_text(img, burn_lines)).save(args.out / f"{stem}_{vname}.png")
+
+    # MACRO NEAR-MISS VIEW, for the states named explicitly. The regular 'bore' view is legible for
+    # a 40 mm miss without help; at ~1 mm against ~0.9 mm of clearance it is legible only because of
+    # the burned-in caption, which is a caption with a picture attached, not a picture. This view is
+    # meant to make the gap itself visible: straight down the fitted bore axis at a ~5 cm standoff,
+    # arm parked (a stray finger fills the frame at this range otherwise -- confirmed by the same
+    # occlusion the control frame hit before it was parked).
+    has_macro = idx in args.macro_near_miss_idx
+    if has_macro:
+        assert seat_w_state is not None, "[view] REFUSING: --macro-near-miss-idx given but no --bore-seat"
+        _q0 = robot.data.default_joint_pos.clone()
+        robot.write_joint_state_to_sim(_q0, torch.zeros_like(_q0))
+        robot.set_joint_position_target(_q0)
+        env.scene.write_data_to_sim()
+        env.sim.forward()
+        # SAME OBLIQUE DIRECTION AS THE 'bore' VIEW, SCALED DOWN -- not pure top-down. A first
+        # attempt straight down the axis found a genuinely dark, hard-to-read frame: a narrow bore
+        # gets little direct light from a diffuse dome source when viewed along its own axis, so the
+        # cavity the miss needs to be legible against is exactly the part that goes black. The
+        # 'bore' view's oblique offset is already known-legible (checked visually on all 12 states
+        # in the prior render); reusing its direction at macro-standoff magnitude keeps that
+        # lighting behaviour while closing the distance.
+        _bore_dir = torch.tensor([0.20, -0.17, 0.02])
+        _bore_dir = (_bore_dir / _bore_dir.norm() * args.macro_standoff_m).tolist()
+        macro_eye = (seat_w_state[0] + _bore_dir[0], seat_w_state[1] + _bore_dir[1], seat_w_state[2] + _bore_dir[2])
+        env.sim.set_camera_view(macro_eye, tuple(seat_w_state))
+        env.sim.render()
+        macro_img = np.asarray(env.render())[:, :, :3]
+        macro_stem = f"{stem}_macro"
+        Image.fromarray(_burn_text(macro_img, burn_lines + ["MACRO: top-down on bore axis, arm parked"])).save(
+            args.out / f"{macro_stem}.png"
+        )
+        print(f"[view]   + macro top-down view for idx={idx} (lateral {eng['lateral_mm'] if eng else '?'} mm)",
+              flush=True)
+
+    rows.append((ordinal, idx, z_stored, drift_mm, drift_lo, drift_hi, contact_verdict, n_loaded, opposed, supported))
+    print(
+        f"[view] state {ordinal}/{len(sel)} idx={idx} z_stored={z_stored:.4f} "
+        f"drift median={drift_mm:.1f}mm range=[{drift_lo:.1f},{drift_hi:.1f}] n={len(drifts)} "
+        f"target_gap={gap:.3f}rad tips_loaded={n_loaded}/5 forces={{"
+        + ", ".join(f"{k}:{v:.3f}N" for k, v in all_force.items())
+        + f"}} {contact_verdict} height_above_table={height_above_table_m*1000:.1f}mm "
+        f"{'SUPPORTED' if supported else 'AIRBORNE'}",
+        flush=True,
+    )
+
+    with open(args.json_out / f"{stem}.json", "w") as f:
+        json.dump(
+            {
+                "ordinal": ordinal,
+                "idx": idx,
+                "z_stored_m": z_stored,
+                "z_after_settle_m": z_after,
+                "drift_mm_median": drift_mm,
+                "drift_mm_range": [drift_lo, drift_hi],
+                "drift_n_repeats": len(drifts),
+                "target_gap_rad_max": gap,
+                "has_stored_targets": HAS_STORED_TARGETS,
+                "fingertip_force_N": all_force,
+                "force_threshold_N": FORCE_THRESHOLD,
+                "thumb_tip_names": list(THUMB_TIP_NAMES),
+                "tip_names": list(TIP_NAMES),
+                "thumb_loaded": thumb_loaded,
+                "tip_loaded": tip_loaded,
+                "n_tips_loaded": n_loaded,
+                "opposed": opposed,
+                "contact_verdict": contact_verdict,
+                "table_datum_z_m": table_datum_z,
+                "height_above_table_m": height_above_table_m,
+                "supported": supported,
+                "in_palm_offset_m_REFERENCE_ONLY": obj_in_palm,
+                "bore_engagement_PREMEASURED_NOT_RECOMPUTED": eng,
+                "bore_in_bore": in_bore,
+                "radial_clearance_mm": args.radial_clearance_mm,
+                "engaged_span_mm": args.engaged_span_mm,
+                "png_stem": stem,
+                "has_macro_view": has_macro,
+                "macro_png_stem": (f"{stem}_macro" if has_macro else None),
+            },
+            f,
+            indent=2,
+        )
+
+print("\n[view] SUMMARY  (contact_verdict from fingertip normal force, NOT displacement)", flush=True)
+for ordinal, idx, z, d, lo, hi, v, n_loaded, opposed, supported in rows:
+    print(
+        f"  state {ordinal:2d}  idx {idx:5d}  z {z:7.4f} m  drift {d:8.1f} mm  [{lo:7.1f},{hi:7.1f}]  "
+        f"{v:22s}  tips_loaded={n_loaded}/5  opposed={opposed}  {'SUPPORTED' if supported else 'AIRBORNE'}",
+        flush=True,
+    )
+opposed_n = sum(1 for r in rows if r[6] == "OPPOSED")
+contact_n = sum(1 for r in rows if r[6] == "CONTACT_NO_OPPOSITION")
+none_n = sum(1 for r in rows if r[6] == "NO_CONTACT")
+airborne_n = sum(1 for r in rows if not r[9])
+print(
+    f"[view] OPPOSED {opposed_n}/{len(rows)}  CONTACT_NO_OPPOSITION {contact_n}/{len(rows)}  "
+    f"NO_CONTACT {none_n}/{len(rows)}  AIRBORNE {airborne_n}/{len(rows)}  frames in {args.out}  "
+    f"json in {args.json_out}",
+    flush=True,
+)
+if ENGAGEMENT:
+    n_in_bore = sum(
+        1 for idx in [r[1] for r in rows]
+        if str(idx) in ENGAGEMENT
+        and ENGAGEMENT[str(idx)]["lateral_mm"] < args.radial_clearance_mm
+        and 0.0 <= ENGAGEMENT[str(idx)]["depth_mm"] < args.engaged_span_mm
+    )
+    print(f"[view] IN BORE {n_in_bore}/{len(rows)}  (pre-measured, radial clearance "
+          f"{args.radial_clearance_mm} mm, engaged span {args.engaged_span_mm} mm)", flush=True)
 print("[view] RENDER_OK", flush=True)
 
 # EXIT HARD. Isaac's shutdown path hangs on this codebase routinely -- both processes in the

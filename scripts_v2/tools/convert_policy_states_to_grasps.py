@@ -164,12 +164,33 @@ def main() -> None:
     print(f"[convert] loading recorded states: {args_cli.states_pt}", flush=True)
     states = torch.load(args_cli.states_pt, map_location="cpu", weights_only=False)
     robot_state = states["initial_state"]["articulation"]["robot"]
-    object_state = states["initial_state"]["rigid_object"]["object"]
+    # Accept either key. "object" is the raw, never-rekeyed dexlift-scene name this script
+    # originally assumed; every copy of resets_ObjectAnywhereEEGrasped.pt actually on disk as of
+    # 2026-08-20 (live, staged, and the pre-Task-1 backup) has already been rekeyed to
+    # "insertive_object" (rekey_dexlift_reset_states.py step 1) -- the raw "object"-keyed dump this
+    # script's own docstring was verified against no longer survives anywhere in this tree. Per
+    # that same rekey script's docstring, the rename is "pure key rename, no coordinate transform
+    # -- both names refer to the same physical body in the same frame convention", so reading
+    # either key here is safe and does not change any of the FRAME/PROVENANCE claims documented
+    # above.
+    rigid_object_state = states["initial_state"]["rigid_object"]
+    object_state = rigid_object_state.get("object", rigid_object_state.get("insertive_object"))
+    if object_state is None:
+        raise KeyError(
+            f"Neither 'object' nor 'insertive_object' found in rigid_object keys "
+            f"{sorted(rigid_object_state.keys())} of {args_cli.states_pt!r}."
+        )
     n_episodes = len(robot_state["root_pose"])
     print(f"[convert] {n_episodes} recorded episodes", flush=True)
 
     env_cfg = parse_env_cfg(args_cli.task, device=args_cli.device, num_envs=min(args_cli.num_envs, n_episodes))
-    env_cfg.sim.physx.gpu_collision_stack_size = 2**24
+    # Bumped 2**24 -> 2**28 (16 MiB -> 256 MiB) for local single-GPU runs (16 GB 4070 Ti SUPER, not
+    # the A6000 this script was originally verified on): PxgCudaDeviceMemoryAllocator failed to
+    # allocate exactly 268435456 bytes (256 MiB) at scene creation with the old 16 MiB stack and
+    # --num_envs 300 on this card, matching the standing guidance for small-env inspection runs on
+    # this box (the inherited-default 3.75 GiB sizing is for thousands of envs and also fails, just
+    # the other direction -- too small vs too big, both wrong for a few-hundred-env batch here).
+    env_cfg.sim.physx.gpu_collision_stack_size = 2**28
     env_cfg.seed = None
     env = gym.make(args_cli.task, cfg=env_cfg).unwrapped
     env.reset()

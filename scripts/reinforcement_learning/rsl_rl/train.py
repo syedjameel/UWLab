@@ -100,6 +100,7 @@ from isaaclab.utils.io import dump_yaml
 from isaaclab_rl.rsl_rl import RslRlBaseRunnerCfg, RslRlVecEnvWrapper
 
 import isaaclab_tasks  # noqa: F401
+import uwlab_assets  # noqa: F401
 import uwlab_tasks  # noqa: F401
 from isaaclab.utils.assets import retrieve_file_path
 from isaaclab_tasks.utils import get_checkpoint_path
@@ -107,6 +108,32 @@ from uwlab_tasks.utils.hydra import hydra_task_config
 
 # import logger
 logger = logging.getLogger(__name__)
+
+# PROOF-OF-TREE (bead UWLab-snuv.6): env_uwlab's editable install of uwlab_tasks resolves via
+# sys.meta_path finders, which Python checks LAST -- a real "source/uwlab_tasks" directory
+# earlier in sys.path (this launch command's own PYTHONPATH prefix) shadows it correctly. But
+# that makes the PYTHONPATH prefix LOAD-BEARING rather than belt-and-braces: on this box,
+# env_uwlab's editable install actually points at a DIFFERENT branch's worktree
+# (.claude/worktrees/gripper-integration), so a launch missing or mis-ordering that prefix would
+# silently train the wrong branch's code with no error -- only a wrong result days later. Assert
+# against sys.path itself (the "source/uwlab_tasks" entry this launch command's own PYTHONPATH
+# put there), not a hardcoded worktree name, so the check travels correctly to a different box
+# (e.g. a rented instance) with a different repo path.
+for _pkg, _mod in (("uwlab_tasks", uwlab_tasks), ("uwlab_assets", uwlab_assets)):
+    _expected_prefix = next((p for p in sys.path if p.rstrip("/").endswith(f"source/{_pkg}")), None)
+    print(f"[PROOF-OF-TREE] {_pkg}.__file__ = {_mod.__file__}", flush=True)
+    if _expected_prefix is None:
+        raise RuntimeError(
+            f"[PROOF-OF-TREE] No 'source/{_pkg}' entry found on sys.path -- PYTHONPATH is missing"
+            f" the prefix this launch command requires. sys.path[:5]={sys.path[:5]}"
+        )
+    if not os.path.abspath(_mod.__file__).startswith(os.path.abspath(_expected_prefix)):
+        raise RuntimeError(
+            f"[PROOF-OF-TREE] {_pkg} resolved OUTSIDE the intended tree -- editable-install"
+            f" shadowing failed. Expected under {_expected_prefix!r}, got {_mod.__file__!r}. This"
+            " launch would silently train the wrong branch's code; aborting instead."
+        )
+    print(f"[PROOF-OF-TREE] {_pkg} OK -- under {_expected_prefix}", flush=True)
 
 # PLACEHOLDER: Extension template (do not remove this comment)
 
@@ -175,6 +202,44 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     # create isaac environment
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
+
+    # PLANT-VERIFY (bead UWLab-snuv.6): second line of defence behind
+    # ur5e_delto_cfg.py's own _assert_ur5e_delto_generation_plant, which checks cfg.scene.robot
+    # (the CONFIG) at construction time, before gym.make. This reads the CONSTRUCTED articulation
+    # instead -- env.scene["robot"] and its live ActuatorBase objects -- so the two checks can
+    # disagree if something mutates the plant between cfg construction and the actual sim build;
+    # if they ever do, that disagreement is itself a finding, not a bug in this check. Every held
+    # reset bank and the certified checkpoint for this arm/hand were generated on hullfix3 colliders
+    # + the reference hand actuator (30.0 N.m / 10000.0 rad/s) -- see uwlab_assets.robots.ur5e_delto
+    # for the full derivation. Scoped to UR5eDelto task ids only: this script also launches every
+    # other OmniReset/DexLift variant, none of which carry this plant or these constants.
+    if "UR5eDelto" in args_cli.task and os.environ.get("OMNIRESET_UR5EDELTO_LEGACY_PLANT") != "1":
+        _plant_robot = env.unwrapped.scene["robot"]
+        _plant_usd_path = _plant_robot.cfg.spawn.usd_path
+        print(f"[PLANT-VERIFY] robot usd_path = {_plant_usd_path}", flush=True)
+        if not _plant_usd_path.endswith("ur5e_delto_hullfix3.usd"):
+            raise RuntimeError(
+                f"[PLANT-VERIFY] robot usd_path is {_plant_usd_path!r}, expected it to end with"
+                " 'ur5e_delto_hullfix3.usd'. This disagrees with (or was never reached by)"
+                " ur5e_delto_cfg.py's own _assert_ur5e_delto_generation_plant -- do not trust this"
+                " run's data."
+            )
+        _plant_hand = _plant_robot.actuators["hand"]
+        _plant_effort = sorted(set(_plant_hand.effort_limit_sim.unique().tolist()))
+        _plant_velocity = sorted(set(_plant_hand.velocity_limit_sim.unique().tolist()))
+        print(
+            f"[PLANT-VERIFY] hand actuator (constructed): effort_limit_sim={_plant_effort}"
+            f" velocity_limit_sim={_plant_velocity}  (expect [30.0] / [10000.0])",
+            flush=True,
+        )
+        if _plant_effort != [30.0] or _plant_velocity != [10000.0]:
+            raise RuntimeError(
+                f"[PLANT-VERIFY] constructed hand actuator is effort_limit_sim={_plant_effort}"
+                f" velocity_limit_sim={_plant_velocity}, expected [30.0] / [10000.0] (the reference"
+                " block every held reset bank and the certified checkpoint were generated under)."
+                " Do not trust this run's data."
+            )
+        print("[PLANT-VERIFY] OK -- constructed articulation matches the generation plant.", flush=True)
 
     # convert to single-agent instance if required by the RL algorithm
     if isinstance(env.unwrapped, DirectMARLEnv):

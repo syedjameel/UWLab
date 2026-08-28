@@ -596,7 +596,9 @@ class RewardsCfg:
         },
     )
 
-    dense_success_reward = RewTerm(func=task_mdp.dense_success_reward, weight=0.1, params={"std": 1.0})
+    dense_success_reward = RewTerm(
+        func=task_mdp.dense_success_reward, weight=0.1, params={"std": 1.0, "std_angle": 1.0}
+    )
 
     success_reward = RewTerm(func=task_mdp.success_reward, weight=1.0)
 
@@ -649,6 +651,72 @@ class NoCurriculumsCfg:
     """No curriculum (eval / data-collection with fixed 0.8--1.2 randomization)."""
 
     pass
+
+
+@configclass
+class ThresholdCurriculumCfg:
+    """Threshold curriculum on the task's OWN success gate (position AND orientation).
+
+    WIRED, BUT OFF BY DEFAULT: ``Ur5eDeltoRelCartesianOSCTrainCfg`` (ur5e_delto_cfg.py) points its
+    ``curriculum`` field at this class. The term itself defaults to ``"enabled": False`` below --
+    see ``task_mdp.threshold_curriculum``'s docstring for the full mechanism (independent per-axis
+    bang-bang ramps, driven by TaskCommand's per-step position_aligned/orientation_aligned rather
+    than MultiResetManager's joint SuccessMonitor, and why) and for exactly what ``enabled=False``
+    skips. With the term disabled, ``Ur5eDeltoRelCartesianOSCTrainCfg()`` is byte-equivalent in
+    behaviour to a config with no curriculum term at all: the term never reads or writes
+    ``task_command.success_position_threshold`` / ``.success_orientation_threshold`` while
+    disabled, so a run launched without opting in is still a clean reference-comparable baseline.
+
+    TO START A RUN ON A LOOSENED GATE, pass Hydra overrides on the command line (every key below is
+    a literal entry in ``threshold_curriculum.params``, which is what makes it reachable --
+    IsaacLab's ``update_class_from_dict`` only accepts dict keys that already exist)::
+
+        env.curriculum.threshold_curriculum.params.enabled=true
+        env.curriculum.threshold_curriculum.params.initial_position_threshold=0.6
+        env.curriculum.threshold_curriculum.params.initial_orientation_threshold=3.2
+
+    THE INITIAL_* VALUES BELOW ARE PROVISIONAL, NOT MEASURED, and only take effect once
+    ``enabled=true`` is passed. They are chosen from this campaign's own reset-bank statistics
+    (leg-vs-fixture pos/rot error computed directly off resets_ObjectAnywhereEEGrasped.pt /
+    resets_ObjectRestingEEGrasped.pt: rot_error median ~2.08-2.95 rad, pos_error median ~0.28-0.55 m
+    across those two banks) as a starting point loose enough that real skill is still required
+    (well below those medians, so a policy is not handed 100% success for free and the bang-bang
+    ramp has something to ramp against) but far looser than the 0.0025 m / 0.025 rad final target.
+    A separate, already-queued diagnostic run sets the gate "far past the banks' own median"
+    specifically to test PLUMBING (does success register at all when it trivially should) -- that
+    is a different question from what makes a good CURRICULUM starting point, and its result should
+    supersede these numbers once it reports, not be conflated with them.
+
+    final_position_threshold / final_orientation_threshold are left at their code default (None),
+    which resolves LIVE from TaskCommand's own metadata-sourced values at first use -- see
+    threshold_curriculum's docstring for why that is deliberate.
+
+    UPDATE_EVERY_N_STEPS = 800, comfortably longer than one episode, not copied from
+    ``adr_sysid_curriculum``'s 160/200: an episode here is 160 control steps (``episode_length_s``
+    16.0 s / ``decimation``-scaled ``sim.dt`` -> ``rl_state_cfg.py``'s ``Ur5eRobotiq2f85RlStateCfg``)
+    and the PPO horizon is 32 steps, i.e. 5 PPO iterations per episode. 800 env-steps = 5 episodes =
+    25 PPO iterations between checks, giving each ``position_aligned``/``orientation_aligned``
+    sample thousands-of-envs x 5-episodes of averaging before the ramp reacts, instead of reacting
+    to a single episode's worth of noise every check.
+    """
+
+    threshold_curriculum = CurrTerm(
+        func=task_mdp.threshold_curriculum,
+        params={
+            "enabled": False,  # OFF by default -- see class docstring for the Hydra override
+            "initial_position_threshold": 0.05,  # 50 mm -- PROVISIONAL, see class docstring
+            "initial_orientation_threshold": 1.8,  # rad -- PROVISIONAL, see class docstring
+            # final_position_threshold / final_orientation_threshold: omitted -> None -> resolved
+            # live from TaskCommand's metadata-sourced values at first call.
+            "success_threshold_up": 0.7,
+            "success_threshold_down": 0.3,
+            "position_delta": 0.0002,  # 0.2 mm per update
+            "orientation_delta": 0.01,  # rad per update
+            "update_every_n_steps": 800,  # 5 episodes / 25 PPO iterations -- see class docstring
+            "command_name": "task_command",
+            "warmup_success_threshold": None,
+        },
+    )
 
 
 def make_insertive_object(usd_path: str, override_mass: bool = True):
@@ -733,7 +801,7 @@ variants = {
         # must survive; the make_insertive_object default (override_mass=True) would rewrite it to
         # 1 g and every subsequent contact-force-gated check would validate a part 120x too light.
         "leg200mm": make_insertive_object(
-            f"{UWLAB_LOCAL_ASSETS_DIR}/Props/FurnitureBench/SquareTableLeg200mmDecomp/square_table_leg4_200mm.usd",
+            f"{UWLAB_LOCAL_ASSETS_DIR}/Props/FurnitureBench/SquareTableLeg200mmSdf/square_table_leg4_200mm.usd",
             override_mass=False,
         ),
     },

@@ -213,7 +213,12 @@ DATASET_PAIR_FILE="$DATASET_DIR/Resets/OneLegInsertionFixture__SquareTableLeg200
 # operational band -- verified in a live Isaac run). COUNT THE POSES BEFORE TRUSTING THIS FILE, not
 # just its path or size: a file that merely exists here is exactly what let the broken one through
 # unnoticed before.
-_DATASET_POSE_COUNT=$("$HOME/UWLab/env_uwlab/bin/python" -c "
+# PATH RESOLUTION: the original hardcoded a dev-workstation layout
+# ($HOME/UWLab/env_uwlab/bin/python) that does not exist on a training box.
+LAUNCH_PYTHON_BIN="${LAUNCH_PYTHON_BIN:-/root/venv/bin/python}"
+[ -x "$LAUNCH_PYTHON_BIN" ] || { echo "REFUSING: LAUNCH_PYTHON_BIN '$LAUNCH_PYTHON_BIN' not executable (set LAUNCH_PYTHON_BIN to override)"; exit 1; }
+
+_DATASET_POSE_COUNT=$("$LAUNCH_PYTHON_BIN" -c "
 import torch
 d = torch.load('$DATASET_PAIR_FILE', map_location='cpu', weights_only=True)
 print(d['relative_position'].shape[0])
@@ -279,7 +284,7 @@ echo "wandb: entity=$WANDB_ENTITY project=$WANDB_PROJECT name=$WANDB_NAME" | tee
 # through grep or anything else live: grep buffers, and a killed process loses everything sitting in
 # that buffer. 172800s = 48h of generous headroom on the master timeout; the loop below judges
 # LAUNCH health separately and much sooner (see DEADLINE).
-setsid nohup timeout -s KILL 172800 "$HOME/UWLab/env_uwlab/bin/python" -u \
+setsid nohup timeout -s KILL 172800 "$LAUNCH_PYTHON_BIN" -u \
   scripts/reinforcement_learning/rl_games/train.py \
   --task "$TASK" \
   --checkpoint "$CKPT" \
@@ -334,7 +339,7 @@ FAIL=0
 for marker in \
   '\[dexlift\] gravity PINNED at \(\(0.0, 0.0, -9.81\)' \
   '\[dexlift\] episode mixture \(validated post-override\): classic_goal_prob=0.500' \
-  '\[PLANT-VERIFY\] hand actuator \(constructed\): effort_limit_sim=\[30\.0\] velocity_limit_sim=\[10000\.0\]' \
+  '\[dexlift\] reference HAND actuators \(30 N\.m / 10000 rad/s' \
   ; do
   if grep -aqE "$marker" "$LOG"; then
     echo "HEALTH_OK: $marker"

@@ -110,12 +110,14 @@ import math
 from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
+import torch
+
 import isaaclab.sim as sim_utils
 from isaaclab.assets import RigidObjectCfg
 from isaaclab.envs.mdp import reset_root_state_uniform
 from isaaclab.managers import EventTermCfg, ManagerTermBase, SceneEntityCfg
 from isaaclab.utils import configclass
-from isaaclab.utils.math import subtract_frame_transforms
+from isaaclab.utils.math import quat_apply, quat_inv, subtract_frame_transforms
 
 from uwlab_assets import UWLAB_ASSETS_DATA_DIR, UWLAB_CLOUD_ASSETS_DIR
 
@@ -125,6 +127,7 @@ from uwlab_assets import UWLAB_ASSETS_DATA_DIR, UWLAB_CLOUD_ASSETS_DIR
 from uwlab_tasks.manager_based.manipulation.omnireset.mdp.events import (
     reset_insertive_object_from_partial_assembly_dataset,
 )
+from uwlab_tasks.manager_based.manipulation.omnireset.mdp.utils import read_metadata_from_usd_directory
 
 from .task_state_vis import TaskStateVisPoseCommand, TaskStateVisPoseCommandCfg
 
@@ -140,6 +143,9 @@ __all__ = [
     "GoalAtSpawnPoseCommand",
     "GoalAtSpawnPoseCommandCfg",
     "upgrade_to_goal_at_spawn",
+    "GoalBelowSpawnPoseCommand",
+    "GoalBelowSpawnPoseCommandCfg",
+    "upgrade_to_goal_below_spawn",
 ]
 
 # -- Y1: the fixture asset and where it sits. See the module docstring's "Y1" section for the
@@ -298,3 +304,413 @@ def upgrade_to_goal_at_spawn(command_cfg: TaskStateVisPoseCommandCfg) -> GoalAtS
         if field.name != "class_type"
     }
     return GoalAtSpawnPoseCommandCfg(**fields)
+
+
+# === Y5 (bead UWLab-xp05.3, "Arm 3"): GOAL BELOW SPAWN, a shaping device against withdrawal ===
+#
+# ``GoalAtSpawnPoseCommand`` above pins the goal to the leg's OWN spawn pose, which makes tracking
+# satisfied at t=0 -- the recorded mechanism (epic UWLab-xp05) for why a C4-generating policy
+# grasps the leg and then withdraws it ~14mm during the grasp, parking at a near-constant 2-4mm
+# final depth regardless of spawn depth: nothing in the objective penalises leaving. Pinning the
+# goal DEEPER than spawn, along the bore's own axis, inverts that sign -- withdrawal now INCREASES
+# tracking error instead of leaving it at its already-satisfied minimum.
+#
+# THIS IS A SHAPING DEVICE, NOT A TARGET (bead UWLab-xp05.3's own framing, load-bearing): the point
+# is not for the policy to reach the displaced goal, only to bias where it leaves the leg. Judge any
+# run against this command by the BANKED DEPTH DISTRIBUTION it produces, never by command-tracking
+# success.
+#
+# ``delta_m`` IS SIGNED (bead UWLab-nnlv.3). The paragraph above is the POSITIVE case, and it is the
+# case this class was originally built for. A NEGATIVE delta displaces the goal along the SAME bore
+# axis in the OPPOSITE direction -- OUT of the mouth, ABOVE it -- which shapes toward a hold above
+# the bore instead of a seat inside it. That is the S2' rung (bead UWLab-nnlv, band 20-120mm above
+# the mouth), which had no shaping knob at all while this value was asserted ">= 0": the only device
+# in the tree could push the goal deeper, i.e. mildly OPPOSE the band it was meant to serve.
+def live_bore_deep_axis(fixture, local_deep_axis, env_ids):
+    """The bore's own "deep" axis for THIS episode, rotated into world by the fixture's LIVE
+    orientation, unit-normalised, with the runtime sign guard applied.
+
+    Shared by :class:`GoalBelowSpawnPoseCommand` and by the episode mixture's partial-assembly
+    branch. Both displace a goal along this axis, so both must agree about which way "deeper" points
+    and both must refuse under the same conditions -- one function, one guard, no second copy to
+    drift (bead UWLab-nnlv.5).
+
+    The axis is read off the FIXTURE, never the leg: the question is "which way is further INTO the
+    bore", not "which way is this leg pointing".
+
+    RUNTIME GUARD (team-lead review, bead UWLab-xp05.3): the construction-time sign checks
+    # in __init__ read ONLY metadata.yaml -- they never see this episode's actual fixture
+    # orientation, so they cannot detect a live orientation their "world-fixed at (0,0,-1)"
+    # assumption does not hold for. THIS is the check that looks at fixture_quat_w. Because
+    # local_axis is a unit vector, axis_world's z-component is exactly the cosine of the angle
+    # between it and world -Z -- close to -1 whenever the fixture sits at (or near) the
+    # yaw-only orientations RECEPTIVE_POSE_RANGE promises (yaw about world Z leaves local Z
+    # invariant). If it is not, either that range has since been widened to sample roll/pitch,
+    # or this "kinematic" fixture has been physically disturbed -- both worth failing loudly on,
+    # not silently continuing under a stale assumption. NOTE this does not mean the goal
+    # POSITION above is wrong: it is computed FROM this same live-rotated axis_world, so it
+    # already tracks whatever the true live orientation is; this assert exists to catch the
+    # case where that live orientation itself has drifted from what this class's construction-
+    # time reasoning assumed, so a bank generated under it gets flagged rather than silently
+    # trusted.
+    axis_world_z = axis_world[:, 2]
+    _bad = axis_world_z >= -0.9
+    assert not bool(_bad.any()), (
+        f"GoalBelowSpawnPoseCommand: the LIVE fixture orientation this reset rotates the deep "
+        f"axis to a world z-component not close to -1 for {int(_bad.sum())}/{_bad.numel()} "
+        f"env(s) this call (worst z={axis_world_z.max().item():.4f}, need < -0.9) -- see this "
+        "class's docstring, 'WHAT THESE TWO CHECKS DO NOT COVER' section. Either "
+        "RECEPTIVE_POSE_RANGE now samples nonzero roll/pitch, or the fixture has been "
+        "disturbed; the construction-time sign check no longer covers this episode's actual "
+        "geometry. Refusing to bank a state under an unverified axis assumption."
+    )
+    """
+    fixture_quat_w = fixture.data.root_quat_w[env_ids]
+    local_axis = local_deep_axis.expand(fixture_quat_w.shape[0], -1)
+    axis_world = quat_apply(fixture_quat_w, local_axis)
+    axis_world = axis_world / axis_world.norm(dim=-1, keepdim=True)
+
+    axis_world_z = axis_world[:, 2]
+    _bad = axis_world_z >= -0.9
+    assert not bool(_bad.any()), (
+        f"live_bore_deep_axis: the LIVE fixture orientation rotates the deep axis to a world "
+        f"z-component not close to -1 for {int(_bad.sum())}/{_bad.numel()} env(s) this call "
+        f"(worst z={axis_world_z.max().item():.4f}, need < -0.9). Either RECEPTIVE_POSE_RANGE now "
+        "samples nonzero roll/pitch, or the fixture has been disturbed; the construction-time sign "
+        "check no longer covers this episode's actual geometry. Refusing to displace a goal under "
+        "an unverified axis assumption."
+    )
+    return axis_world
+
+
+class GoalBelowSpawnPoseCommand(TaskStateVisPoseCommand):
+    """Goal pinned ``delta_m`` away from the leg's own spawn pose, along the bore's own "deep" axis.
+    ``delta_m`` is SIGNED: POSITIVE places the goal DEEPER into the bore (the original,
+    withdrawal-opposing use -- hence the class name), NEGATIVE places it the opposite way along that
+    same axis, OUT of the mouth and ABOVE it. See the module docstring's "Y5" section above for why
+    (the withdrawal-incentive argument, and what the negative sign is for) and for the explicit
+    warning against reading either sign as a target to reach.
+
+    AXIS SOURCE, reused not re-derived (bead UWLab-xp05.3's own instruction: "source a frame
+    convention from the code that CONSUMES it, never from a description of it"). The fixture-local
+    ``-Z`` ("deep", mouth -> further in) axis, rotated into world by the FIXTURE's live orientation,
+    is the SAME convention ``dexlift/mdp/rewards.py``'s ``axial_displacement_error_tanh`` and
+    ``generate_reset_states_policy.py``'s ``SeatedHeldWithProbe._decompose`` both already use and
+    have separately validated (the latter by reproducing the known partial-assembly spawn
+    distribution) -- not re-derived from the LEG's own orientation, which would answer a different
+    question (which way THIS leg happens to be pointing) than the one that matters here (which way
+    is further INTO THE BORE). Because ``RECEPTIVE_POSE_RANGE`` only randomises the fixture's yaw
+    (roll/pitch pinned to 0), rotating fixture-local ``-Z`` by any sampled fixture orientation
+    leaves it at world ``(0,0,-1)`` regardless of the draw -- consistent with, and cross-checked
+    against, the metadata-derived "leg enters from above, travelling -Z" argument recorded in
+    ``SquareTableLeg200mmDecomp/metadata.yaml``'s own ``assembled_offset`` comment.
+
+    SIGN, asserted at construction from metadata, not merely documented. Two independent,
+    metadata-grounded checks, either of which failing means this axis convention does not hold for
+    the configured pair and construction refuses. What they pin down is the AXIS -- which world
+    direction is "deeper into the bore" for this fixture/leg pair -- NOT the sign of ``delta_m``.
+    That makes them exactly as load-bearing under a signed delta as under the original unsigned one
+    (bead UWLab-nnlv.3): a negative delta travels the SAME axis backwards, so an inverted axis
+    constant or a wrong-signed metadata entry sends BOTH signs to the wrong place -- a positive
+    delta out of the mouth, a negative one into the bore -- and each is as silently wrong as the
+    other. Neither check is, or may be made, conditional on the sign of ``delta_m``:
+
+    1. The fixture's own ``assembled_offset.quat`` must be identity (WXYZ ``[1,0,0,0]``) -- the same
+       precondition ``SeatedHeldWithProbe`` asserts, for the same reason: the "deep" axis is defined
+       as a pure translation in the fixture's ROOT frame, not a rotated target frame, and that is
+       only valid when the two coincide.
+    2. The LEG's own ``assembled_offset`` (its root-to-tip direction, at the fully assembled
+       orientation ``root_quat = inverse(offset_quat)``) must point in the SAME world direction as
+       the fixture's deep axis -- i.e. a leg placed exactly at assembly has its tip already lying
+       along the direction a POSITIVE ``delta_m`` displaces the goal (and directly opposite the
+       direction a negative one does). This is the cross-check that the "deeper" this class computes
+       and the physical seat the leg is built to reach actually agree.
+
+    WHAT THESE TWO CHECKS DO NOT COVER (team-lead review, bead UWLab-xp05.3): both run ONCE, at
+    construction, and read ONLY the two ``metadata.yaml`` files -- neither ever touches
+    ``self.fixture.data.root_quat_w``. They are therefore blind BY CONSTRUCTION to anything about
+    THIS episode's actual live fixture orientation; they cannot "fail loudly" on a live condition
+    they have no way to observe, they simply never look. What they DO catch: a wrong-signed
+    hardcoded axis constant or a wrong-signed metadata entry (either flips the dot product from
+    ~+1 to ~-1, failing loudly) -- but that is a check on the STATIC CONSTANTS' internal
+    consistency, not on runtime behaviour. A THIRD, RUNTIME check in ``_resample_command`` below
+    closes that gap: it reads the live ``fixture_quat_w`` every call and verifies the axis it
+    actually rotates into world still points close to that same direction, so a widened
+    ``RECEPTIVE_POSE_RANGE`` (roll/pitch no longer pinned to 0) or a physically-disturbed
+    "kinematic" fixture is caught per-episode, not just algebraically at construction. Note the
+    goal POSITION itself was never at risk from this gap -- ``_resample_command`` already rotates
+    the local axis by the LIVE per-episode orientation, not a hardcoded world constant -- the gap
+    was purely in this class's ability to notice when that live orientation stopped matching the
+    assumption the docstring above states.
+    """
+
+    def __init__(self, cfg: GoalBelowSpawnPoseCommandCfg, env: ManagerBasedEnv):
+        super().__init__(cfg, env)
+
+        self.receptive_object_cfg: SceneEntityCfg = cfg.receptive_object_cfg
+        self.receptive_object_cfg.resolve(env.scene)
+        assert self.receptive_object_cfg.name in env.scene.rigid_objects, (
+            f"GoalBelowSpawnPoseCommand: {self.receptive_object_cfg.name!r} did not resolve to a "
+            "rigid object in the scene -- this command requires DEXLIFT_PARTIAL_ASSEMBLY=1 (the "
+            "fixture/receptive_object entity) to already be present, so the bore's own 'deep' axis "
+            "has something to be read off. Refusing to construct a displacement with nothing to "
+            "measure against."
+        )
+        self.fixture = env.scene[self.receptive_object_cfg.name]
+
+        assert cfg.leg_usd_path, (
+            "GoalBelowSpawnPoseCommand: cfg.leg_usd_path is empty -- must be set by the caller "
+            "(see upgrade_to_goal_below_spawn) to the leg USD whose metadata.yaml this class reads "
+            "for the sign cross-check below."
+        )
+        leg_metadata = read_metadata_from_usd_directory(cfg.leg_usd_path)
+        fixture_metadata = read_metadata_from_usd_directory(cfg.fixture_usd_path)
+        for name, path, metadata in (
+            ("leg", cfg.leg_usd_path, leg_metadata),
+            ("fixture", cfg.fixture_usd_path, fixture_metadata),
+        ):
+            assert metadata.get("assembled_offset") is not None, (
+                f"GoalBelowSpawnPoseCommand: {name} metadata.yaml (next to {path!r}) has no "
+                "'assembled_offset' -- cannot run the sign cross-check without it."
+            )
+
+        device = env.device
+        # -- SIGN CHECK 1: fixture assembled_offset.quat must be identity. Same precondition, same
+        # reason, as SeatedHeldWithProbe's own assert (this class's docstring, "SIGN" section).
+        fixture_offset_quat = torch.tensor(fixture_metadata["assembled_offset"]["quat"], dtype=torch.float32, device=device)
+        assert torch.allclose(fixture_offset_quat.cpu(), torch.tensor([1.0, 0.0, 0.0, 0.0]), atol=1e-4), (
+            f"GoalBelowSpawnPoseCommand: fixture ({cfg.fixture_usd_path!r}) assembled_offset.quat = "
+            f"{fixture_metadata['assembled_offset']['quat']} is not identity (WXYZ [1,0,0,0]) -- the "
+            "fixture-local -Z 'deep' axis convention this class reuses (see its docstring, 'AXIS "
+            "SOURCE' section) is only valid when it is. Refusing to construct."
+        )
+
+        # This class's own "deep" axis, in the fixture's local frame -- the SAME constant
+        # dexlift/mdp/rewards.py's axial_displacement_error_tanh and SeatedHeldWithProbe._decompose
+        # already use (see this class's docstring, "AXIS SOURCE" section), reused here rather than
+        # re-derived so all three stay in lockstep by construction, not by coincidence.
+        self._fixture_local_deep_axis = torch.tensor([0.0, 0.0, -1.0], device=device)
+
+        # -- SIGN CHECK 2: the leg's own tip, at the fully ASSEMBLED orientation, must point along
+        # this SAME world direction. root_quat_at_assembly = inverse(offset_quat) because
+        # target_quat (identity) = root_quat o offset_quat -- see the metadata.yaml comment beside
+        # SquareTableLeg200mmDecomp's own assembled_offset for the full derivation this reproduces.
+        leg_offset_pos = torch.tensor(leg_metadata["assembled_offset"]["pos"], dtype=torch.float32, device=device)
+        leg_offset_quat = torch.tensor(leg_metadata["assembled_offset"]["quat"], dtype=torch.float32, device=device)
+        leg_offset_norm = leg_offset_pos.norm()
+        assert leg_offset_norm > 1e-6, (
+            f"GoalBelowSpawnPoseCommand: leg ({cfg.leg_usd_path!r}) assembled_offset.pos = "
+            f"{leg_metadata['assembled_offset']['pos']} is ~zero -- cannot form a root-to-tip "
+            "direction to cross-check against."
+        )
+        leg_tip_local_axis = leg_offset_pos / leg_offset_norm
+        root_quat_at_assembly = quat_inv(leg_offset_quat.unsqueeze(0))
+        leg_tip_axis_world_at_assembly = quat_apply(root_quat_at_assembly, leg_tip_local_axis.unsqueeze(0))[0]
+        agreement = torch.dot(leg_tip_axis_world_at_assembly, self._fixture_local_deep_axis).item()
+        assert agreement > 0.9, (
+            "GoalBelowSpawnPoseCommand: leg tip axis at the ASSEMBLED orientation resolves to "
+            f"{leg_tip_axis_world_at_assembly.tolist()}, which does not agree (dot={agreement:.4f}, "
+            "need > 0.9) with the fixture's own 'deep' axis "
+            f"{self._fixture_local_deep_axis.tolist()} -- the axis this class displaces along is "
+            "inverted for this pair, so BOTH signs of delta_m land backwards: a positive delta "
+            "would move the goal OUT of the mouth instead of deeper into the bore, and a negative "
+            "one into the bore instead of above the mouth. Refusing to construct rather than "
+            "silently produce a backwards goal. See this class's docstring, 'SIGN' section, "
+            "check 2."
+        )
+
+        self.delta_m = float(cfg.delta_m)
+
+        # -- LOWER BOUND (bead UWLab-nnlv.3). Was `>= 0.0`: the value was UNSIGNED, so a goal could
+        # only ever be pushed DEEPER, and the S2' rung (band 20-120mm ABOVE the mouth) had no
+        # shaping device at all -- the only one in the tree mildly opposed it. A negative delta now
+        # travels the SAME bore axis backwards (see `_resample_command`: goal = spawn + delta *
+        # axis_world, so delta < 0 moves along -axis_world, out of the mouth).
+        #
+        # -0.200m is a POLICY bound, NOT a measured physical constant -- unlike _ENGAGED_SPAN_M
+        # below, which is the bore's own geometry. Outside the mouth there is no bore feature to
+        # measure against; this number is simply headroom around the band the sign exists to serve
+        # (S2' tops out 120mm above the mouth), sized to catch a unit slip or a typo rather than to
+        # describe anything about the hardware. Widening it costs nothing physical; it only widens
+        # what a mistyped env var can silently do.
+        _ABOVE_MOUTH_LIMIT_M = 0.200
+        assert self.delta_m >= -_ABOVE_MOUTH_LIMIT_M, (
+            f"GoalBelowSpawnPoseCommand: delta_m={self.delta_m * 1000.0:.2f}mm is below the signed "
+            f"lower bound of -{_ABOVE_MOUTH_LIMIT_M * 1000.0:.1f}mm. delta_m displaces the "
+            "COMMANDED goal from the leg's spawn pose along the bore's own axis: POSITIVE means "
+            "DEEPER INTO the bore, NEGATIVE means the opposite way along that same axis -- OUT of "
+            "the mouth, ABOVE it. So this value asks for a goal more than "
+            f"{_ABOVE_MOUTH_LIMIT_M * 1000.0:.1f}mm above the mouth, past the headroom around the "
+            "S2' rung's 20-120mm band that this floor exists to bound (a policy bound, not a "
+            "physical one -- see this assert's comment). Pass a value in [-200mm, +25mm], in "
+            "METRES here and in MILLIMETRES via DEXLIFT_GOAL_BELOW_SPAWN_MM."
+        )
+
+        # -- UPPER BOUND (critic3 review, bead UWLab-xp05.3): only ">= 0" was ever asserted before
+        # this, so DEXLIFT_GOAL_BELOW_SPAWN_MM=50 (double the bore's own engaged span) passed
+        # silently. 0.025m matches generate_reset_states_policy.py's own --c4_engaged_span_mm
+        # default (25.0mm) -- the mouth-to-seat distance for THIS pair; see that flag's help text
+        # for why it is a measured CLI constant, not something metadata.yaml carries. Past that
+        # span the commanded goal sits BEYOND the blind end of the bore entirely, which is not "more
+        # shaping", it is nonsense for this pair. This constant is a SAFETY CEILING only, not wired
+        # to `--c4_engaged_span_mm` itself -- if that flag is ever pointed at a different pair with a
+        # different span, this ceiling does not follow it automatically; re-check by hand.
+        _ENGAGED_SPAN_M = 0.025
+        assert self.delta_m <= _ENGAGED_SPAN_M, (
+            f"GoalBelowSpawnPoseCommand: delta_m={self.delta_m * 1000.0:.2f}mm exceeds the bore's "
+            f"own engaged span ({_ENGAGED_SPAN_M * 1000.0:.1f}mm) -- past this the goal sits beyond "
+            "the blind end of the bore, not deeper inside it. Depth and roll are coupled at "
+            "~38.39 deg/mm through the thread (bead UWLab-xp05.3's own physical-constraint note): a "
+            "large offset does not buy more depth, it buys ejections. Refusing to construct above "
+            "the physical ceiling."
+        )
+        if self.delta_m > 0.010:
+            print(
+                f"[dexlift] WARNING GoalBelowSpawnPoseCommand: delta_m={self.delta_m * 1000.0:.2f}mm"
+                " exceeds 10mm. This is a SHAPING DEVICE, not a target -- the plan calls for 3-5mm;"
+                " above roughly 10mm the thread coupling (38.39 deg/mm) starts trading depth for"
+                " ejections, not more depth. Proceeding, but this is outside the planned range.",
+                flush=True,
+            )
+
+        # -- THE NEGATIVE SIDE GETS ITS OWN THRESHOLD, NOT THE MIRROR OF 10mm (bead UWLab-nnlv.3).
+        # Deliberately asymmetric, because the two numbers measure different things. 10mm above is
+        # PHYSICS INSIDE THE BORE: past roughly there, thread coupling (38.39 deg/mm) starts trading
+        # depth for ejections. Outside the mouth there is no thread, no engaged span and no such
+        # trade, so that number describes nothing on this side -- and mirroring it would fire on
+        # EVERY sanctioned negative run, since the rung this sign exists for (S2', bead UWLab-nnlv)
+        # asks for 20-120mm above the mouth, all of which is past 10mm. A warning that fires on
+        # every intended use is a warning nobody reads. So the threshold here is the FAR EDGE of
+        # that rung's own band instead: past 120mm above the mouth, no rung in this epic is asking
+        # for a goal, which makes such a value more likely a unit slip than a choice. Note this
+        # bound and the -200mm floor asserted above are the same kind of number (a band edge and its
+        # headroom), whereas 10mm and the +25mm ceiling are both bore geometry.
+        if self.delta_m < -0.120:
+            print(
+                f"[dexlift] WARNING GoalBelowSpawnPoseCommand: delta_m={self.delta_m * 1000.0:.2f}mm"
+                " places the goal more than 120mm ABOVE the bore mouth. This is a SHAPING DEVICE,"
+                " not a target -- the S2' rung this sign exists for tops out at 120mm above the"
+                " mouth, so nothing planned asks for a goal beyond here. Proceeding, but check this"
+                " is not a unit slip.",
+                flush=True,
+            )
+
+        # -- MID-EPISODE RESAMPLE GUARD (critic3, CONFIRMED via isaaclab source trace, bead
+        # UWLab-xp05.3): CommandManager.compute() re-resamples via _resample_command whenever
+        # time_left <= 0 (isaaclab command_manager.py:160-166), INDEPENDENT of episode reset. The
+        # Reorient _PLAY classes' own resampling_time_range=(2.0,3.0) against episode_length_s=4.0
+        # (dexsuite_env_cfg.py) means a SECOND resample fires mid-episode (~t=2-3s), rebasing the
+        # goal onto wherever the leg has ALREADY withdrawn to by then -- silently absorbing exactly
+        # the withdrawal this arm exists to penalise, for the back half of every episode. The train
+        # class is unaffected (resample 10s > episode 4s); this only bites the Play/generation path,
+        # which is the one this class runs under.
+        #
+        # _apply_partial_assembly_and_goal_toggles (dexlift_ur5e_delto_tableleg_env_cfg.py) already
+        # forces resampling_time_range strictly past episode_length_s at __post_init__ time -- but
+        # that is a SNAPSHOT: generate_reset_states_policy.py's own --episode_length_s override
+        # mutates env_cfg.episode_length_s AFTER parse_env_cfg (i.e. after __post_init__ already
+        # ran), so a resampling_time_range set only there can go stale the moment that flag is used
+        # -- and the generator script's own comments say it will be. THIS check re-derives the same
+        # relation at MANAGER-CONSTRUCTION time (inside gym.make, strictly after any such override
+        # has landed on env.cfg), so it is correct regardless of ordering -- the same "read it off
+        # env.cfg inside the term's __init__" pattern already used elsewhere in this file family for
+        # exactly this class of override-ordering bug.
+        _episode_length_s = float(env.max_episode_length_s)
+        _resample_min_s = float(cfg.resampling_time_range[0])
+        assert _resample_min_s > _episode_length_s, (
+            f"GoalBelowSpawnPoseCommand: commands.object_pose.resampling_time_range="
+            f"{tuple(cfg.resampling_time_range)} does not stay strictly past "
+            f"env.max_episode_length_s={_episode_length_s}s -- CommandManager.compute() would "
+            "re-resample this goal MID-EPISODE, rebasing it onto wherever the leg has already "
+            "withdrawn to and silently defeating this class's entire premise (see this assert's "
+            "own comment). Fix at the source (_apply_partial_assembly_and_goal_toggles) or, if "
+            "episode_length_s was overridden after cfg construction, re-derive "
+            "resampling_time_range immediately after that override."
+        )
+
+        # SIGNED (bead UWLab-nnlv.3) -- name the direction outright rather than leaving a reader of
+        # the log to infer it from a minus sign in front of a variable called "below spawn".
+        _direction = "DEEPER INTO the bore" if self.delta_m > 0.0 else "OUT OF the mouth, ABOVE it"
+        print(
+            f"[dexlift] GoalBelowSpawnPoseCommand ENABLED: delta_m={self.delta_m:.4f} "
+            f"({self.delta_m * 1000.0:.2f}mm, {_direction}) from spawn along the fixture's own deep axis "
+            f"{self._fixture_local_deep_axis.tolist()} (fixture-local; ROTATED BY THE LIVE FIXTURE "
+            "ORIENTATION every reset, expected world-fixed only under the yaw-only "
+            "RECEPTIVE_POSE_RANGE assumption -- re-verified per-episode in _resample_command, not "
+            "just assumed) -- construction-time sign cross-check passed: leg-tip-at-assembly . "
+            f"fixture-deep-axis = {agreement:.4f}. resampling_time_range="
+            f"{tuple(cfg.resampling_time_range)} vs episode_length_s={_episode_length_s}s -- exactly "
+            "one resample per episode confirmed. SHAPING DEVICE, NOT A TARGET -- judge by banked "
+            "depth, not by command tracking (see this class's own docstring).",
+            flush=True,
+        )
+
+    def _resample_command(self, env_ids: Sequence[int]):
+        # Read the object's CURRENT world pose -- by the time CommandManager.reset() runs, this
+        # episode's reset-mode events (including SpawnPartialAssembly) have already written it, same
+        # immediacy argument as GoalAtSpawnPoseCommand._resample_command above.
+        object_pos_w = self.object.data.root_pos_w[env_ids]
+        object_quat_w = self.object.data.root_quat_w[env_ids]
+
+        # Extracted to a module function (bead UWLab-nnlv.5) so the episode mixture's
+        # partial-assembly branch displaces along the SAME axis, computed by the SAME code, under
+        # the SAME runtime guard. A second copy of this is exactly the kind of drifting duplicate
+        # this project has been bitten by before.
+        axis_world = live_bore_deep_axis(self.fixture, self._fixture_local_deep_axis, env_ids)
+
+        # THE SIGN LIVES HERE, and nowhere else: `axis_world` is the bore's "deep" direction (into
+        # the bore, ~world -Z, guarded just above), so delta_m > 0 adds along it -- deeper -- and
+        # delta_m < 0 adds along -axis_world, i.e. back out of the mouth and above it. One
+        # expression serves both signs; nothing downstream branches on the sign (bead UWLab-nnlv.3).
+        goal_pos_w = object_pos_w + self.delta_m * axis_world
+        pos_b, quat_b = subtract_frame_transforms(
+            self.robot.data.root_pos_w[env_ids],
+            self.robot.data.root_quat_w[env_ids],
+            goal_pos_w,
+            object_quat_w,
+        )
+        self.pose_command_b[env_ids, 0:3] = pos_b
+        self.pose_command_b[env_ids, 3:7] = quat_b
+
+
+@configclass
+class GoalBelowSpawnPoseCommandCfg(TaskStateVisPoseCommandCfg):
+    """Config for :class:`GoalBelowSpawnPoseCommand`. Every field means what it means on
+    ``TaskStateVisPoseCommandCfg``; ``class_type`` plus three new fields differ.
+
+    ``leg_usd_path``/``fixture_usd_path`` are NOT read from a module constant here (unlike
+    ``DEXLIFT_ONELEGFIXTURE_USD_PATH`` above) -- deliberately: the caller (this pair's
+    ``__post_init__`` toggle function) already has ``TABLE_LEG_USD_PATH`` in scope, and passing it
+    explicitly avoids this module carrying a second, independently-drifting copy of a constant
+    another file already owns (the exact class of bug ``assembled_offset``'s own metadata.yaml
+    comment records having happened once already).
+    """
+
+    class_type: type = GoalBelowSpawnPoseCommand
+    leg_usd_path: str = ""
+    fixture_usd_path: str = DEXLIFT_ONELEGFIXTURE_USD_PATH
+    receptive_object_cfg: SceneEntityCfg = SceneEntityCfg("receptive_object")
+    # SIGNED, metres (bead UWLab-nnlv.3): positive = goal displaced DEEPER into the bore, negative =
+    # the same bore axis the other way, OUT of the mouth and above it. Range [-0.200, +0.025],
+    # asserted with its reasoning in GoalBelowSpawnPoseCommand.__init__.
+    delta_m: float = 0.0
+
+
+def upgrade_to_goal_below_spawn(
+    command_cfg: TaskStateVisPoseCommandCfg, *, leg_usd_path: str, delta_m: float
+) -> GoalBelowSpawnPoseCommandCfg:
+    """Rebuild an already-configured ``TaskStateVisPoseCommandCfg`` as a goal-below-spawn command.
+
+    Same field-copy idiom as ``upgrade_to_goal_at_spawn`` right above -- every field of the
+    inherited term is copied rather than restated, so nothing here can drift from what
+    ``_bind_task_state_visualization`` already built. ``leg_usd_path`` has no default (the caller
+    must supply ``TABLE_LEG_USD_PATH`` or equivalent -- see ``GoalBelowSpawnPoseCommandCfg``'s own
+    docstring for why); ``delta_m`` has no default either, to force the caller to make an explicit
+    choice rather than silently constructing a zero-offset (degenerate to goal-AT-spawn) command.
+    """
+    fields = {
+        field.name: getattr(command_cfg, field.name)
+        for field in dataclasses.fields(command_cfg)
+        if field.name != "class_type"
+    }
+    return GoalBelowSpawnPoseCommandCfg(**fields, leg_usd_path=leg_usd_path, delta_m=delta_m)

@@ -89,3 +89,12 @@ tests/
 
 # Docker history
 .uw-lab-docker-history
+
+# DexReset campaign outputs (generated; never source)
+/Datasets/
+/Datasets_render/
+/Datasets_ur5e_delto/
+/artifacts/
+/local_ckpts/
+/vast_archive/
+*.bak_tmproot

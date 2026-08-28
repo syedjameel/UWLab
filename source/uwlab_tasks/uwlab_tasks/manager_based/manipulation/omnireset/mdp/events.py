@@ -39,6 +39,7 @@ from uwlab_tasks.manager_based.manipulation.omnireset.mdp import utils
 from ..assembly_keypoints import Offset
 from .gripper_collider_points import collider_points, subsample
 from .gripper_metadata import read_gripper_open_posture
+from .reset_state_schema import missing_target_asset_names, resolve_joint_targets
 from .rigid_object_hasher import RigidObjectHasher
 from .success_monitor_cfg import SuccessMonitorCfg
 
@@ -1723,6 +1724,521 @@ class assembly_sampling_event(ManagerTermBase):
         )
 
 
+def _interp1d(x: torch.Tensor, xp: torch.Tensor, fp: torch.Tensor) -> torch.Tensor:
+    """1-D linear interpolation with CLAMPED (constant) extrapolation outside ``[xp[0], xp[-1]]`` --
+    the same semantics as ``numpy.interp``, which
+    ``scripts_v2/tools/test_axial_insertion_depth_geometry.py``'s CPU-only mirror uses directly, so
+    the two cannot silently drift apart on boundary behaviour. ``xp`` must be sorted ascending;
+    ``x`` may be any shape/order (per-element binary search via ``torch.searchsorted``)."""
+    x = torch.clamp(x, xp[0], xp[-1])
+    idx = torch.searchsorted(xp, x, right=True).clamp(1, xp.shape[0] - 1)
+    x0, x1 = xp[idx - 1], xp[idx]
+    f0, f1 = fp[idx - 1], fp[idx]
+    t = (x - x0) / (x1 - x0).clamp_min(1e-12)
+    return f0 + t * (f1 - f0)
+
+
+class sample_axial_insertion_depth(ManagerTermBase):
+    """EventTerm class: sample a fresh backed-off insertion pose every call.
+
+    Bead UWLab-algw.9: this is the direct REPLACEMENT for ``apply_external_force_torque``'s
+    interval force random-walk, not a subtraction of it. The insertive object here has
+    ``disable_gravity=True`` and friction ranges of ``(0.0, 0.0)`` (see
+    ``partial_assemblies_cfg.py``), so with the force term deleted and nothing else added, every
+    sample would collapse to the single exact seated pose ``assembly_sampling_event`` (mode
+    "reset") computes -- nothing would ever move it again. This term must own the variation: every
+    call it draws a NEW random depth along the receptive object's mating-frame axis (0 = fully
+    seated, larger = backed off toward the hole mouth), plus optional bounded lateral jitter and
+    tilt, and writes that pose directly -- an i.i.d. sample, not an integrated walk.
+
+    DEPTH IS SAMPLED FROM ``[depth_min_m, depth_max_m]``, NOT ``[0, depth_max_m]``: this reset
+    type's semantic name upstream is NEAR GOAL, so by default the band is a small, near-seated
+    slice derived from the receptive object's own position success threshold (see __init__), not
+    the whole bore. Tilt, when enabled, is bounded by the MINIMUM of two independent caps: a
+    per-sample engaged-length bound (the lever arm is how much of the pilot remains inside the
+    bore at the sampled depth, not the full span) and a depth-independent rim cap (the pilot has a
+    real radius, and a tilted cylinder's cross-section must still fit through the mouth opening).
+
+    The composition follows the same pattern ``assembly_sampling_event`` and ``Offset.subtract``
+    already use (``combine_frame_transforms`` from ``isaaclab.utils.math``, never a hand-rolled
+    quaternion inverse -- see that class's docstring for the ~150mm bug that pattern caused once
+    upstream).
+
+    SIXTH PASS (bead UWLab-algw.9, thread-yaw coupling). For a mating SCREW THREAD pair
+    (leg200mm/onelegfixture), depth and the extra rotation about the insertion axis ("yaw") are
+    physically coupled: at any depth other than 0, only a narrow band of yaw keeps the thread crest
+    clear of the bore wall. Earlier passes left yaw hardcoded at 0 for every depth -- correct only
+    at the authored/assembled pose, and silently interpenetrating (by ~1mm+ of radial solid-body
+    overlap) at any other sampled depth. ``thread_yaw_table``, when supplied, is an optional
+    (depth_m, feasible-arc centre_rad, feasible-arc width_rad) table solved against the REAL
+    collision meshes (see __init__ and partial_assemblies_cfg.py); every other object pair leaves
+    it unset and keeps the old yaw=0 behaviour. Also renamed ``pilot_radius_m`` ->
+    ``mouth_crossing_radius_m`` in the rim-cap computation: the cross-section that actually reaches
+    the mouth plane at these depths is the thread CREST, not the flat pilot at the tip.
+    """
+
+    def __init__(self, cfg: EventTermCfg, env: ManagerBasedEnv):
+        super().__init__(cfg, env)
+
+        self.receptive_object_cfg: SceneEntityCfg = cfg.params.get("receptive_object_cfg")
+        self.receptive_object: RigidObject = env.scene[self.receptive_object_cfg.name]
+        self.insertive_object_cfg: SceneEntityCfg = cfg.params.get("insertive_object_cfg")
+        self.insertive_object: RigidObject = env.scene[self.insertive_object_cfg.name]
+
+        insertive_metadata = utils.read_metadata_from_usd_directory(self.insertive_object.cfg.spawn.usd_path)
+        receptive_metadata = utils.read_metadata_from_usd_directory(self.receptive_object.cfg.spawn.usd_path)
+
+        self.insertive_assembled_offset = Offset(
+            pos=insertive_metadata.get("assembled_offset").get("pos"),
+            quat=insertive_metadata.get("assembled_offset").get("quat"),
+        )
+        self.receptive_assembled_offset = Offset(
+            pos=receptive_metadata.get("assembled_offset").get("pos"),
+            quat=receptive_metadata.get("assembled_offset").get("quat"),
+        )
+
+        # --- Derive the INSERTION AXIS (and its direction) from the assembled pose itself. ---
+        # Bead UWLab-algw.9 follow-up: an earlier version of this code hardcoded "toward the
+        # mouth is -Z in the mating frame", sourced from a supplied "mouth = hole mesh z-min" fact
+        # that turned out to be disputed -- the leg's OWN metadata (SquareTableLeg200mmDecomp,
+        # bead UWLab-3o5.14, numerically verified in that file's comment) says the leg enters FROM
+        # ABOVE pointing -Z, i.e. FURTHER insertion is -Z, which would make backing off +Z -- the
+        # opposite sign from what was hardcoded. Rather than pick a side, the axis is now DERIVED:
+        # insertive_assembled_offset.pos is the tip's own local coordinates relative to the
+        # insertive object's root (see that metadata file's header comment), so
+        # normalize(insertive_assembled_offset.pos) is the direction from root to tip, in the
+        # insertive object's OWN local frame. Un-rotating that by the offset's own quat gives the
+        # same direction expressed in the MATING FRAME's local axes -- i.e. the direction the tip
+        # points at full assembly, which is also the direction FURTHER insertion moves it (the
+        # leading point of a peg travels along its own pointing direction as it goes deeper).
+        # Backing off toward the mouth is this axis's negation. No assumed sign, no hardcoded
+        # constant -- see __call__ for where this is actually used, and the two checks below for
+        # why a disagreeing mouth_local_z_m now raises instead of being trusted.
+        insertive_offset_quat_t = torch.tensor(
+            self.insertive_assembled_offset.quat, device=env.device, dtype=torch.float32
+        ).unsqueeze(0)
+        insertive_offset_pos_t = torch.tensor(
+            self.insertive_assembled_offset.pos, device=env.device, dtype=torch.float32
+        ).unsqueeze(0)
+        tip_direction_local = insertive_offset_pos_t / torch.linalg.norm(
+            insertive_offset_pos_t, dim=-1, keepdim=True
+        )
+        self.insertion_axis_local = math_utils.quat_apply(
+            math_utils.quat_inv(insertive_offset_quat_t), tip_direction_local
+        )[0]
+        print(
+            f"[sample_axial_insertion_depth] derived insertion_axis_local={self.insertion_axis_local.tolist()} "
+            "(direction of INCREASING depth / toward the blind end; backing off toward the mouth is its "
+            "negation)"
+        )
+
+        # SANITY CHECK 1, raise loudly: mouth_local_z_m is a bare z-COORDINATE (in the receptive
+        # object's local frame), which is only a valid way to express "distance to the mouth"
+        # along an axis that IS the local Z axis. If the derived axis has a meaningful xy
+        # component, treating mouth_local_z_m as an axial distance is simply wrong, and no sign
+        # fix would make it right -- this term would need the more general perpendicular-plane
+        # construction it does not currently have.
+        axis_xy_mag = float(torch.linalg.norm(self.insertion_axis_local[:2]))
+        if axis_xy_mag > 1e-3:
+            raise ValueError(
+                f"sample_axial_insertion_depth: insertion_axis_local={self.insertion_axis_local.tolist()} "
+                f"is not aligned with the mating frame's local Z (xy magnitude={axis_xy_mag:.6f}) -- "
+                "mouth_local_z_m (a bare z-coordinate) cannot express the mouth's position along this "
+                "axis. Refusing to guess a perpendicular-plane construction this term does not have."
+            )
+
+        seat_local_z = float(self.receptive_assembled_offset.pos[2])
+        mouth_local_z_m = float(cfg.params.get("mouth_local_z_m"))
+        mouth_offset_from_seat = mouth_local_z_m - seat_local_z
+        if abs(mouth_offset_from_seat) <= 1e-9:
+            raise ValueError(
+                f"sample_axial_insertion_depth: mouth_local_z_m={mouth_local_z_m} equals seat_local_z="
+                f"{seat_local_z} -- zero seat depth."
+            )
+        # Magnitude only, sign-independent -- see SANITY CHECK 2 below for why the sign is not
+        # trusted from this input. The MAGNITUDE itself is also not independently re-verified by
+        # this change (see the bead report): if the disputed mesh feature is not the true mouth at
+        # all (a raised collar on the opposite side, per the leg metadata's comment), this number
+        # could be wrong too, not just its sign.
+        self.seat_depth_m = abs(mouth_offset_from_seat)
+
+        # SANITY CHECK 2, raise loudly (this is the fix for the actual bug report): compare the
+        # mouth DIRECTION this input claims (which side of the seat point mouth_local_z_m sits on)
+        # against the direction DERIVED above from the assembled pose. Backing off is
+        # -insertion_axis_local; its z-component sign is the direction, in local Z, that backing
+        # off actually moves the tip. If the two disagree, this is EXACTLY the sign-error class
+        # that has cost this project real time before, without ever crashing -- so this raises
+        # instead of picking one side. Do not "fix" this by flipping the sign here; fix
+        # mouth_local_z_m (or re-derive the axis) once the geometry is independently measured.
+        derived_mouth_sign = -1.0 if float(self.insertion_axis_local[2]) > 0.0 else 1.0
+        given_mouth_sign = 1.0 if mouth_offset_from_seat > 0.0 else -1.0
+        if derived_mouth_sign != given_mouth_sign:
+            raise ValueError(
+                "sample_axial_insertion_depth: mouth_local_z_m disagrees with the insertion axis "
+                f"derived from insertive_assembled_offset. Derived: backing off toward the mouth moves "
+                f"the tip toward local Z {'+' if derived_mouth_sign > 0 else '-'} (insertion_axis_local="
+                f"{self.insertion_axis_local.tolist()}). Given: mouth_local_z_m={mouth_local_z_m} is on "
+                f"the local Z {'+' if given_mouth_sign > 0 else '-'} side of seat_local_z={seat_local_z}. "
+                "Refusing to guess which one is right -- re-measure and fix the disagreement rather "
+                "than flipping this check."
+            )
+
+        print(
+            f"[sample_axial_insertion_depth] derived seat_depth_m={self.seat_depth_m:.6f} "
+            f"(seat_local_z={seat_local_z:.6f}, mouth_local_z_m={mouth_local_z_m:.6f}, "
+            f"mouth direction confirmed consistent with insertion_axis_local)"
+        )
+
+        # --- NEAR-GOAL DEPTH BAND (bead UWLab-algw.9 follow-up, PROBLEM 2). ---
+        # C4's semantic name upstream is NEAR GOAL: the whole point is to start the episode close
+        # to success so the policy practises FINISHING the insertion, not to cover the whole bore
+        # uniformly (that overlaps whatever the other reset categories already sample). depth IS
+        # the axial position error from the fully-seated goal pose, so the band is derived from the
+        # receptive object's OWN position success threshold (metadata.yaml's success_thresholds,
+        # already loaded above as receptive_metadata) rather than a round guess: depth_min_m
+        # defaults to 3x that threshold (safely outside "already solved at spawn" -- see the bead
+        # report for the already-solved-at-spawn fraction this produces, which must be ~0), and
+        # depth_max_m defaults to 6x it (a small, clearly seated-side slice, not halfway to the
+        # mouth). The full range up to seat_depth_m stays reachable by passing depth_max_m
+        # explicitly -- this default only narrows what happens when the caller does not.
+        success_thresholds = receptive_metadata.get("success_thresholds")
+        position_threshold_m = success_thresholds.get("position") if success_thresholds else None
+
+        depth_min_m = cfg.params.get("depth_min_m")
+        if depth_min_m is None:
+            if position_threshold_m is None:
+                raise ValueError(
+                    "sample_axial_insertion_depth: depth_min_m not given and the receptive object's "
+                    "metadata.yaml has no success_thresholds.position to derive a default from -- "
+                    "supply depth_min_m explicitly."
+                )
+            depth_min_m = 3.0 * float(position_threshold_m)
+            print(
+                f"[sample_axial_insertion_depth] depth_min_m defaulted to 3x the receptive object's "
+                f"own position success threshold ({float(position_threshold_m):.6f}m) = "
+                f"{depth_min_m:.6f}m -- safely outside 'already solved at spawn', not a round guess."
+            )
+        depth_max_m = cfg.params.get("depth_max_m")
+        if depth_max_m is None:
+            if position_threshold_m is None:
+                raise ValueError(
+                    "sample_axial_insertion_depth: depth_max_m not given and the receptive object's "
+                    "metadata.yaml has no success_thresholds.position to derive a default from -- "
+                    "supply depth_max_m explicitly."
+                )
+            depth_max_m = 6.0 * float(position_threshold_m)
+            print(
+                f"[sample_axial_insertion_depth] depth_max_m defaulted to 6x the receptive object's "
+                f"own position success threshold = {depth_max_m:.6f}m -- a near-goal band, NOT the "
+                f"full seat_depth_m={self.seat_depth_m:.6f}m span (pass depth_max_m explicitly for "
+                "that)."
+            )
+        self.depth_min_m = float(depth_min_m)
+        depth_max_m = float(depth_max_m)
+
+        self.lateral_jitter_max_m = float(cfg.params.get("lateral_jitter_max_m", 0.0))
+        self.enable_tilt = bool(cfg.params.get("enable_tilt", False))
+        radial_clearance_m = cfg.params.get("radial_clearance_m")
+
+        # --- MINIMUM ENGAGED LENGTH (bead UWLab-algw.9 follow-up, PROBLEM 1a). ---
+        # Sampling depth all the way to seat_depth_m puts the tip AT the mouth plane with ZERO
+        # engaged length remaining -- the degenerate limit where the tilt bound below blows up to
+        # pi/2 (a leg leaning against the hole, not partially inserted). Required whenever tilt is
+        # enabled; clamps depth_max_m down so every sample keeps at least this much of the pilot
+        # inside the bore, regardless of what depth_max_m was asked for.
+        min_engaged_length_m = cfg.params.get("min_engaged_length_m")
+        if self.enable_tilt and min_engaged_length_m is None:
+            raise ValueError(
+                "sample_axial_insertion_depth: min_engaged_length_m is required when enable_tilt is "
+                "set -- without it, depth can sample all the way to the mouth, where the "
+                "engaged-length-based tilt bound is unbounded (see __call__)."
+            )
+        self.min_engaged_length_m = 0.0 if min_engaged_length_m is None else float(min_engaged_length_m)
+
+        clamped_depth_max_m = min(depth_max_m, self.seat_depth_m - self.min_engaged_length_m)
+        if clamped_depth_max_m < depth_max_m:
+            print(
+                f"[sample_axial_insertion_depth] depth_max_m={depth_max_m:.6f} clamped down to "
+                f"{clamped_depth_max_m:.6f} by min_engaged_length_m={self.min_engaged_length_m:.6f} "
+                f"(seat_depth_m={self.seat_depth_m:.6f})"
+            )
+        self.depth_max_m = clamped_depth_max_m
+        if not (0.0 <= self.depth_min_m < self.depth_max_m <= self.seat_depth_m + 1e-9):
+            raise ValueError(
+                f"sample_axial_insertion_depth: invalid band depth_min_m={self.depth_min_m}, "
+                f"depth_max_m={self.depth_max_m} (seat_depth_m={self.seat_depth_m}, "
+                f"min_engaged_length_m={self.min_engaged_length_m})"
+            )
+
+        self.radial_clearance_m = 0.0
+        self.tilt_clearance_budget_m = 0.0
+        if self.lateral_jitter_max_m > 0.0 or self.enable_tilt:
+            if radial_clearance_m is None:
+                raise ValueError(
+                    "sample_axial_insertion_depth: radial_clearance_m is required when "
+                    "lateral_jitter_max_m is nonzero or enable_tilt is set, to bound them against the "
+                    "pilot fit."
+                )
+            self.radial_clearance_m = float(radial_clearance_m)
+            if self.lateral_jitter_max_m > self.radial_clearance_m:
+                raise ValueError(
+                    f"sample_axial_insertion_depth: lateral_jitter_max_m={self.lateral_jitter_max_m} alone "
+                    f"exceeds radial_clearance_m={self.radial_clearance_m} -- the pilot would not fit even "
+                    "with zero tilt."
+                )
+            # Whatever clearance budget lateral jitter does not already use is available for tilt.
+            self.tilt_clearance_budget_m = self.radial_clearance_m - self.lateral_jitter_max_m
+
+        self.rim_tilt_cap_rad = None
+        if self.enable_tilt:
+            # --- RIM CAP (bead UWLab-algw.9 follow-up, PROBLEM 1b; CORRECTED sixth pass) ---
+            # The engaged-length bound below treats the leg as a zero-radius AXIS POINT -- it has
+            # no reason to stop as engaged_length -> 0 (asin blows up to pi/2), which is exactly
+            # the "leg leaning against the hole" pathology min_engaged_length_m above guards one
+            # side of. The OTHER, independent side: a tilted cylinder's cross-section is an
+            # ELLIPSE whose semi-major axis grows to r / cos(tilt), for whichever radius r the leg
+            # actually presents AT THE MOUTH PLANE. For that whole cross-section to still fit
+            # through the mouth's circular opening (radius mouth_bore_radius_m), independent of
+            # engaged length or lateral jitter (first-order, axis-offset-free bound):
+            #   r / cos(tilt) <= mouth_bore_radius_m
+            #   tilt <= acos(r / mouth_bore_radius_m)
+            # SIXTH-PASS FIX: an earlier version used the flat PILOT radius (~10.004mm, measured at
+            # the leg's tip) for r here. That is the WRONG cross-section -- at the depths this term
+            # actually samples, the pilot's flat tip is nowhere near the mouth plane; the material
+            # that is near it is the THREAD CREST (the widest point of the threaded region, radius
+            # = major_diameter/2 = mouth_crossing_radius_m below), which is a full ~2.18mm wider.
+            # Using the pilot radius made this cap loose enough to never bind (~36.8deg vs. the
+            # engaged-length bound's ~13.2deg at the min_engaged_length_m floor) -- conservative in
+            # form but not in substance, since it was computed against a part of the leg that never
+            # reaches the mouth at these depths. The corrected cap (~12.9deg, from the crest radius)
+            # is TIGHTER than that floor-side engaged-length bound and so actually binds there.
+            mouth_crossing_radius_m = cfg.params.get("mouth_crossing_radius_m")
+            mouth_bore_radius_m = cfg.params.get("mouth_bore_radius_m")
+            if mouth_crossing_radius_m is None or mouth_bore_radius_m is None:
+                raise ValueError(
+                    "sample_axial_insertion_depth: mouth_crossing_radius_m and mouth_bore_radius_m "
+                    "are required when enable_tilt is set, to bound tilt against the mouth rim."
+                )
+            mouth_crossing_radius_m = float(mouth_crossing_radius_m)
+            mouth_bore_radius_m = float(mouth_bore_radius_m)
+            if mouth_crossing_radius_m >= mouth_bore_radius_m:
+                raise ValueError(
+                    f"sample_axial_insertion_depth: mouth_crossing_radius_m={mouth_crossing_radius_m} "
+                    f">= mouth_bore_radius_m={mouth_bore_radius_m} -- the leg would not fit through "
+                    "the mouth at any tilt."
+                )
+            self.rim_tilt_cap_rad = math.acos(min(1.0, mouth_crossing_radius_m / mouth_bore_radius_m))
+            print(
+                f"[sample_axial_insertion_depth] rim tilt cap (depth-independent) = "
+                f"{self.rim_tilt_cap_rad:.6f} rad ({math.degrees(self.rim_tilt_cap_rad):.3f} deg), from "
+                f"mouth_crossing_radius_m={mouth_crossing_radius_m:.6f} vs "
+                f"mouth_bore_radius_m={mouth_bore_radius_m:.6f}"
+            )
+
+            # DEPTH-DEPENDENT BOUND, not a constant (bead UWLab-algw.9 follow-up). An earlier
+            # version of this code computed ONE tilt_max_rad = asin(budget / seat_depth_m) and
+            # applied it at every sampled depth -- using the WORST-CASE (deepest-engagement) lever
+            # arm everywhere. That is a modelling error, not just conservative: the lever arm that
+            # actually constrains tilt is the ENGAGED LENGTH remaining between the CURRENT tip
+            # position (after backing off by the sampled depth) and the mouth --
+            # `seat_depth_m - depth`, not the full span. A leg whose tip has just entered the
+            # mouth (depth close to depth_max, engaged length close to 0) can tilt substantially
+            # before the far end of its remaining engagement walks outside the clearance; a leg
+            # engaged the full span (depth=0) can barely tilt at all. Applying the deepest-case
+            # bound everywhere silently collapses every SHALLOW sample to near-perfect alignment --
+            # exactly backwards, since the shallow end is where a reset bank's angular diversity is
+            # supposed to come from (at full engagement, ~1 degree here is correct physics for this
+            # clearance/span ratio, not a bug -- it just means deep samples carry almost no
+            # orientation diversity by construction). See __call__ for the actual per-sample
+            # computation (MIN of this bound and the rim cap above); this block only prints the
+            # two endpoints of the SAMPLED band so a reader sees the RANGE this produces.
+            engaged_at_depth_min = self.seat_depth_m - self.depth_min_m  # most engaged sample in the band
+            engaged_at_depth_max = self.seat_depth_m - self.depth_max_m  # least engaged sample in the band
+            tilt_at_depth_min = min(
+                math.asin(min(1.0, self.tilt_clearance_budget_m / max(engaged_at_depth_min, 1e-12))),
+                self.rim_tilt_cap_rad,
+            )
+            tilt_at_depth_max = min(
+                math.asin(min(1.0, self.tilt_clearance_budget_m / max(engaged_at_depth_max, 1e-12))),
+                self.rim_tilt_cap_rad,
+            )
+            print(
+                f"[sample_axial_insertion_depth] tilt bound over the SAMPLED band "
+                f"[depth_min_m={self.depth_min_m:.6f}, depth_max_m={self.depth_max_m:.6f}]: at "
+                f"depth_min_m (engaged_length={engaged_at_depth_min:.6f}) tilt_max="
+                f"{tilt_at_depth_min:.6f} rad ({math.degrees(tilt_at_depth_min):.3f} deg); at "
+                f"depth_max_m (engaged_length={engaged_at_depth_max:.6f}) tilt_max="
+                f"{tilt_at_depth_max:.6f} rad ({math.degrees(tilt_at_depth_max):.3f} deg)"
+            )
+
+        # --- THREAD-YAW COUPLING (bead UWLab-algw.9, sixth pass) ---
+        # Leg and bore are mating SCREW THREADS: at a given backed-off depth, only a narrow band of
+        # extra rotation about the insertion axis ("yaw") keeps the thread crest clear of the bore
+        # wall -- everywhere else the two meshes interpenetrate. Earlier passes on this term left
+        # yaw hardcoded at exactly 0 regardless of depth, which is only valid AT depth=0 (the
+        # authored/assembled pose); any nonzero depth with yaw=0 interferes (see the geometric
+        # negative control in scripts_v2/tools/test_axial_insertion_depth_geometry.py).
+        #
+        # thread_yaw_table, when given, is the (depth_m, feasible-arc CENTRE_rad, feasible-arc
+        # WIDTH_rad) table solved directly against the REAL collision meshes by
+        # scripts_v2/tools/solve_thread_lead_from_meshes.py (ray-cast interference search +
+        # continuation-tracking of the feasible arc outward from the depth=0 authored pose) -- see
+        # partial_assemblies_cfg.py for the raw table and its full provenance. This is deliberately
+        # NOT an analytic constant-lead formula, even though the table's own local slope is close
+        # to constant (~38.3-38.4deg/mm) for the first ~9mm of backoff: past that, the feasible arc
+        # widens rapidly (the thread stops meaningfully constraining roll) and a constant lead is
+        # not an honest description, so __call__ always interpolates the table rather than
+        # extrapolating a line through it. Optional: only the leg200mm/onelegfixture pair supplies
+        # this; every other object pair leaves it unset and keeps the old yaw=0 behaviour.
+        thread_yaw_table = cfg.params.get("thread_yaw_table")
+        self.enable_yaw_coupling = thread_yaw_table is not None
+        self.yaw_arc_margin = float(cfg.params.get("yaw_arc_margin", 1.0))
+        if self.enable_yaw_coupling:
+            if not (0.0 < self.yaw_arc_margin <= 1.0):
+                raise ValueError(
+                    f"sample_axial_insertion_depth: yaw_arc_margin={self.yaw_arc_margin} must be in "
+                    "(0, 1] -- it shrinks the sampled sub-arc around the solved centre, it cannot "
+                    "widen past what the table found feasible."
+                )
+            table = sorted((float(d), float(c), float(w)) for d, c, w in thread_yaw_table)
+            depths_mm = [d for d, _, _ in table]
+            if len(table) < 2 or any(b <= a for a, b in zip(depths_mm, depths_mm[1:])):
+                raise ValueError(
+                    "sample_axial_insertion_depth: thread_yaw_table must have >= 2 rows, strictly "
+                    f"increasing in depth_m -- got depths_m={depths_mm}"
+                )
+            self.yaw_table_depth_m = torch.tensor([d for d, _, _ in table], device=env.device, dtype=torch.float32)
+            self.yaw_table_center_rad = torch.tensor(
+                [c for _, c, _ in table], device=env.device, dtype=torch.float32
+            )
+            self.yaw_table_width_rad = torch.tensor(
+                [w for _, _, w in table], device=env.device, dtype=torch.float32
+            )
+            print(
+                f"[sample_axial_insertion_depth] thread-yaw coupling ENABLED: {len(table)}-row table "
+                f"spanning depth [{depths_mm[0] * 1000:.2f}, {depths_mm[-1] * 1000:.2f}]mm "
+                f"(clamped/constant-extrapolated outside that range), yaw_arc_margin="
+                f"{self.yaw_arc_margin:.2f} (fraction of the solved feasible-arc width actually "
+                "sampled around its centre)"
+            )
+        else:
+            print(
+                "[sample_axial_insertion_depth] thread-yaw coupling DISABLED (no thread_yaw_table "
+                "given) -- yaw stays 0 at every depth, as for every non-thread object pair."
+            )
+
+    def __call__(
+        self,
+        env: ManagerBasedEnv,
+        env_ids: torch.Tensor,
+        receptive_object_cfg: SceneEntityCfg,
+        insertive_object_cfg: SceneEntityCfg,
+        mouth_local_z_m: float,
+        depth_min_m: float | None = None,
+        depth_max_m: float | None = None,
+        min_engaged_length_m: float | None = None,
+        lateral_jitter_max_m: float = 0.0,
+        enable_tilt: bool = False,
+        radial_clearance_m: float | None = None,
+        mouth_crossing_radius_m: float | None = None,
+        mouth_bore_radius_m: float | None = None,
+        thread_yaw_table: list | None = None,
+        yaw_arc_margin: float = 1.0,
+    ) -> None:
+        """Draw one fresh backed-off pose per environment and write it directly."""
+        num = len(env_ids)
+        device = env.device
+
+        receptive_pos = self.receptive_object.data.root_pos_w[env_ids]
+        receptive_quat = self.receptive_object.data.root_quat_w[env_ids]
+
+        # Same seat point (mating frame, in world coordinates) assembly_sampling_event computes.
+        target_pos, target_quat = self.receptive_assembled_offset.combine(receptive_pos, receptive_quat)
+
+        # depth=0 is fully seated; depth=self.depth_max_m is backed off to the mouth. "Toward the
+        # mouth" is -self.insertion_axis_local -- DERIVED in __init__ from the assembled pose, not
+        # a hardcoded sign (see that derivation's comment for why). Sampled from
+        # [depth_min_m, depth_max_m], NOT [0, depth_max_m] -- the NEAR-GOAL band __init__ derived
+        # (or was given), not the full range from fully-seated.
+        depth = math_utils.sample_uniform(self.depth_min_m, self.depth_max_m, (num,), device=device)
+
+        if self.lateral_jitter_max_m > 0.0:
+            # Uniform over a DISK of radius lateral_jitter_max_m (sqrt-scaled radius, not a
+            # uniform square) so every sample actually satisfies the bound __init__ checked.
+            # Sampled in the raw local X/Y plane -- valid because __init__'s SANITY CHECK 1
+            # already confirmed insertion_axis_local is (within 1e-3) aligned with local Z, so X/Y
+            # is (to that same tolerance) the plane perpendicular to the true insertion axis.
+            jitter_r = self.lateral_jitter_max_m * torch.sqrt(torch.rand(num, device=device))
+            jitter_theta = torch.rand(num, device=device) * (2 * math.pi)
+            jitter_x = jitter_r * torch.cos(jitter_theta)
+            jitter_y = jitter_r * torch.sin(jitter_theta)
+        else:
+            jitter_x = torch.zeros(num, device=device)
+            jitter_y = torch.zeros(num, device=device)
+
+        lateral_offset = torch.stack([jitter_x, jitter_y, torch.zeros(num, device=device)], dim=-1)
+        axial_offset = -depth.unsqueeze(-1) * self.insertion_axis_local.unsqueeze(0)
+        offset_pos = lateral_offset + axial_offset
+
+        if self.enable_tilt:
+            # Per-sample lever = the ENGAGED LENGTH remaining between this sample's own
+            # depth-backed-off tip position and the mouth, not the constant worst-case seat_depth_m
+            # (see __init__'s comment for why that was a modelling error). Floored well above zero
+            # so a sample landing almost exactly at the mouth does not divide by zero -- at that
+            # limit there is genuinely no bore wall left to constrain against, so the clamp below
+            # (asin argument capped at 1.0) is what actually bounds it, at pi/2.
+            engaged_length = (self.seat_depth_m - depth).clamp_min(1e-6)
+            tilt_max_rad = torch.asin((self.tilt_clearance_budget_m / engaged_length).clamp(max=1.0))
+            # RIM CAP -- a SEPARATE, depth-independent ceiling (see __init__'s comment): the
+            # engaged-length bound alone has no concept of the pilot's own radius, so it never
+            # stops the near-mouth pathology (tilt -> pi/2) on its own. min_engaged_length_m
+            # (applied above, via self.depth_max_m) keeps every sample off the exact degenerate
+            # limit; this clamp keeps every sample physically able to fit through the mouth.
+            tilt_max_rad = torch.clamp(tilt_max_rad, max=self.rim_tilt_cap_rad)
+            tilt_r = tilt_max_rad * torch.sqrt(torch.rand(num, device=device))
+            tilt_theta = torch.rand(num, device=device) * (2 * math.pi)
+            roll = tilt_r * torch.cos(tilt_theta)
+            pitch = tilt_r * torch.sin(tilt_theta)
+        else:
+            roll = torch.zeros(num, device=device)
+            pitch = torch.zeros(num, device=device)
+
+        if self.enable_yaw_coupling:
+            # Depth-coupled yaw (bead UWLab-algw.9, sixth pass): interpolate the solved (depth,
+            # arc-centre, arc-width) table (see __init__), then sample uniformly within
+            # yaw_arc_margin of that feasible arc, centred on the same solved centre. A width close
+            # to 2*pi means the table itself found roll fully unconstrained at that depth (true from
+            # ~16mm of backoff onward here) -- sample the whole circle rather than shrinking toward
+            # a centre that carries no physical meaning there.
+            center = _interp1d(depth, self.yaw_table_depth_m, self.yaw_table_center_rad)
+            width = _interp1d(depth, self.yaw_table_depth_m, self.yaw_table_width_rad)
+            full_circle = width >= (2.0 * math.pi - 1e-4)
+            half_span = torch.where(
+                full_circle, torch.full_like(width, math.pi), 0.5 * self.yaw_arc_margin * width
+            )
+            yaw = center + (2.0 * torch.rand(num, device=device) - 1.0) * half_span
+        else:
+            yaw = torch.zeros(num, device=device)
+
+        offset_quat = math_utils.quat_from_euler_xyz(roll, pitch, yaw)
+
+        # Compose in the mating frame's own local axes via combine_frame_transforms -- the same
+        # primitive Offset.combine/subtract wrap, not a hand-rolled inverse.
+        new_target_pos, new_target_quat = math_utils.combine_frame_transforms(
+            target_pos, target_quat, offset_pos, offset_quat
+        )
+
+        insertive_pos, insertive_quat = self.insertive_assembled_offset.subtract(new_target_pos, new_target_quat)
+
+        self.insertive_object.write_root_state_to_sim(
+            root_state=torch.cat(
+                [insertive_pos, insertive_quat, torch.zeros((num, 6), device=device)],  # Zero velocities
+                dim=-1,
+            ),
+            env_ids=env_ids,
+        )
+
+
 def _assert_reset_file_covers_scene(
     dataset_file: str,
     recorded_rigid_objects: set[str],
@@ -1800,6 +2316,24 @@ class MultiResetManager(ManagerTermBase):
                 raise FileNotFoundError(f"Dataset file {dataset_file} could not be accessed or downloaded.")
 
             dataset = torch.load(local_file_path)
+
+            # -- bead UWLab-algw.7: log ONCE per file, HERE at load time (never inside the hot
+            # reset loop below), when a bank predates the joint_position_target/
+            # joint_velocity_target fields StableStateRecorder now writes. _reset_to's own
+            # per-asset fallback (target := recorded joint_position/joint_velocity) still restores
+            # correctly from a file like this -- it just cannot reconstruct the PD set point
+            # (commanded grip force), which is exactly the defect this bead exists to fix. A silent
+            # fallback is how that defect survived undetected the first time; naming the file here
+            # closes that gap without spamming a warning on every single reset drawn from it.
+            _missing_target_assets = missing_target_asset_names(dataset["initial_state"]["articulation"])
+            if _missing_target_assets:
+                logging.warning(
+                    f"[MultiResetManager] {dataset_file} has no joint_position_target/"
+                    f"joint_velocity_target for articulation(s) {_missing_target_assets} -- every "
+                    "reset drawn from this file falls back to target := recorded joint_position/"
+                    "joint_velocity (pre-UWLab-algw.7 bank: restores configuration, not the PD set "
+                    "point / commanded grip force)."
+                )
 
             # -- FAIL LOUDLY if this file is missing a rigid_object the consuming scene has, UNLESS
             # the caller has explicitly claimed (via ``assumed_static_assets``, below) that the
@@ -1936,6 +2470,10 @@ class MultiResetManager(ManagerTermBase):
         # resolve env_ids
         if env_ids is None:
             env_ids = self._env.scene._ALL_INDICES
+        # -- bead UWLab-algw.7 TASK 4 guard bookkeeping: (articulation, intended joint_position_target)
+        # per asset, checked AFTER write_data_to_sim() below propagates every target write this call
+        # makes. Populated inside the articulation loop; consumed at the bottom of this method.
+        _target_intents: dict[str, tuple[Articulation, torch.Tensor]] = {}
         # articulations
         for asset_name, articulation in self._env.scene._articulations.items():
             if asset_name not in state["articulation"]:
@@ -1952,10 +2490,22 @@ class MultiResetManager(ManagerTermBase):
             joint_position = asset_state["joint_position"].clone()
             joint_velocity = asset_state["joint_velocity"].clone()
             articulation.write_joint_state_to_sim(joint_position, joint_velocity, env_ids=env_ids)
+            # -- PD SET POINT (bead UWLab-algw.7). Applied effort on a PD joint is proportional to
+            # (target - q); restoring configuration alone (the FIXME below always did, target := q)
+            # silently zeroes whatever squeeze/hold force was live at capture. Prefer the STORED
+            # target the recorder captured; fall back to target := q/qdot for banks recorded before
+            # this field existed (TASK 3 -- the once-per-file warning for that case is logged in
+            # __init__, not here, so a hot reset loop never spams it).
             # FIXME: This is not generic as it assumes PD control over the joints.
             #   This assumption does not hold for effort controlled joints.
-            articulation.set_joint_position_target(joint_position, env_ids=env_ids)
-            articulation.set_joint_velocity_target(joint_velocity, env_ids=env_ids)
+            joint_position_target, _, joint_velocity_target, _ = resolve_joint_targets(
+                asset_state, joint_position, joint_velocity
+            )
+            joint_position_target = joint_position_target.clone()
+            joint_velocity_target = joint_velocity_target.clone()
+            articulation.set_joint_position_target(joint_position_target, env_ids=env_ids)
+            articulation.set_joint_velocity_target(joint_velocity_target, env_ids=env_ids)
+            _target_intents[asset_name] = (articulation, joint_position_target)
         # deformable objects
         for asset_name, deformable_object in self._env.scene._deformable_objects.items():
             if asset_name not in state["deformable_object"]:
@@ -1986,6 +2536,27 @@ class MultiResetManager(ManagerTermBase):
         # write data to simulation to make sure initial state is set
         # this propagates the joint targets to the simulation
         self._env.scene.write_data_to_sim()
+
+        # -- bead UWLab-algw.7 TASK 4 guard: verify the target THIS CALL intended to write is the
+        # target that actually ended up applied, read back off each articulation's own data buffer
+        # -- the same "trust the constructed thing, not the request" idiom
+        # generate_reset_states_policy.py's _require uses (it reads the CONSTRUCTED env_cfg rather
+        # than the launch command's env var). Today's target-loss defect was invisible precisely
+        # because nothing compared intent against what was applied; a broadcasting/env_ids/dtype
+        # mistake in the block above would be exactly as silent without this. Raises loudly rather
+        # than resetting under a target the simulation did not actually receive.
+        for asset_name, (articulation, intended_position_target) in _target_intents.items():
+            applied_position_target = articulation.data.joint_pos_target[env_ids]
+            if not torch.allclose(applied_position_target, intended_position_target, rtol=1e-5, atol=1e-6):
+                max_abs_diff = (applied_position_target - intended_position_target).abs().max().item()
+                raise RuntimeError(
+                    f"MultiResetManager._reset_to: after set_joint_position_target + "
+                    f"write_data_to_sim, articulation {asset_name!r}'s applied joint_pos_target "
+                    f"does not match what this reset intended to write (max abs diff="
+                    f"{max_abs_diff:.6g}). This is exactly the intent-vs-applied gap bead "
+                    "UWLab-algw.7 exists to close -- refusing to silently reset under a target the "
+                    "simulation did not actually apply."
+                )
 
 
 def sample_state_data_set(episode_data: dict, idx: torch.Tensor, device: torch.device) -> dict:
@@ -2942,6 +3513,245 @@ class obs_noise_curriculum(ManagerTermBase):
         self._last_state = {
             "scale_progress": self._progress,
             "mean_success_rate": mean_success,
+        }
+        return self._last_state
+
+
+class threshold_curriculum(ManagerTermBase):
+    """Threshold curriculum for the task's OWN success gate (position AND orientation).
+
+    Sibling of ``adr_sysid_curriculum`` (above, this file): same bang-bang shape -- ramp toward
+    a target when a rolling success signal is high, back off when it is low, gated by
+    ``update_every_n_steps`` in env-STEP counts so the update rate is independent of ``num_envs``,
+    with an optional latching warmup -- applied to a DIFFERENT target. Instead of moving a DR
+    term's ``scale_progress``, this mutates ``TaskCommand.success_position_threshold`` and
+    ``.success_orientation_threshold`` directly, starting LOOSE and tightening toward the real
+    task target as success rises.
+
+    WHY THAT TARGET, NOT A DR TERM'S ``scale_progress``: ``ProgressContext`` (``rewards.py``,
+    ``ProgressContext.__call__``) reads ``task_command.success_position_threshold`` /
+    ``.success_orientation_threshold`` LIVE, every call, not a cached copy -- and
+    ``TaskCommand._update_metrics`` (``commands.py``) reads the SAME two attributes on the SAME
+    object for its own logged ``Metrics/task_command/*`` numbers. There is exactly one source of
+    truth for "what counts as success" on this task; mutating it here moves the reward gate and
+    the wandb telemetry together, with no second copy to desynchronise.
+
+    TWO INDEPENDENT RAMPS, NOT ONE COUPLED SCALAR, AND WHY: measured on this task (2026-08),
+    position occasionally already satisfies its own gate while orientation error sits flat with
+    zero measured trend across 300+ iterations at the tight target. A single scalar moving both
+    thresholds together would have to move at whichever axis is slower, dragging the easy axis's
+    threshold around for no reason while the hard axis does all the work. Each axis gets its own
+    success signal, its own up/down thresholds, its own delta, and its own independent state.
+
+    THE SIGNAL EACH RAMP WATCHES IS DELIBERATELY NOT ``MultiResetManager``'s ``SuccessMonitor`` --
+    THE ONE GENUINELY NEW PIECE OF MACHINERY IN THIS TERM, everything else below is the proven
+    ``adr_sysid_curriculum`` shape. ``SuccessMonitor`` (consumed by ``adr_sysid_curriculum`` above)
+    tracks JOINT (position AND orientation) success, because that is what "success" means for the
+    task as a whole -- it cannot be decomposed into an independent per-axis rate after the fact.
+    Driving both ramps off that shared joint signal would reintroduce exactly the coupling problem
+    the previous paragraph rules out: with orientation success near zero, joint success is near
+    zero regardless of how well position is doing, so BOTH axes would read "success is low" and
+    BOTH would sit at their loose end even though position deserves to tighten. Instead each ramp
+    reads ``TaskCommand``'s own PER-AXIS, PER-STEP alignment booleans
+    (``self.position_aligned`` / ``self.orientation_aligned``, ``commands.py``'s
+    ``_update_metrics``) -- already computed every environment step, for every env, as an
+    independent per-axis test against the SAME threshold this term is about to move. Averaging
+    these over all envs at the ``update_every_n_steps`` check point is a genuine per-axis
+    success-rate estimate, sampled across many different episode phases at once given thousands of
+    asynchronously-resetting envs -- not the same statistic as ``SuccessMonitor``'s rolling
+    per-EPISODE window, but a defensible, always-available proxy that needs no second per-axis
+    ``SuccessMonitor`` to be built.
+
+    GUARD AGAINST "ONLY EVER LOOSENS": both ramps are hard-clamped between their own
+    ``final_*_threshold`` and ``initial_*_threshold`` -- tightening (subtracting delta) can never
+    cross past ``final``, loosening (adding delta) can never cross back past ``initial``. Which
+    direction was actually taken this update, per axis, is part of the returned/logged state
+    (``position_direction`` / ``orientation_direction``: +1 tightened, -1 loosened, 0 held) and is
+    also printed at every real update -- specifically so a stalled or backward-drifting ramp is
+    visible rather than inferred from a bare threshold number.
+
+    FINAL VALUES DEFAULT TO WHATEVER THE LIVE TASK ALREADY DECLARES, NOT A DUPLICATED LITERAL:
+    ``final_position_threshold`` / ``final_orientation_threshold`` default to ``None``, in which
+    case ``_resolve_terms`` reads ``task_command.success_position_threshold`` /
+    ``.success_orientation_threshold`` ONCE, before this term ever mutates them -- i.e. whatever
+    ``TaskCommand.__init__`` already resolved from the receptive object's ``metadata.yaml``
+    ``success_thresholds`` block (0.0025 m / 0.025 rad for the leg/fixture pair, as of this
+    writing). This is deliberately NOT a second hardcoded 0.0025/0.025 literal in this file: a
+    literal default would silently go stale if the metadata ever changes without this file being
+    updated to match it -- the same "one constant duplicated in two places, nothing gating the
+    two" failure class this project has hit more than once elsewhere. An explicit float still
+    overrides this and is respected.
+
+    ``enabled`` (default ``False``) IS THE OFF SWITCH FOR THE WHOLE TERM: while ``False``, this
+    ``__call__`` returns immediately and never calls ``_resolve_terms``, so it never reads or
+    writes ``task_command.success_position_threshold`` / ``.success_orientation_threshold`` --
+    the production gate is left exactly as ``TaskCommand.__init__`` resolved it from metadata.
+    This is a real dataclass field on ``ThresholdCurriculumCfg``'s ``CurrTerm.params`` dict (not
+    just a Python-side default), so it is one of the knobs a Hydra override can flip at the
+    command line -- see that class's docstring (``rl_state_cfg.py``) for the exact override
+    string and for why a wired-but-disabled term is what keeps a default-constructed train cfg
+    byte-equivalent to one without this term at all.
+    """
+
+    def __init__(self, cfg, env: ManagerBasedEnv):
+        super().__init__(cfg, env)
+        self._resolved = False
+        self._task_command = None
+        self._warmed_up = False
+        self._last_update_step: int = -1
+        self._final_position_threshold: float | None = cfg.params.get("final_position_threshold")
+        self._final_orientation_threshold: float | None = cfg.params.get("final_orientation_threshold")
+        self._last_state: dict[str, float] = {
+            "position_threshold": cfg.params.get("initial_position_threshold", 0.0),
+            "orientation_threshold": cfg.params.get("initial_orientation_threshold", 0.0),
+            "position_success_rate": 0.0,
+            "orientation_success_rate": 0.0,
+            "position_direction": 0.0,
+            "orientation_direction": 0.0,
+            "enabled": 0.0,
+        }
+
+    def _resolve_terms(self, command_name: str, initial_position_threshold: float, initial_orientation_threshold: float):
+        if self._resolved:
+            return
+        self._resolved = True
+        self._task_command = self._env.command_manager.get_term(command_name)
+
+        if self._final_position_threshold is None:
+            self._final_position_threshold = self._task_command.success_position_threshold
+        if self._final_orientation_threshold is None:
+            self._final_orientation_threshold = self._task_command.success_orientation_threshold
+
+        # FAIL LOUDLY at first use rather than silently ramp in the wrong direction: this term
+        # tightens FROM initial TOWARD final, so initial must be the LOOSER (>=) of the two on
+        # both axes. A cfg that got these backwards would otherwise train against a threshold that
+        # tightens past the real target and then holds there forever -- indistinguishable from a
+        # correctly-behaving curriculum in the logs until someone reads the actual numbers.
+        if initial_position_threshold < self._final_position_threshold:
+            raise ValueError(
+                f"threshold_curriculum: initial_position_threshold ({initial_position_threshold}) is"
+                f" TIGHTER than final_position_threshold ({self._final_position_threshold}) -- this"
+                " ramp would move in the wrong direction. initial must be >= final on every axis."
+            )
+        if initial_orientation_threshold < self._final_orientation_threshold:
+            raise ValueError(
+                f"threshold_curriculum: initial_orientation_threshold ({initial_orientation_threshold}) is"
+                f" TIGHTER than final_orientation_threshold ({self._final_orientation_threshold}) -- this"
+                " ramp would move in the wrong direction. initial must be >= final on every axis."
+            )
+
+        # Start LOOSE, immediately -- overrides whatever TaskCommand.__init__ resolved from
+        # metadata for the duration of the ramp.
+        self._task_command.success_position_threshold = initial_position_threshold
+        self._task_command.success_orientation_threshold = initial_orientation_threshold
+        self._last_state["position_threshold"] = initial_position_threshold
+        self._last_state["orientation_threshold"] = initial_orientation_threshold
+        print(
+            f"[threshold_curriculum] START position {initial_position_threshold:.6f} m -> target"
+            f" {self._final_position_threshold:.6f} m; orientation {initial_orientation_threshold:.6f} rad"
+            f" -> target {self._final_orientation_threshold:.6f} rad",
+            flush=True,
+        )
+
+    def __call__(
+        self,
+        env: ManagerBasedEnv,
+        env_ids,
+        initial_position_threshold: float,
+        initial_orientation_threshold: float,
+        final_position_threshold: float | None = None,
+        final_orientation_threshold: float | None = None,
+        success_threshold_up: float = 0.7,
+        success_threshold_down: float = 0.3,
+        position_delta: float = 0.0002,
+        orientation_delta: float = 0.01,
+        update_every_n_steps: int = 160,
+        command_name: str = "task_command",
+        warmup_success_threshold: float | None = None,
+        enabled: bool = False,
+    ) -> dict[str, float]:
+        # OFF SWITCH, checked before anything else touches task_command: with enabled=False this
+        # term never calls _resolve_terms, so it never reads OR writes
+        # success_position_threshold/success_orientation_threshold -- the production gate stays
+        # exactly whatever TaskCommand.__init__ resolved from metadata, untouched by this term's
+        # mere presence in the curriculum cfg. This is what makes a default-constructed train cfg
+        # with this term wired in byte-equivalent in behaviour to one without it: see
+        # ThresholdCurriculumCfg's docstring (rl_state_cfg.py) for why enabled defaults to False
+        # there.
+        if not enabled:
+            self._last_state["enabled"] = 0.0
+            return self._last_state
+        self._last_state["enabled"] = 1.0
+
+        # final_position_threshold/final_orientation_threshold are read once via __init__'s cfg
+        # params (self._final_*), not from these call-time kwargs, so that a live-resolved default
+        # (None -> read from task_command at first call) and an explicit override behave the same
+        # way regardless of which reset/interval path first invokes this term. See _resolve_terms.
+        self._resolve_terms(command_name, initial_position_threshold, initial_orientation_threshold)
+
+        current_step = env.common_step_counter
+        if (current_step - self._last_update_step) < update_every_n_steps:
+            return self._last_state
+        self._last_update_step = current_step
+
+        tc = self._task_command
+        pos_rate = tc.position_aligned.float().mean().item()
+        rot_rate = tc.orientation_aligned.float().mean().item()
+
+        # Optional latched warmup, mirroring adr_sysid_curriculum's pattern: hold BOTH ramps at
+        # their current values until the JOINT (position AND orientation) success rate first
+        # crosses the warmup gate once, then never re-gate even if success later dips. Joint,
+        # not per-axis, because the warmup question is "has this task been solved even once",
+        # which is a property of the pair, not of either axis alone.
+        if warmup_success_threshold is not None and not self._warmed_up:
+            joint_rate = (tc.position_aligned & tc.orientation_aligned).float().mean().item()
+            if joint_rate >= warmup_success_threshold:
+                self._warmed_up = True
+            else:
+                self._last_state["position_success_rate"] = pos_rate
+                self._last_state["orientation_success_rate"] = rot_rate
+                return self._last_state
+
+        def _step_axis(current: float, rate: float, delta: float, final: float, initial: float) -> tuple[float, float]:
+            if rate > success_threshold_up:
+                new = max(final, current - delta)  # tighten toward final, never past it
+                direction = 1.0 if new < current else 0.0
+            elif rate < success_threshold_down:
+                new = min(initial, current + delta)  # loosen back toward initial, never past it
+                direction = -1.0 if new > current else 0.0
+            else:
+                new, direction = current, 0.0
+            return new, direction
+
+        new_pos, pos_dir = _step_axis(
+            self._last_state["position_threshold"], pos_rate, position_delta,
+            self._final_position_threshold, initial_position_threshold,
+        )
+        new_rot, rot_dir = _step_axis(
+            self._last_state["orientation_threshold"], rot_rate, orientation_delta,
+            self._final_orientation_threshold, initial_orientation_threshold,
+        )
+
+        tc.success_position_threshold = new_pos
+        tc.success_orientation_threshold = new_rot
+
+        if pos_dir != 0.0 or rot_dir != 0.0:
+            print(
+                f"[threshold_curriculum] step {current_step}: position {'tightened' if pos_dir > 0 else 'loosened' if pos_dir < 0 else 'held'}"
+                f" -> {new_pos:.6f} m (rate {pos_rate:.3f}); orientation"
+                f" {'tightened' if rot_dir > 0 else 'loosened' if rot_dir < 0 else 'held'} -> {new_rot:.6f} rad"
+                f" (rate {rot_rate:.3f})",
+                flush=True,
+            )
+
+        self._last_state = {
+            "position_threshold": new_pos,
+            "orientation_threshold": new_rot,
+            "position_success_rate": pos_rate,
+            "orientation_success_rate": rot_rate,
+            "position_direction": pos_dir,
+            "orientation_direction": rot_dir,
+            "enabled": 1.0,
         }
         return self._last_state
 

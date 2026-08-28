@@ -73,7 +73,11 @@ from uwlab.envs.mdp.full_actuation import assert_action_cfg_fully_actuates
 
 from uwlab_assets import UWLAB_LOCAL_ASSETS_DIR
 from uwlab_assets.robots.ur10e_delto.actions import DELTO_HAND_JOINT_NAMES
-from uwlab_assets.robots.ur5e_delto import IMPLICIT_UR5E_DELTO
+from uwlab_assets.robots.ur5e_delto import (
+    IMPLICIT_UR5E_DELTO,
+    REFERENCE_HAND_ACTUATOR_KWARGS,
+    UR5E_DELTO_HULLFIX3_USD_NAME,
+)
 
 from ..omnireset import mdp as omnireset_mdp
 from . import mdp
@@ -939,6 +943,120 @@ def _apply_pose_tilt_stage(env_cfg) -> None:
     )
 
 
+def _apply_goal_vertical_mixture(env_cfg) -> None:
+    """Optionally MIX a vertical (tip-down) near-table goal into the commanded goal distribution.
+
+    Off unless ``DEXLIFT_GOAL_VERTICAL_PROB`` is set. Like :func:`_apply_pose_tilt_stage` it is a
+    task-definition change and it is printed.
+
+    WHY (epic UWLab-nnlv). DexReset's C4 -> C3 gap needs two intermediate reset rungs in which the
+    leg is held VERTICAL near the bore. Measured 2026-08-26/27, the shipped ep_3600 policy never
+    produces such a state: from a partial-assembly spawn it flips the leg horizontal and carries it
+    away, and the whole 1800-state C3 bank has a MINIMUM tilt of 43 deg from vertical. It can grasp
+    but cannot be told where to hold, because ``_apply_pose_tilt_stage`` only ever showed it goals
+    within +-0.3 rad of upright-as-spawned. Opening that clamp at inference alone reaches 14.5-20.8
+    deg at a 1-3 percent yield; this trains for it instead.
+
+    MIXTURE, NOT REPLACEMENT, and that is the whole design. A 100-percent finetune on a changed
+    goal distribution destroyed this exact policy before (55 percent of the skill gone in 50 epochs,
+    certified 0.0000 at 30 mm by 1550). ``vertical_prob`` therefore names a FRACTION and the
+    remainder keeps the staged goal, so the original task stays rewarded throughout.
+
+    IT DOES NOT GO THROUGH ``cfg.ranges``. A hydra override of ``commands.object_pose.ranges.pitch``
+    is silently overwritten by the tilt staging above -- that defect already cost one invalid
+    experiment. The vertical band is a separate field the staging cannot reach.
+
+    Defaults, in the ROBOT ROOT frame with the tabletop at ``WORK_SURFACE_Z`` = 0:
+
+    * pitch centred on ``-pi/2``, which is the leg's ASSEMBLED orientation: its ``assembled_offset``
+      composes to a root quaternion of Ry(-90), whose local tip axis maps to world (0, 0, -1).
+    * ``roll`` and ``pitch`` half-width ``DEXLIFT_GOAL_VERTICAL_TILT`` (default 0.35 rad = 20 deg),
+      i.e. the band the untrained policy was already grazing.
+    * ``yaw`` pinned to 0, matching dexsuite's own goal-yaw convention. Yaw about the insertion axis
+      is discarded by the success metric anyway (it sums ``|e_x| + |e_y|`` and drops ``e_z``).
+    * ``pos_z`` = ``DEXLIFT_GOAL_VERTICAL_Z``, default 0.13-0.27 m. The leg's root sits 106.2 mm
+      ABOVE its tip when tip-down (``assembled_offset`` pos ``[-0.106203, 0, 0]``), so that band
+      places the TIP 24-164 mm above the tabletop. A band chosen from the TIP's height directly
+      would command the tip through the table.
+
+    WHAT THIS BAND DOES AND DOES NOT COVER, because the two rungs are produced by different means
+    and it would be easy to read this as training both. The dexlift scene HAS NO FIXTURE -- the leg
+    rests on a table -- so no commanded goal here can place a tip inside a bore. What this trains is
+    the one thing both rungs need and the parent policy lacks: HOLD THE LEG TIP-DOWN AND STEADY AT A
+    COMMANDED LOW HEIGHT. Its tip range 24-164 mm above the surface is S2' (tip 20-120 mm above the
+    mouth) directly. S1 (tip 0-10 mm INSIDE the mouth) is NOT reachable as a goal in this scene and
+    is not meant to be: it is generated later from a partially-assembled SPAWN in the OmniReset
+    scene, where the leg starts in the bore and the policy's job is to hold it there. Widening this
+    band downward would only command the tip into the tabletop.
+    """
+    raw = os.environ.get("DEXLIFT_GOAL_VERTICAL_PROB")
+    if raw is None:
+        return
+    prob = float(raw)
+    if not 0.0 <= prob <= 1.0:
+        raise ValueError(f"DEXLIFT_GOAL_VERTICAL_PROB must be in [0, 1]; got {prob}")
+    tilt = float(os.environ.get("DEXLIFT_GOAL_VERTICAL_TILT", "0.35"))
+    if not 0.0 <= tilt <= math.pi / 2:
+        raise ValueError(f"DEXLIFT_GOAL_VERTICAL_TILT must be in [0, pi/2] radians; got {tilt}")
+    z_raw = os.environ.get("DEXLIFT_GOAL_VERTICAL_Z", "0.13,0.27")
+    try:
+        z_lo, z_hi = (float(part) for part in z_raw.split(","))
+    except ValueError as exc:
+        raise ValueError(
+            f"DEXLIFT_GOAL_VERTICAL_Z must be two comma-separated metres, e.g. '0.13,0.27'; got"
+            f" {z_raw!r}"
+        ) from exc
+    if not z_lo < z_hi:
+        raise ValueError(f"DEXLIFT_GOAL_VERTICAL_Z must satisfy lo < hi; got {z_lo} >= {z_hi}")
+
+    command_cfg = env_cfg.commands.object_pose
+    if not isinstance(command_cfg, mdp.TaskStateVisPoseCommandCfg):
+        raise TypeError(
+            "DEXLIFT_GOAL_VERTICAL_PROB requires commands.object_pose to already be the"
+            f" task-state-vis command; got {type(command_cfg).__name__}. This helper must run"
+            " AFTER _bind_task_state_visualization, whose upgrade it extends."
+        )
+    # DEXLIFT_GOAL_VERTICAL_ANCHOR_XY: 'inherit' (default, original behaviour) or 'object'.
+    # 'object' pins the vertical goal's x/y to the object's own live position -- the difference
+    # between teaching "hold it vertical" and "hold it vertical straight up from where it lies".
+    # The first is what the original run taught, and it generated ZERO reset states because the
+    # rungs accept only a tip within 5-20 mm of the bore axis (bead UWLab-nnlv.4).
+    anchor_xy = os.environ.get("DEXLIFT_GOAL_VERTICAL_ANCHOR_XY", "inherit")
+    if anchor_xy not in ("inherit", "object"):
+        raise ValueError(
+            f"DEXLIFT_GOAL_VERTICAL_ANCHOR_XY must be 'inherit' or 'object'; got {anchor_xy!r}"
+        )
+    env_cfg.commands.object_pose = mdp.upgrade_pose_command_to_mixed_goal(
+        command_cfg,
+        vertical_prob=prob,
+        roll=(-tilt, tilt),
+        pitch=(-math.pi / 2 - tilt, -math.pi / 2 + tilt),
+        yaw=(0.0, 0.0),
+        pos_z=(z_lo, z_hi),
+        anchor_xy=anchor_xy,
+    )
+    print(
+        f"[dexlift] GOAL VERTICAL ANCHOR_XY: {anchor_xy}"
+        + (
+            " -- vertical goals are placed directly ABOVE THE OBJECT's own live position"
+            if anchor_xy == "object"
+            else " -- vertical goals keep the staged draw's x/y (original behaviour; this is the"
+            " setting that made reset-state generation impossible)"
+        ),
+        flush=True,
+    )
+    print(
+        f"[dexlift] GOAL VERTICAL MIXTURE staged: {prob:.3f} of goals drawn tip-down"
+        f" (pitch -pi/2 +- {tilt:.4f} rad = {math.degrees(tilt):.1f} deg, roll +- same, yaw 0)"
+        f" at root height [{z_lo:.3f}, {z_hi:.3f}] m, i.e. leg TIP {z_lo - 0.106203:.3f} to"
+        f" {z_hi - 0.106203:.3f} m above the work surface. The other {1.0 - prob:.3f} keep the"
+        " staged goal, which is what prevents the catastrophic forgetting a 100-percent change"
+        " caused before. THIS IS A DIFFERENT TASK from the unmixed configuration and any number"
+        " measured under it must say so.",
+        flush=True,
+    )
+
+
 def _attach_success_rate_metric(env_cfg) -> None:
     """Log an episode success rate, under the metric name the certified rl_games runs used.
 
@@ -1188,7 +1306,7 @@ class Ur5eDeltoMixinCfg:
         # (untrainable -- the explosion above) and hullfix2, which additionally filtered rl_dg_mount
         # and existed only to attribute that 17.8 percent between the two mechanisms. Both have served
         # their purpose; leaving them selectable only widens the space of silently-wrong plants.
-        _HULLFIX_USD = str(pathlib.Path(robot_cfg.spawn.usd_path).with_name("ur5e_delto_hullfix3.usd"))
+        _HULLFIX_USD = str(pathlib.Path(robot_cfg.spawn.usd_path).with_name(UR5E_DELTO_HULLFIX3_USD_NAME))
         if not pathlib.Path(_HULLFIX_USD).is_file():
             raise FileNotFoundError(
                 f"{_HULLFIX_USD} does not exist. Generate it with scratchpad/reauthor_hullfix.py,"
@@ -1243,14 +1361,8 @@ class Ur5eDeltoMixinCfg:
                 ),
             )
         if ref_actuators("HAND"):
-            _HAND_RE = r"rj_dg_[1-5]_[1-4]"
             robot_cfg.actuators = dict(robot_cfg.actuators)
-            robot_cfg.actuators["hand"] = robot_cfg.actuators["hand"].replace(
-                effort_limit_sim={_HAND_RE: 30.0},
-                velocity_limit_sim={_HAND_RE: 10000.0},
-                stiffness={_HAND_RE: 3.0},
-                damping={_HAND_RE: 0.1},
-            )
+            robot_cfg.actuators["hand"] = robot_cfg.actuators["hand"].replace(**REFERENCE_HAND_ACTUATOR_KWARGS)
             print("[dexlift] reference HAND actuators (30 N.m / 10000 rad/s / kp 3.0 / kd 0.1)", flush=True)
         else:
             print("[dexlift] identified DELTO hand actuators (0.06-0.17 N.m / 3.0 rad/s)", flush=True)
@@ -1405,6 +1517,12 @@ class Ur5eDeltoMixinCfg:
         # are drawn only when ``commands.object_pose.debug_vis`` is True, which the _PLAY configs
         # set and the training configs leave False, so a headless training run pays nothing.
         self.commands.object_pose = _bind_task_state_visualization(self)
+
+        # -- OPTIONAL vertical-goal MIXTURE (epic UWLab-nnlv). Must run AFTER the upgrade above,
+        # because it extends that command config rather than replacing it, and after
+        # ``_apply_pose_tilt_stage``, whose staged ``ranges`` become the mixture's OTHER component.
+        # Inert unless DEXLIFT_GOAL_VERTICAL_PROB is set.
+        _apply_goal_vertical_mixture(self)
 
         # -- contact sensors: one per fingertip, filtered to the object, plus the table.
         # These resolve PRIM PATHS, not body names. The hand is referenced under {ROOT}/gripper by

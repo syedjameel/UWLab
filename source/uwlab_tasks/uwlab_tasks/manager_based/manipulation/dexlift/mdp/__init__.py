@@ -61,8 +61,20 @@ from .task_state_vis import *  # noqa: F401, F403
 # ``GoalAtSpawnPoseCommandCfg`` extends ``TaskStateVisPoseCommandCfg``, not the raw dexsuite command.
 from .partial_assembly import *  # noqa: F401, F403
 
+# VERTICAL-goal MIXTURE for the DexReset S1/S2 finetune (epic UWLab-nnlv). Imported after
+# ``task_state_vis``: ``MixedGoalPoseCommandCfg`` extends ``TaskStateVisPoseCommandCfg``.
+from .goal_mixture import *  # noqa: F401, F403
+
+
 # Per-episode MIXTURE of {classic goal, low goal, partial-assembly grasp-only} for the table-leg
 # REORIENT finetune (epic UWLab-g3z4). Imported last: reuses both
 # ``omnireset.mdp.events.reset_insertive_object_from_partial_assembly_dataset`` (same delegate
 # ``partial_assembly.SpawnPartialAssembly`` uses) and ``task_state_vis.TaskStateVisPoseCommand``.
 from .episode_mixture import *  # noqa: F401, F403
+
+# RE-INTRODUCES a ``terminations`` submodule (see that module's own docstring for why the previous
+# one was deleted, and why this is not a reversion of that): the C4 seating-aware training variant
+# (DELIVERABLE 2, ``DEXLIFT_C4_GROSS_UNSEATING_TERM``, wired in
+# ``dexlift_ur5e_delto_tableleg_env_cfg.py``) needs one predicate the base package has no
+# equivalent of. Imported last, after ``episode_mixture``: shadows nothing.
+from .terminations import *  # noqa: F401, F403

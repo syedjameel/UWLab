@@ -119,3 +119,55 @@ IMPLICIT_UR5E_DELTO.actuators = {
     ),
     "hand": DELTO_HAND_ACTUATOR,
 }
+
+# --------------------------------------------------------------------------------------------
+# GENERATION PLANT: the hand collider set and hand actuator dexlift's certified route spawns
+# instead of the two objects above, and every UR5eDelto reset bank and checkpoint this project
+# holds was produced under. Defined HERE -- not in ``dexlift_ur5e_delto_env_cfg.py`` and not
+# retyped into any OmniReset config -- so both task families build the same generation plant
+# from one source and cannot silently diverge (a retyped constant is how this project has
+# repeatedly ended up with two values that agree today and disagree later).
+# --------------------------------------------------------------------------------------------
+
+UR5E_DELTO_HULLFIX3_USD_NAME = "ur5e_delto_hullfix3.usd"
+"""Filename of the hand-collider USD living next to ``ur5e_delto.usd``: 3 convexDecomposition
+bodies (``rl_dg_mount``, ``rl_dg_base``, ``rl_dg_palm``) + 25 convexHull (20 phalanges + 5
+tips), zero sdf, plus ``UsdPhysics.FilteredPairsAPI`` on ``rl_dg_base``/``rl_dg_palm`` against
+all 25 finger bodies.
+
+``ur5e_delto.usd`` above carries 23 sdf + 5 convexHull instead. A blanket sdf-to-convexHull
+rewrite EXPLODES the articulation at reset: the palm shell is CONCAVE and a convex hull of it
+swallows the finger roots, which PhysX then depenetrates violently under self-collision (8045
+deg of hand deviation measured with zero actions applied, against a +-28.6 deg reset jitter
+band). ``convexDecomposition`` on the three shells is what preserves the concavity. The
+filtered pairs are reference-faithful, not a cheat: ``rl_dg_base``/``rl_dg_palm`` are rigidly
+welded to ``rl_dg_mount``, the phalanx joints' own parent, so PhysX already filters the
+kinematically identical mount-vs-phalanx pair; ``rl_dg_mount`` vs finger and finger vs finger
+both stay LIVE.
+
+Resolve as ``pathlib.Path(<ur5e_delto.usd path>).with_name(UR5E_DELTO_HULLFIX3_USD_NAME)`` --
+never hard-code the full path -- so every consumer tracks ``UR5E_DELTO_ARTICULATION``'s own
+``usd_path`` automatically. Generate it with ``scratchpad/reauthor_hullfix.py`` (dexlift), which
+verifies the saved layer by re-reading it.
+"""
+
+REFERENCE_HAND_ACTUATOR_KWARGS = {
+    "effort_limit_sim": {r"rj_dg_[1-5]_[1-4]": 30.0},
+    "velocity_limit_sim": {r"rj_dg_[1-5]_[1-4]": 10000.0},
+    "stiffness": {r"rj_dg_[1-5]_[1-4]": 3.0},
+    "damping": {r"rj_dg_[1-5]_[1-4]": 0.1},
+}
+"""The reference implementation's (IsaacLabDexterous) flat hand-actuator gains, applied via
+``actuator.replace(**REFERENCE_HAND_ACTUATOR_KWARGS)`` -- NEVER by editing
+:data:`~uwlab_assets.robots.ur10e_delto.ur10e_delto.DELTO_HAND_ACTUATOR` in place, which is
+shared with every other consumer of this hand (``EXPLICIT``/``IMPLICIT_UR10E_DELTO``,
+``DELTO_HAND``, the grasp recorder, and both actuator dicts above).
+
+~176x-500x looser than the identified hand's 0.06-0.17 N.m effort_limit_sim / 3.0 rad/s
+velocity_limit_sim. At action scale 0.1 and 60 Hz a policy commands roughly 6 rad/s of finger
+closure; the identified hand's 3.0 rad/s ceiling means it CANNOT track that command at all, so
+data generated under the identified actuator produces a hand that never really closes (measured
+across dexlift's ablation: 2.69% acceptance under the identified actuator vs 46.71% under this
+block). EVERY UR5eDelto reset bank and the certified checkpoint this project holds were produced
+with this block active.
+"""

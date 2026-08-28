@@ -335,6 +335,16 @@ def _apply_delto_collision_stack_size(cfg) -> None:
     never touched -- invisible in training metrics, the run just learns worse for no visible
     reason. It already bit once at 4096 envs with a constant that had worked at 2048.
 
+    CORRECTION (independent audit, 2026-08-20): the "gated on per-fingertip contact force" claim
+    above is FALSE for the OmniReset UR5eDelto/UR10eDelto RL-state task IDs this function is
+    called from -- that reward/termination graph is entirely geometric (pose and joint state
+    only; ``activate_contact_sensors=False`` on the robot, zero ``ContactSensorCfg`` in the
+    scene). It correctly describes :class:`DeltoGraspSamplingCfg` below, which DOES check
+    per-fingertip contact force via ``check_grasp_success``. A dropped contact here still risks
+    silently corrupting whatever grasp/reset-state dataset the sampler produced upstream (see
+    that class's own collision-stack-size comment for the chain this feeds), so the same ceiling
+    value is still the right call for the RL-state task -- just not for the reason stated above.
+
     Set to the SAME maximum-legal value the certified dexlift runs use. The pool is FIXED-SIZE, not
     per-env, so there is no VRAM saving from a smaller value that would justify risking a silent
     contact drop, and the DELTO hand's contact profile is strictly heavier than whatever the 2f85
