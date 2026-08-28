@@ -921,6 +921,22 @@ def _apply_pose_tilt_stage(env_cfg) -> None:
         env_cfg.events.reset_object.params["pose_range"][axis] = [-tilt, tilt]
     env_cfg.commands.object_pose.ranges.roll = (-tilt, tilt)
     env_cfg.commands.object_pose.ranges.pitch = (-tilt, tilt)
+    # -- S_t SPAWN RECENTRING (RESET_SPEC_V2.md sec 1, C3/S_t; measured gap V2_POSE_FINDINGS.md F37:
+    # spawn tip never comes within 65 mm of the table). MEASUREMENT-ONLY TOGGLE, OFF BY DEFAULT --
+    # enabling it for training is a separate decision from running an experiment under it. The
+    # ``pose_range`` written just above centres the object's SPAWN orientation on the leg's
+    # as-shipped NEAR-HORIZONTAL baseline (pitch centred on 0 rad). S_t needs the leg spawned
+    # TIP-DOWN instead. This codebase already makes that exact move on the GOAL side -- see
+    # ``c3_transport_core.transport_goal_ranges``, pitch centred on ``-pi/2`` (Ry(-90) is the leg's
+    # assembled/tip-down root orientation, same convention this function's own ``pose_range``
+    # dict uses). This flag makes the same recentring on the SPAWN side ONLY:
+    # ``commands.object_pose.ranges.pitch`` set two lines above (the GOAL band) is left untouched.
+    spawn_tipdown_raw = os.environ.get("DEXRESET_ST_SPAWN_TIPDOWN")
+    if spawn_tipdown_raw is not None and spawn_tipdown_raw not in ("0", "1"):
+        raise ValueError(f"DEXRESET_ST_SPAWN_TIPDOWN must be '0' or '1'; got {spawn_tipdown_raw!r}")
+    spawn_tipdown = spawn_tipdown_raw == "1"
+    if spawn_tipdown:
+        env_cfg.events.reset_object.params["pose_range"]["pitch"] = [-math.pi / 2 - tilt, -math.pi / 2 + tilt]
     # THE DROP HAS TO BE CLAMPED TOO, OR THE ORIENTATION STAGING IS MOSTLY DECORATIVE. ``reset_object``
     # samples z over [0.0, 0.4], i.e. the object is released from up to 40 cm and TUMBLES ON LANDING,
     # so its resting orientation is whatever the bounce produced and not the roll/pitch/yaw just
@@ -934,12 +950,25 @@ def _apply_pose_tilt_stage(env_cfg) -> None:
     if drop < 0.0:
         raise ValueError(f"DEXLIFT_DROP_Z must be >= 0; got {drop}")
     env_cfg.events.reset_object.params["pose_range"]["z"] = [0.0, drop]
+    if spawn_tipdown:
+        _st_pitch_lo, _st_pitch_hi = -math.pi / 2 - tilt, -math.pi / 2 + tilt
+        _st_banner = (
+            f" DEXRESET_ST_SPAWN_TIPDOWN=1: object reset pitch RECENTRED to tip-down, band"
+            f" [{_st_pitch_lo:.4f}, {_st_pitch_hi:.4f}] rad ({math.degrees(_st_pitch_lo):.1f} to"
+            f" {math.degrees(_st_pitch_hi):.1f} deg) -- SPAWN ONLY, goal pitch band above is unchanged."
+            " MEASUREMENT TOGGLE, not a default."
+        )
+    else:
+        _st_banner = (
+            " DEXRESET_ST_SPAWN_TIPDOWN not set: object reset pitch remains centred on the"
+            " near-horizontal baseline (0 rad)."
+        )
     print(
         f"[dexlift] POSE_TILT staged: object reset roll/pitch/yaw and goal roll/pitch limited to"
         f" +-{tilt:.4f} rad (+-{math.degrees(tilt):.1f} deg); reset drop height clamped to"
         f" [0, {drop:.3f}] m so the sampled orientation survives to the first policy step."
         " THIS IS A NARROWER TASK than the unstaged +-pi configuration and any number measured"
-        " under it must say so.",
+        " under it must say so." + _st_banner,
         flush=True,
     )
 
