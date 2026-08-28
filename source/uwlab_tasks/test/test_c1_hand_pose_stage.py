@@ -49,6 +49,8 @@ _spec.loader.exec_module(_c1_hand_pose_core)
 parse_c1_hand_pose_env = _c1_hand_pose_core.parse_c1_hand_pose_env
 anchor_xy_from_ranges = _c1_hand_pose_core.anchor_xy_from_ranges
 palm_down_self_check = _c1_hand_pose_core.palm_down_self_check
+quat_from_two_vectors = _c1_hand_pose_core.quat_from_two_vectors
+quat_apply = _c1_hand_pose_core.quat_apply
 
 # Ur5eDelto/metadata.yaml's gripper_approach_direction, read directly (not guessed) -- same value
 # scripts_v2/tools/analyze_grasp_orientation_distribution.py uses.
@@ -133,6 +135,86 @@ def test_palm_down_quaternion_rotates_approach_axis_to_world_minus_z():
     # palm_down_self_check raises AssertionError internally if the rotation doesn't land at -Z;
     # reaching this line without raising IS the assertion.
     palm_down_self_check(_GRIPPER_APPROACH_DIRECTION_LOCAL)
+
+
+def test_quat_from_two_vectors_rejects_antiparallel_input():
+    """``quat_from_two_vectors`` documents itself as raising on (near-)antiparallel input rather
+    than silently returning a degenerate/undefined quaternion. Not exercised by the shipped test
+    suite (only the actual DELTO approach direction, which is nowhere near antiparallel to -Z, is
+    tested there). ``gripper_approach_direction`` is asset metadata, not a compile-time constant --
+    a future robot variant whose approach axis is close to world +Z (i.e. palm pointing UP) would
+    hit exactly this path when computing the "palm down" nominal, and the failure mode matters: a
+    loud ValueError at config time is fine, a NaN quaternion silently teleporting the arm is not.
+    """
+    a = torch.tensor([0.0, 0.0, 1.0])
+    b = torch.tensor([0.0, 0.0, -1.0])
+    try:
+        quat_from_two_vectors(a, b)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("quat_from_two_vectors(a, -a) should raise ValueError, not return silently")
+
+
+def test_per_axis_tilt_extremes_do_not_bound_the_composed_rotation_to_tilt():
+    """RESET_SPEC_V2.md sec 1 C1 asks for "+-45 deg variation, applied per-axis about the palm-down
+    nominal". The event composes the three independently-sampled per-axis angles into ONE
+    quaternion via ``math_utils.quat_from_euler_xyz(roll, pitch, yaw)`` (a fixed Tait-Bryan
+    composition order), then applies that as a single extrinsic rotation on top of the nominal.
+    That is not the same object as "each axis independently bounded by 45 deg from the nominal" --
+    Euler-angle composition is not additive, so nothing in the per-axis clamp guarantees the
+    RESULTING single-rotation angle from the nominal stays inside 45 deg.
+
+    This test does not assert compliance with the spec (that needs the actual isaaclab
+    ``quat_from_euler_xyz``, unavailable here without Isaac); it characterizes the mechanism with
+    the exact same formula ``isaaclab.utils.math.quat_from_euler_xyz`` documents (Tait-Bryan
+    roll-pitch-yaw), at the worst-case corner (roll=pitch=yaw=+tilt), and asserts what that
+    actually is: NOT simply `tilt` and NOT simply `3*tilt` either. Whoever reviews the GPU
+    measurement in run B should compare the achieved cone-angle p95/max against this number, not
+    against 45 deg alone.
+    """
+
+    def _quat_from_euler_xyz(roll, pitch, yaw):
+        # Same formula as isaaclab.utils.math.quat_from_euler_xyz -- reproduced here because that
+        # module cannot be imported without Isaac Sim (see this file's own docstring).
+        cy, sy = math.cos(yaw * 0.5), math.sin(yaw * 0.5)
+        cr, sr = math.cos(roll * 0.5), math.sin(roll * 0.5)
+        cp, sp = math.cos(pitch * 0.5), math.sin(pitch * 0.5)
+        qw = cy * cr * cp + sy * sr * sp
+        qx = cy * sr * cp - sy * cr * sp
+        qy = cy * cr * sp + sy * sr * cp
+        qz = sy * cr * cp - cy * sr * sp
+        return torch.tensor([qw, qx, qy, qz])
+
+    tilt = 0.7854  # +-45 deg, the shipped default
+
+    def _angle_from_identity(q: torch.Tensor) -> float:
+        w = abs(float(q[0].clamp(-1.0, 1.0)))
+        return 2.0 * math.degrees(math.acos(w))
+
+    worst_corner = _quat_from_euler_xyz(tilt, tilt, tilt)
+    worst_angle = _angle_from_identity(worst_corner)
+
+    # A single-axis perturbation at the same tilt reproduces exactly 45 deg, as a sanity check on
+    # the formula/measurement.
+    single_axis = _quat_from_euler_xyz(tilt, 0.0, 0.0)
+    single_axis_angle = _angle_from_identity(single_axis)
+    assert math.isclose(single_axis_angle, math.degrees(tilt), abs_tol=0.1), single_axis_angle
+
+    # The composed all-axes-at-extreme corner must NOT equal the single-axis angle (that would mean
+    # the composition is a no-op / degenerate) and must exceed it -- three simultaneous +-45 deg
+    # per-axis draws compose to MORE than 45 deg of total rotation from the nominal, not the same
+    # 45 deg the spec names.
+    assert worst_angle > single_axis_angle + 1.0, (
+        f"expected the 3-axis corner ({worst_angle:.1f} deg) to exceed the single-axis angle"
+        f" ({single_axis_angle:.1f} deg) by a meaningful margin"
+    )
+    # Record the actual number for whoever reads this test: at the shipped default this corner is
+    # ~travelled distance below, characterized empirically rather than asserted to a hardcoded
+    # value (which would make this a change-detector, not a spec check). Anyone reading run B's
+    # measured palm-angle p95/max should compare against THIS number, not against 45 deg.
+    print(f"[c1_hand_pose] worst-case 3-axis corner at tilt=+-45deg composes to {worst_angle:.2f} deg total rotation from nominal (single-axis: {single_axis_angle:.2f} deg)", flush=True)
+    assert worst_angle < 3 * math.degrees(tilt) + 1.0  # sanity upper bound: composition is not additive either
 
 
 if __name__ == "__main__":
