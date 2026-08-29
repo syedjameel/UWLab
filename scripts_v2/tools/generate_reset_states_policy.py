@@ -499,6 +499,7 @@ from uwlab_tasks.manager_based.manipulation.dexlift.mdp.rewards import (  # noqa
 )
 from uwlab_tasks.manager_based.manipulation.dexlift.mdp.spawn_tolerance_core import (  # noqa: E402
     SpawnToleranceConfig,
+    axis_tilt_rad,
     pose_distance,
     within_spawn_tolerance,
 )
@@ -1759,6 +1760,12 @@ class _SpawnPoseToleranceAddon:
         device = env.device
         self.last_pos_dist_m = torch.zeros(n, device=device)
         self.last_rot_dist_rad = torch.zeros(n, device=device)
+        # SECOND rotation metric (team-lead ask, 2026-08-29): spin-invariant axis tilt, recorded
+        # alongside last_rot_dist_rad's full quaternion angle, NEITHER used to gate acceptance below
+        # -- see spawn_tolerance_core.py's own docstring, "TWO ROTATION METRICS". Both are surfaced
+        # through gate_breakdown() so R4 (bead dr-sj6.24) collects them for every attempted state,
+        # accepted or rejected, not only accepted ones.
+        self.last_axis_tilt_rad = torch.zeros(n, device=device)
         self.last_within_tolerance = torch.zeros(n, dtype=torch.bool, device=device)
 
         rot_tol_str = "disabled" if self.cfg.rot_tol_rad is None else f"{math.degrees(self.cfg.rot_tol_rad):.2f}deg"
@@ -1788,6 +1795,9 @@ class _SpawnPoseToleranceAddon:
         pos_dist_m, rot_dist_rad = pose_distance(goal_pos_w, goal_quat_w, live_pos_w, live_quat_w)
         self.last_pos_dist_m = pos_dist_m
         self.last_rot_dist_rad = rot_dist_rad
+        # SECOND rotation metric, recorded not gated on -- see __init__'s comment on
+        # last_axis_tilt_rad and spawn_tolerance_core.py's own "TWO ROTATION METRICS" docstring.
+        self.last_axis_tilt_rad = axis_tilt_rad(goal_quat_w, live_quat_w)
 
         # goal_is_final: False while pose_command_w is still the provisional mid-air spawn pose
         # (S_t, pre-repin) -- fails closed rather than comparing against it. Always True for S1.
@@ -1848,13 +1858,17 @@ class SpawnToleranceHeldWithProbe(dexlift_mdp.held_with_probe):
         # .copy() (same discipline as SeatedHeldWithProbe/SeatedTerminateOnGrasp): mutating the base
         # instance's own cached dict in place would corrupt it for anything else reading it.
         # "spawn_tolerance" plus the raw displacement are appended so a caller can both filter on
-        # pass/fail AND collect the raw (pos_dist, rot_dist) distribution R4 needs to derive the
-        # tolerances themselves (bead dr-sj6.24) -- this is the "record the per-state displacement
-        # into the output" requirement this class exists to satisfy.
+        # pass/fail AND collect the raw (pos_dist, rot_dist, axis_tilt) distribution R4 needs to
+        # derive the tolerances themselves (bead dr-sj6.24) -- this is the "record the per-state
+        # displacement into the output" requirement this class exists to satisfy. BOTH rotation
+        # metrics are recorded (team-lead ask, 2026-08-29) for every attempted state, accepted or
+        # rejected -- see _SpawnPoseToleranceAddon.check()/spawn_tolerance_core.py's own docstring,
+        # "TWO ROTATION METRICS, DELIBERATELY BOTH KEPT, NEITHER CHOSEN".
         bd = super().gate_breakdown(env).copy()
         bd["spawn_tolerance"] = self._spawn_tolerance.last_within_tolerance.clone()
         bd["spawn_pos_dist_m"] = self._spawn_tolerance.last_pos_dist_m.clone()
         bd["spawn_rot_dist_rad"] = self._spawn_tolerance.last_rot_dist_rad.clone()
+        bd["spawn_axis_tilt_rad"] = self._spawn_tolerance.last_axis_tilt_rad.clone()
         return bd
 
 
@@ -3649,8 +3663,26 @@ def main() -> None:
         # warning about monitoring via this counter; use validate_c4_bank.py on the BANKED states
         # instead of trusting this breakdown for either arm).
         gate_names = gate_names + ["seated"]
+    if args_cli.c3_st_spawn_tolerance:
+        # SpawnToleranceHeldWithProbe.gate_breakdown() adds this key -- see that class's own
+        # gate_breakdown / _SpawnPoseToleranceAddon.check(). Appended last, same convention as
+        # "seated" immediately above (mutually exclusive with it, asserted before Isaac starts, so
+        # this and the "seated" branch never both fire).
+        gate_names = gate_names + ["spawn_tolerance"]
     rejection_counts = {g: 0 for g in gate_names}
     rejection_counts["accepted"] = 0
+    # -- PER-GATE REACH COUNTS (repose-recipe requirement, team-lead 2026-08-29, this file named as
+    # owner). rejection_counts[g] (first-failing-gate, priority order = gate_names) is a NUMERATOR
+    # with no denominator: a gate reading zero first-failing-gate hits could mean "this gate almost
+    # never rejects anything" or "almost nothing survives long enough to reach it" -- the exact
+    # ambiguity that made C4's seated count read as a flat zero (this file's own top-level warning).
+    # reach_counts[g] is that denominator: how many of this run's DONE episodes had every gate
+    # BEFORE g (in gate_names priority order) evaluate True, i.e. how many episodes g's own result
+    # was actually the deciding one for. reach_counts[gate_names[0]] == n_attempts always (every
+    # episode reaches the first gate trivially); local_fail_rate[g] = rejection_counts[g] /
+    # reach_counts[g] is the read repose-recipe's gate decomposition needs and this breakdown could
+    # not previously produce.
+    reach_counts = {g: 0 for g in gate_names}
 
     # -- DIAGNOSTIC ONLY, no gate/threshold touched: for every episode whose FIRST failing gate is
     # probe_ready specifically, record (a) which OTHER termination fired this same step and (b) the
@@ -3725,6 +3757,17 @@ def main() -> None:
             success_now = env.termination_manager.get_term("success")
             done_idx = torch.nonzero(dones).flatten()
             n_attempts += done_idx.numel()
+
+            # -- PER-GATE REACH COUNTS, vectorized over this step's done batch. `still_reaching`
+            # starts all-True (every done episode reaches gate_names[0]) and is ANDed down through
+            # the SAME priority order the first-failing-gate loop below walks -- reach_counts[g]
+            # accumulates BEFORE ANDing in gate g's own result, so it counts "survived every gate
+            # strictly before g", not "and also passed g". See the dict's own comment above for why
+            # this denominator is needed.
+            still_reaching = torch.ones(done_idx.numel(), dtype=torch.bool, device=dones.device)
+            for g in gate_names:
+                reach_counts[g] += int(still_reaching.sum().item())
+                still_reaching = still_reaching & breakdown[g][done_idx]
 
             if c2 is not None:
                 c2.finalize_episodes(done_idx, success_now)
@@ -3829,6 +3872,21 @@ def main() -> None:
     print("rejection breakdown (first failing gate, priority order = gate_names above):", flush=True)
     for g in gate_names + ["accepted"]:
         print(f"  {g:22s}: {rejection_counts[g]}", flush=True)
+    # -- PER-GATE REACH COUNTS + local fail rate (repose-recipe requirement, team-lead 2026-08-29).
+    # reach_counts[g] is the denominator rejection_counts[g] never had: episodes for which g's
+    # result was actually the deciding one (every gate before it, in this SAME priority order,
+    # already passed). local_fail_rate=rejection_counts[g]/reach_counts[g] answers "of the states
+    # that got this far, how many did THIS gate reject" -- distinct from
+    # rejection_counts[g]/n_attempts, which conflates "this gate rejects a lot of what reaches it"
+    # with "almost nothing reaches it at all". reach_counts[gate_names[0]] == n_attempts always.
+    print("per-gate reach counts (episodes for which this gate's result was the deciding one):", flush=True)
+    for g in gate_names:
+        local_rate_str = f"{rejection_counts[g] / reach_counts[g]:.2%}" if reach_counts[g] > 0 else "n/a (0 reached)"
+        print(
+            f"  {g:22s}: reached={reach_counts[g]:<8d} rejected_here={rejection_counts[g]:<8d} "
+            f"local_fail_rate={local_rate_str}",
+            flush=True,
+        )
 
     # PROBE-ROUTE-ONLY: "probe_ready" only appears in gate_names for the settle+probe route
     # (held_with_probe / SeatedHeldWithProbe) -- --c4_terminate_on_grasp has no probe at all, so

@@ -50,6 +50,21 @@ achieved_quat_w); ori_err = 2*acos(quat_err[:,0].abs().clamp(max=1.0))``) -- rep
 local ``(w,x,y,z)`` Hamilton product/conjugate rather than restated with different arithmetic, so a
 reader who already trusts that formula there can verify this one by comparison rather than by
 re-deriving it.
+
+TWO ROTATION METRICS, DELIBERATELY BOTH KEPT, NEITHER CHOSEN (team-lead ask, 2026-08-29). For a
+horizontal S_t peg, spin about the leg's own long axis is physically unconstrained (F51) -- a peg
+rotated 90deg about its own axis is the same state for every purpose this rung cares about, so
+:func:`pose_distance`'s full-quaternion ``rot_dist_rad`` (position AND orientation together,
+including axial spin) MAY be the wrong metric to gate acceptance on; an axis-only tilt,
+:func:`axis_tilt_rad`, ignores that spin and may be the more defensible one (``V2_C3_DESIGN.md``
+sec 7). But "may be" is not a source, and picking one now would be exactly the invented-constant
+failure ``RESET_SPEC_V2.md`` R7 exists to prevent, the same discipline that keeps
+:class:`SpawnToleranceConfig` free of a default. So R4 records BOTH, per accepted and rejected
+state, and bead dr-sj6.24 chooses the metric AND the tolerance together from that one distribution,
+rather than the metric being fixed by whichever was easiest to compute first. Neither is used to
+gate acceptance today -- :func:`within_spawn_tolerance` still gates on ``pose_distance``'s full
+angle alone, unchanged, because switching gates would itself be the premature decision this
+paragraph says not to make.
 """
 
 from __future__ import annotations
@@ -59,8 +74,10 @@ from dataclasses import dataclass
 import torch
 
 __all__ = [
+    "LEG_TIP_LOCAL_AXIS",
     "SpawnPoseDisplacement",
     "SpawnToleranceConfig",
+    "axis_tilt_rad",
     "pose_distance",
     "within_spawn_tolerance",
 ]
@@ -108,13 +125,20 @@ class SpawnToleranceConfig:
 
 @dataclass(frozen=True)
 class SpawnPoseDisplacement:
-    """One measured (position, rotation) displacement from spawn -- what R4 needs to collect to
-    derive :class:`SpawnToleranceConfig`'s numbers (bead dr-sj6.24). Plain floats, not tensors, so
-    a caller can accumulate these into a plain list/csv/npz without any torch dependency surviving
-    past the measurement itself."""
+    """One measured displacement from the commanded goal -- what R4 needs to collect to derive
+    :class:`SpawnToleranceConfig`'s numbers AND choose between the two rotation metrics (bead
+    dr-sj6.24; see this module's own docstring, "TWO ROTATION METRICS"). Plain floats, not tensors,
+    so a caller can accumulate these into a plain list/csv/npz without any torch dependency
+    surviving past the measurement itself.
+
+    ``rot_dist_rad`` and ``axis_tilt_rad`` are BOTH recorded, deliberately -- neither is dropped in
+    favour of the other. Which one ends up gating acceptance is bead dr-sj6.24's decision, made from
+    the distribution these fields exist to build, not from this dataclass's shape.
+    """
 
     pos_dist_m: float
     rot_dist_rad: float
+    axis_tilt_rad: float
 
 
 def _quat_mul(q1: torch.Tensor, q2: torch.Tensor) -> torch.Tensor:
@@ -161,6 +185,50 @@ def pose_distance(
     return pos_dist, rot_dist
 
 
+LEG_TIP_LOCAL_AXIS: tuple[float, float, float] = (-1.0, 0.0, 0.0)
+"""The leg's insertion-tip direction in its OWN local/body frame -- the SAME fixed convention
+``_MatingFrameGeometry._tip_local_axis`` uses
+(``scripts_v2/tools/generate_reset_states_policy.py``, ``_MatingFrameGeometry.__init__``), reused
+here rather than re-derived: this project has been burned before by a geometry constant quoted from
+memory instead of imported. NOT read from ``metadata.yaml`` -- ``assembled_offset`` there gives the
+mating feature's position/orientation, not this axis; this is a fixed modeling convention for this
+leg asset family, validated in that class's own docstring by reproducing a known spawn distribution
+before being trusted. Rotation ABOUT this axis is exactly the "leg's own long axis" spin
+:func:`axis_tilt_rad` is deliberately blind to."""
+
+
+def _quat_rotate(quat_wxyz: torch.Tensor, v: tuple[float, float, float]) -> torch.Tensor:
+    """Rotate a fixed LOCAL unit vector ``v`` into world frame by ``quat_wxyz`` (``(..., 4) ->
+    (..., 3)``), via the quaternion sandwich ``q * (0, v) * q^-1``. Mathematically identical to
+    ``_MatingFrameGeometry``'s rotation-matrix formulation (``_quat_wxyz_to_rotmat``/``_rotate`` in
+    ``generate_reset_states_policy.py``) -- expressed with THIS module's own quaternion helpers
+    (:func:`_quat_mul`/:func:`_quat_inv`) instead of adding a second rotation representation here."""
+    v_t = torch.as_tensor(v, dtype=quat_wxyz.dtype, device=quat_wxyz.device).expand(*quat_wxyz.shape[:-1], 3)
+    v_quat = torch.cat([torch.zeros_like(v_t[..., :1]), v_t], dim=-1)
+    rotated = _quat_mul(_quat_mul(quat_wxyz, v_quat), _quat_inv(quat_wxyz))
+    return rotated[..., 1:]
+
+
+def axis_tilt_rad(
+    goal_quat_w: torch.Tensor,
+    live_quat_w: torch.Tensor,
+    local_axis: tuple[float, float, float] = LEG_TIP_LOCAL_AXIS,
+) -> torch.Tensor:
+    """``(...,)``: angle (radians) between ``local_axis`` rotated by ``goal_quat_w`` and the SAME
+    local axis rotated by ``live_quat_w`` -- spin-INVARIANT about that axis, unlike
+    :func:`pose_distance`'s ``rot_dist_rad`` (the full quaternion angle, which includes spin about
+    every axis). See this module's own docstring, "TWO ROTATION METRICS, DELIBERATELY BOTH KEPT,
+    NEITHER CHOSEN" -- this is the second of the two, recorded for R4 alongside the first, not a
+    replacement for it.
+    """
+    goal_axis_w = _quat_rotate(goal_quat_w, local_axis)
+    live_axis_w = _quat_rotate(live_quat_w, local_axis)
+    goal_axis_w = goal_axis_w / goal_axis_w.norm(dim=-1, keepdim=True)
+    live_axis_w = live_axis_w / live_axis_w.norm(dim=-1, keepdim=True)
+    cosang = (goal_axis_w * live_axis_w).sum(-1).clamp(-1.0, 1.0)
+    return torch.acos(cosang)
+
+
 def within_spawn_tolerance(
     pos_dist_m: torch.Tensor, rot_dist_rad: torch.Tensor, cfg: SpawnToleranceConfig
 ) -> torch.Tensor:
@@ -169,14 +237,15 @@ def within_spawn_tolerance(
     Deliberately the SAME shape as ``success.py``'s ``within_success_tolerance`` -- strict
     less-than, ``rot_tol`` tested for truthiness so ``None`` drops the orientation gate -- reused
     conceptually rather than imported, because that function is coupled to the training/ADR
-    curriculum's live goal-command plumbing (``goal_pose_error`` reads
-    ``env.command_manager.get_command(...)``), which this generator-time acceptance check
-    deliberately does not depend on: S_t's spawn pose is captured directly off the object at reset,
-    not read back through whatever goal-command wiring a given run happens to have active. See
-    ``_SpawnPoseToleranceAddon``'s own docstring (``scripts_v2/tools/generate_reset_states_policy.py``),
-    "WHY CAPTURE ON THE FIRST check() AFTER RESET", for the full reasoning (this project's own F27
-    discipline: a value correct under one config's wiring must not be silently consumed under a
-    different one).
+    curriculum's own goal-command plumbing in a way this generator-time acceptance check need not
+    be: this module's caller (``_SpawnPoseToleranceAddon``,
+    ``scripts_v2/tools/generate_reset_states_policy.py``) passes in whatever
+    ``spawn_pos_w``/``spawn_quat_w`` it resolved (as of the second correction, the COMMANDED GOAL
+    read via ``CommandManager.get_term``, gated on ``goal_is_final`` -- see that class's own
+    docstring); this function itself is agnostic to where that pose came from, by design (this
+    project's own F27 discipline: a value correct under one config's wiring must not be silently
+    consumed under a different one, so this pure-math half makes no assumption about the source at
+    all).
     """
     if cfg.rot_tol_rad:
         return (pos_dist_m < cfg.pos_tol_m) & (rot_dist_rad < cfg.rot_tol_rad)
