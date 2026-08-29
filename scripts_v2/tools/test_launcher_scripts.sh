@@ -131,7 +131,7 @@ echo "== lint: no apostrophe inside \${VAR:?...} or \${VAR:-...} =="
 #
 # The behavioural cases above are what prove the guards RUN; this proves the hazard that disabled
 # them cannot silently return.
-for script in ramp_stage.sh r0_control.sh wandb_sync_loop.sh test_launcher_scripts.sh; do
+for script in ramp_stage.sh r0_control.sh wandb_sync_loop.sh reconcile_remote_checkout.sh test_launcher_scripts.sh; do
   # Exclude comment lines: this file documents the bad form on purpose, in the header above.
   hits=$(grep -n '\${[A-Za-z_][A-Za-z_0-9]*:[?-][^}]*'"'" "$HERE/$script" | grep -v '^[0-9]*: *#' || true)
   if [ -z "$hits" ]; then
