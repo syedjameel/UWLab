@@ -291,10 +291,51 @@ def test_read_jsonl_log_refuses_malformed_line_with_its_line_number(tmp_path):
     import pytest
 
     log_path = tmp_path / "log.jsonl"
-    log_path.write_text('{"success": true}\n' "not json at all\n")
+    log_path.write_text(
+        '{"success": true, "pos_dist_m": 0.01, "rot_dist_rad": 0.02, "axis_tilt_rad": 0.015}\n'
+        "not json at all\n"
+    )
     with pytest.raises(RefuseToAnalyze) as exc_info:
         read_jsonl_log(str(log_path))
     assert ":2:" in str(exc_info.value)  # names the OFFENDING line, not just "malformed somewhere"
+
+
+def test_read_jsonl_log_refuses_line_missing_a_required_field(tmp_path):
+    import pytest
+
+    log_path = tmp_path / "log.jsonl"
+    log_path.write_text(
+        '{"success": true, "pos_dist_m": 0.01, "rot_dist_rad": 0.02, "axis_tilt_rad": 0.015}\n'
+        '{"success": true, "pos_dist_m": 0.01, "rot_dist_rad": 0.02}\n'  # missing axis_tilt_rad
+    )
+    with pytest.raises(RefuseToAnalyze) as exc_info:
+        read_jsonl_log(str(log_path))
+    msg = str(exc_info.value)
+    assert ":2:" in msg
+    assert "axis_tilt_rad" in msg
+
+
+def test_read_jsonl_log_refuses_line_with_wrong_typed_field(tmp_path):
+    import pytest
+
+    log_path = tmp_path / "log.jsonl"
+    log_path.write_text(
+        '{"success": true, "pos_dist_m": "not a number", "rot_dist_rad": 0.02, "axis_tilt_rad": 0.015}\n'
+    )
+    with pytest.raises(RefuseToAnalyze) as exc_info:
+        read_jsonl_log(str(log_path))
+    assert ":1:" in str(exc_info.value)
+
+
+def test_read_jsonl_log_tolerates_extra_unrecognised_fields(tmp_path):
+    log_path = tmp_path / "log.jsonl"
+    log_path.write_text(
+        '{"success": true, "pos_dist_m": 0.01, "rot_dist_rad": 0.02, "axis_tilt_rad": 0.015, '
+        '"episode_len": 187, "env": 3}\n'
+    )
+    records = read_jsonl_log(str(log_path))
+    assert len(records) == 1
+    assert records[0]["episode_len"] == 187  # extra fields pass through, not rejected
 
 
 # ---------------------------------------------------------------------------------------------

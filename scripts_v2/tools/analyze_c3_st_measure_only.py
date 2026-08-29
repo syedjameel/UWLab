@@ -66,12 +66,26 @@ torch-serialized file without it. Runnable with
 from __future__ import annotations
 
 import argparse
+import importlib.util as _importlib_util
 import json
 import math
 import os
 
 import numpy as np
 import torch
+
+# -- c3_st_measure_only_log_schema.py: loaded BY FILE PATH (same technique this project's test
+# suites use for a same-directory sibling module) rather than a bare `import
+# c3_st_measure_only_log_schema`, so this still works regardless of whether this file is run
+# directly, imported as a module, or loaded by file path itself (as the test suite does). Field-name
+# constants ONLY -- this is the ONE place both this consumer and generate_reset_states_policy.py's
+# producer get them from (bead dr-sj6.24, team-lead instruction 2026-08-29: "a second literal list
+# is not" a fix).
+_schema_spec = _importlib_util.spec_from_file_location(
+    "c3_st_measure_only_log_schema", os.path.join(os.path.dirname(os.path.abspath(__file__)), "c3_st_measure_only_log_schema.py")
+)
+c3_st_measure_only_log_schema = _importlib_util.module_from_spec(_schema_spec)
+_schema_spec.loader.exec_module(c3_st_measure_only_log_schema)
 
 DEFAULT_MIN_N = 200
 """NOT derived from a formal power calculation -- a round number chosen so a p99 estimate has a
@@ -114,12 +128,19 @@ class RefuseToAnalyze(Exception):
 
 def read_jsonl_log(path: str) -> list[dict]:
     """Parse a JSON-lines log (see this module's own docstring, "INPUT FORMAT, PART 2") into a
-    list of dicts, one per line. Blank lines are skipped; a malformed line raises
-    :class:`RefuseToAnalyze` naming its own line number rather than silently dropping it -- a
-    silently-shorter distribution is exactly the "looks like a tight distribution, is actually a
-    low count" failure this whole script exists to prevent (team-lead's own framing, requirement
-    6: "an addon that records nothing and an addon that records zeros look identical in a summary
-    line")."""
+    list of dicts, one per line. Blank lines are skipped; a malformed JSON line, or a well-formed
+    one that fails :func:`c3_st_measure_only_log_schema.validate_log_record` (missing/wrong-typed
+    field), raises :class:`RefuseToAnalyze` naming its own line number rather than silently
+    dropping it -- a silently-shorter distribution is exactly the "looks like a tight distribution,
+    is actually a low count" failure this whole script exists to prevent (team-lead's own framing,
+    requirement 6: "an addon that records nothing and an addon that records zeros look identical in
+    a summary line"). SCHEMA VALIDATION (team-lead requirement, 2026-08-29): a producer that
+    silently emits four fields where five are expected must not read as a distribution with one
+    metric quietly missing -- it must refuse, here, at parse time, not fail confusingly three
+    functions later when a KeyError names a symptom instead of the cause. Extra/unrecognised keys
+    are NOT an error (see validate_log_record's own docstring) -- only MISSING or wrong-typed
+    required fields are.
+    """
     records: list[dict] = []
     with open(path) as f:
         for lineno, raw_line in enumerate(f, start=1):
@@ -127,9 +148,14 @@ def read_jsonl_log(path: str) -> list[dict]:
             if not line:
                 continue
             try:
-                records.append(json.loads(line))
+                record = json.loads(line)
             except json.JSONDecodeError as e:
                 raise RefuseToAnalyze(f"{path}:{lineno}: malformed JSON line -- {e}") from e
+            try:
+                c3_st_measure_only_log_schema.validate_log_record(record, lineno=lineno)
+            except c3_st_measure_only_log_schema.LogSchemaError as e:
+                raise RefuseToAnalyze(f"{path}:{lineno}: {e}") from e
+            records.append(record)
     return records
 
 
@@ -139,8 +165,9 @@ def attempted_vs_recorded(records: list[dict]) -> dict:
     run ATTEMPTED (every logged episode, accepted or not). Reported as an explicit COUNT pair, not
     folded into a rate, so a low count is visibly a low count rather than a plausible-looking
     fraction."""
+    field = c3_st_measure_only_log_schema.FIELD_SUCCESS
     n_attempted = len(records)
-    n_recorded = sum(1 for r in records if r.get("success"))
+    n_recorded = sum(1 for r in records if r.get(field))
     return {
         "attempted": n_attempted,
         "recorded": n_recorded,
@@ -440,29 +467,30 @@ def main() -> None:
     validate_measure_only_bank(args.bank_path, bank)
     print(f"[analyzer] bank confirmed measure-only: {args.bank_path}")
 
+    schema = c3_st_measure_only_log_schema
     records = read_jsonl_log(args.log_path)
     counts = attempted_vs_recorded(records)
-    accepted = [r for r in records if r.get("success")]
+    accepted = [r for r in records if r.get(schema.FIELD_SUCCESS)]
 
     pos_report = distribution_report(
-        [r["pos_dist_m"] for r in accepted], name="pos_dist_m", min_n=args.min_n, percentiles=percentiles, bins=args.bins
+        [r[schema.FIELD_POS_DIST_M] for r in accepted], name="pos_dist_m", min_n=args.min_n, percentiles=percentiles, bins=args.bins
     )
     rot_report = distribution_report(
-        [r["rot_dist_rad"] for r in accepted], name="rot_dist_rad", min_n=args.min_n, percentiles=percentiles, bins=args.bins
+        [r[schema.FIELD_ROT_DIST_RAD] for r in accepted], name="rot_dist_rad", min_n=args.min_n, percentiles=percentiles, bins=args.bins
     )
     axis_report = distribution_report(
-        [r["axis_tilt_rad"] for r in accepted], name="axis_tilt_rad", min_n=args.min_n, percentiles=percentiles, bins=args.bins
+        [r[schema.FIELD_AXIS_TILT_RAD] for r in accepted], name="axis_tilt_rad", min_n=args.min_n, percentiles=percentiles, bins=args.bins
     )
     disagreement = rotation_disagreement_report(
-        [r["rot_dist_rad"] for r in accepted],
-        [r["axis_tilt_rad"] for r in accepted],
+        [r[schema.FIELD_ROT_DIST_RAD] for r in accepted],
+        [r[schema.FIELD_AXIS_TILT_RAD] for r in accepted],
         min_n=args.min_n,
         significant_threshold_rad=math.radians(args.significant_threshold_deg),
     )
     proposal = propose_tolerances(
-        [r["pos_dist_m"] for r in accepted],
-        [r["rot_dist_rad"] for r in accepted],
-        [r["axis_tilt_rad"] for r in accepted],
+        [r[schema.FIELD_POS_DIST_M] for r in accepted],
+        [r[schema.FIELD_ROT_DIST_RAD] for r in accepted],
+        [r[schema.FIELD_AXIS_TILT_RAD] for r in accepted],
         min_n=args.min_n,
         percentiles=percentiles,
     )

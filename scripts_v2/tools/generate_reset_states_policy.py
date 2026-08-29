@@ -483,10 +483,24 @@ simulation_app = app_launcher.app
 
 """Rest everything follows."""
 
+import importlib.util as _importlib_util  # noqa: E402
 import json  # noqa: E402
 import os  # noqa: E402
 import time  # noqa: E402
 import yaml  # noqa: E402
+
+# -- c3_st_measure_only_log_schema.py: loaded BY FILE PATH, same technique this project's own test
+# suites use for a same-directory sibling module, rather than a bare `import
+# c3_st_measure_only_log_schema` (which would depend on this script's directory happening to be on
+# sys.path -- true when launched as `python scripts_v2/tools/generate_reset_states_policy.py`, but
+# not guaranteed for every way this file could be imported). Field-name constants ONLY -- this is
+# the ONE place both this producer and analyze_c3_st_measure_only.py's consumer get them from (bead
+# dr-sj6.24, team-lead instruction 2026-08-29: "a second literal list is not" a fix).
+_c3_st_log_schema_spec = _importlib_util.spec_from_file_location(
+    "c3_st_measure_only_log_schema", os.path.join(os.path.dirname(os.path.abspath(__file__)), "c3_st_measure_only_log_schema.py")
+)
+c3_st_measure_only_log_schema = _importlib_util.module_from_spec(_c3_st_log_schema_spec)
+_c3_st_log_schema_spec.loader.exec_module(c3_st_measure_only_log_schema)
 
 import gymnasium as gym  # noqa: E402
 import torch  # noqa: E402
@@ -3713,6 +3727,19 @@ def main() -> None:
             flush=True,
         )
 
+    # -- MEASURE-ONLY LOG (bead dr-sj6.24, team-lead instruction 2026-08-29): opened ONCE here,
+    # appended to per finished episode in the main loop below, closed once at the end -- NEVER
+    # re-opened/rewritten-whole per episode. That is the SAME "never rewrite the whole file per
+    # accepted state" discipline the launch script's own "CHUNKING IS MANDATORY -- SINGLE-PROCESS
+    # COST IS QUADRATIC IN BANK SIZE" section already established for the accept-time .pt bank
+    # itself; a naive per-episode full rewrite of this log would reintroduce that exact cost here.
+    _measure_only_log_file = None
+    _measure_only_log_path = None
+    if args_cli.c3_st_tolerance_measure_only:
+        _measure_only_log_path = os.path.join(output_dir, "c3_st_measure_only_log.jsonl")
+        _measure_only_log_file = open(_measure_only_log_path, "w")
+        print(f"[generator] MEASURE-ONLY LOG (resolved, absolute): {os.path.abspath(_measure_only_log_path)}", flush=True)
+
     env_cfg.seed = None
 
     env = gym.make(args_cli.task, cfg=env_cfg).unwrapped
@@ -3947,6 +3974,24 @@ def main() -> None:
                 reach_counts[g] += int(still_reaching.sum().item())
                 still_reaching = still_reaching & breakdown[g][done_idx]
 
+            if _measure_only_log_file is not None:
+                # -- MEASURE-ONLY LOG WRITE (bead dr-sj6.24). A SEPARATE loop over done_idx, not
+                # folded into the reach-count reduction above or the first-failing-gate rejection
+                # loop below -- neither of those is touched by this addition (team-lead: "do not
+                # touch the boolean-gate reduction or the reach counts... I do not want them
+                # re-verified"). Field names come from c3_st_measure_only_log_schema, the ONE place
+                # analyze_c3_st_measure_only.py's consumer also reads them from.
+                schema = c3_st_measure_only_log_schema
+                for idx in done_idx.tolist():
+                    record = {
+                        schema.FIELD_SUCCESS: bool(success_now[idx]),
+                        schema.FIELD_POS_DIST_M: float(breakdown["spawn_pos_dist_m"][idx]),
+                        schema.FIELD_ROT_DIST_RAD: float(breakdown["spawn_rot_dist_rad"][idx]),
+                        schema.FIELD_AXIS_TILT_RAD: float(breakdown["spawn_axis_tilt_rad"][idx]),
+                    }
+                    _measure_only_log_file.write(json.dumps(record) + "\n")
+                _measure_only_log_file.flush()
+
             if c2 is not None:
                 c2.finalize_episodes(done_idx, success_now)
 
@@ -4035,6 +4080,10 @@ def main() -> None:
             break
         if env.sim.is_stopped():
             break
+
+    if _measure_only_log_file is not None:
+        _measure_only_log_file.close()
+        print(f"[generator] MEASURE-ONLY LOG closed: {os.path.abspath(_measure_only_log_path)}", flush=True)
 
     print("\n=== GENERATOR RESULT ===", flush=True)
     print(f"attempts (episodes ended): {n_attempts}", flush=True)
