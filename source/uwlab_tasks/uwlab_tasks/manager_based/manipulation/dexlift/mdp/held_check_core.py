@@ -91,6 +91,22 @@ def passive_gates(
     from these three (``V2_REPOSE_RECIPE.md`` sec 4.1), and it must agree with the generator
     EXACTLY or it predicts nothing.
 
+    WHAT CHANGED 2026-08-29, AND WHAT IT DOES TO THE PREDICTOR. ``co_move`` no longer gates
+    :func:`held_decision` (see its docstring for the physical argument). It is still computed and
+    still returned here, on purpose. But the composition of any predictor built on these three has
+    therefore changed: **the chain now requires only two of them** -- ``settled`` and
+    ``opposed_contact`` -- plus a probe gate that no training-time proxy can evaluate at all.
+
+    So a proxy that ANDs all three is no longer predicting what the chain requires: it is strictly
+    PESSIMISTIC, because it still charges episodes for a gate acceptance no longer consults, and
+    ``co_move`` was the dominant rejector at 46.8%. A proxy reading ``settled & opposed_contact``
+    predicts the passive half of the current chain; ``co_move``'s own per-gate fraction remains
+    worth logging precisely because nobody yet knows whether it was doing work.
+
+    This function's signature and return are deliberately UNCHANGED, so that consumers keep getting
+    the third boolean and can decide for themselves what to do with it. Nothing here silently
+    redefines what a caller receives.
+
     "Agree exactly" is why this is a factored-out function rather than the same five lines written
     again in the logging term. ``V2_POSE_FINDINGS.md`` F27 is a recurring defect of this project --
     a constant or a definition established in one place and restated in another, each individually
@@ -174,7 +190,33 @@ def held_decision(
             still catches a non-tracking object on however small a jog actually occurs.
 
     Returns:
-        ``(N,)`` bool: held := settled & opposed_contact & co_move & probe_tracks.
+        ``(N,)`` bool: held := settled & opposed_contact & (probe_ready & gripper_moved & tracks).
+
+    WHY ``co_move`` IS NOT IN THIS AND (user decision, 2026-08-29). It is still computed here and
+    still reported through ``held_check.gate_breakdown``; it no longer votes.
+
+    * ``co_move`` demanded the object move RIGIDLY with the hand. A leg seated in a bore is
+      CONSTRAINED BY THE FIXTURE, so palm motion necessarily produces relative velocity -- the gate
+      therefore rejects genuinely-held states for doing the very thing the task asks. It was the
+      dominant rejector: 46.8% of all attempts on S1 (``V2_POSE_FINDINGS.md`` F28/F30).
+    * It was also never the gate that catches the adversarial case below. This function's own
+      brief says gates 1-3 are ALL satisfied by that case -- object at target, hand resting nearby
+      with incidental contact, nothing moving. Only the probe separates "resting against" from
+      "held by", so ``tracks`` is what rejects it, not ``co_move``. Verified, not assumed: with
+      ``co_move`` removed, ``test_adversarial_case_rejected`` still rejects, via ``tracks`` alone.
+
+    WHY ``gripper_moved`` STAYED, when the same change was first scoped to drop it too. It is not
+    an acceptance gate. It is a VALIDITY CHECK ON THE MEASUREMENT: it does not judge the grasp, it
+    judges whether the probe happened. Dropping it would not loosen a criterion, it would make
+    ``tracks`` report on a measurement that was never taken -- and it would do so in the very change
+    that makes ``tracks`` the ONLY remaining gate. An env whose probe failed to jog would then be
+    accepted and would look identical to a clean accept in every log this project has.
+    ``test_degenerate_zero_jog_does_not_trivially_pass`` is the test that catches this; it failed
+    under the drop-both variant and was NOT weakened to accommodate it.
+
+    IF TABLE-LEG MOTION BECOMES A PROBLEM, RAISE THE FORCE THRESHOLD IN ``opposed_contact``.
+    Do NOT reinstate ``co_move``. This is the user's own stated fallback and it is recorded here so
+    that nobody restores the gate by reflex when a run looks noisy.
 
     THE ADVERSARIAL CASE THIS MUST REJECT (Option-B, per bead notes): construct an env where the
     object is already at/near its target pose, the hand is posed nearby with light incidental
@@ -183,8 +225,11 @@ def held_decision(
     the object is NOT actually attached to the hand. When the generator's probe jogs the gripper by
     ``gripper_disp_probe``, an untouched-but-nearby object does not move with it:
     ``obj_disp_probe`` stays near zero while ``gripper_disp_probe`` does not, so
-    ``|obj_disp_probe - gripper_disp_probe| >= probe_track_tol`` and gate 4 -- and therefore the
-    whole AND -- is False. See ``test_held_check_core.py::test_adversarial_case_rejected``.
+    ``|obj_disp_probe - gripper_disp_probe| >= probe_track_tol`` and the probe gate -- and
+    therefore the whole AND -- is False. See
+    ``test_held_check_core.py::test_adversarial_case_rejected``. That test is now load-bearing in a
+    way it was not before: with ``co_move`` dropped, ``tracks`` is the ONLY gate standing between
+    this function and the case it exists to reject.
     """
     settled, opposed_contact, co_move = passive_gates(
         steps_since_reset=steps_since_reset,
@@ -198,10 +243,18 @@ def held_decision(
     )
 
     gripper_disp_norm = torch.linalg.norm(gripper_disp_probe, dim=-1)
+    # co_move is STILL COMPUTED, DELIBERATELY NOT GATING (user decision 2026-08-29). It remains
+    # available to held_check.gate_breakdown and to the reach-count histogram, because logging it is
+    # free and reversible and is the only way anyone learns whether it was doing work. What was
+    # removed is its vote, not its computation.
+    #
+    # gripper_moved STAYS IN THE CHAIN, and the distinction is the whole reason: it is not an
+    # acceptance gate, it is a VALIDITY CHECK ON THE MEASUREMENT. It does not judge the grasp; it
+    # judges whether the probe happened at all. Remove it and `tracks` reports on a measurement that
+    # was never taken -- a 0.5 mm jog against a 3 mm tolerance floor makes `tracks` trivially true.
     gripper_moved = gripper_disp_norm > probe_min_disp
     mismatch = torch.linalg.norm(obj_disp_probe - gripper_disp_probe, dim=-1)
     tol = torch.clamp(probe_track_tol_frac * gripper_disp_norm, min=probe_track_tol)
     tracks = mismatch < tol
-    probe_pass = probe_ready & gripper_moved & tracks
 
-    return settled & opposed_contact & co_move & probe_pass
+    return settled & opposed_contact & (probe_ready & gripper_moved & tracks)
