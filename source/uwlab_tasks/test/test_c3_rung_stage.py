@@ -409,20 +409,25 @@ _SPAWN_POS = (0.31, -0.07, 0.0480)  # mid-air, inside the [0, 0.05] m drop clamp
 _APEX_POS = (0.32, -0.07, 0.0300)  # bounce apex: speed 0.0 but NOT settled
 _RESTING_POS = (0.33, -0.06, 0.0153)  # at rest, tip on the table
 
+_PIVOT_POS = (0.33, -0.06, 0.0155)  # linearly still, but pivoting on a corner
+_PIVOT_QUAT = (0.66, 0.25, 0.66, 0.24)  # mid-pivot: NOT the orientation it will come to rest at
+
+# (step, linear speed m/s, ANGULAR speed rad/s, pos, quat)
 _DROP_TRAJECTORY = [
-    (0, 0.00, _SPAWN_POS, _SPAWN_QUAT),  # the instant CommandManager.reset() reads
-    (10, 1.20, (0.31, -0.07, 0.030), (0.5, 0.5, 0.5, 0.5)),
-    (30, 0.00, _APEX_POS, (0.6, 0.4, 0.5, 0.48)),  # apex: zero speed, still tumbling
-    (55, 0.90, (0.33, -0.06, 0.020), (0.68, 0.1, 0.70, 0.05)),
-    (61, 0.30, (0.33, -0.06, 0.016), (0.70, 0.02, 0.71, 0.01)),  # past the floor, still moving
-    (70, 0.02, _RESTING_POS, _RESTING_QUAT),  # FIRST genuinely settled step
-    (90, 0.00, (0.34, -0.06, 0.0153), (0.70, 0.0, 0.71, 0.0)),  # later; must NOT re-pin again
+    (0, 0.00, 0.00, _SPAWN_POS, _SPAWN_QUAT),  # the instant CommandManager.reset() reads
+    (10, 1.20, 6.00, (0.31, -0.07, 0.030), (0.5, 0.5, 0.5, 0.5)),
+    (30, 0.00, 5.00, _APEX_POS, (0.6, 0.4, 0.5, 0.48)),  # apex: zero LINEAR speed, still tumbling
+    (55, 0.90, 3.00, (0.33, -0.06, 0.020), (0.68, 0.1, 0.70, 0.05)),
+    (61, 0.30, 1.50, (0.33, -0.06, 0.016), (0.70, 0.02, 0.71, 0.01)),  # past the floor, still moving
+    (65, 0.01, 0.80, _PIVOT_POS, _PIVOT_QUAT),  # LINEARLY STILL but ROTATING -- must not fire
+    (70, 0.02, 0.01, _RESTING_POS, _RESTING_QUAT),  # FIRST genuinely settled step
+    (90, 0.00, 0.00, (0.34, -0.06, 0.0153), (0.70, 0.0, 0.71, 0.0)),  # later; must NOT re-pin again
 ]
 
 _MIN_STEPS = 60  # held_check_core.SETTLE_STEPS; passed in, never imported here (torch dependency)
 
 
-def _play_drop(trajectory, *, settle_speed_mps=None, min_steps=_MIN_STEPS):
+def _play_drop(trajectory, *, settle_speed_mps=None, settle_ang_speed_rad_s=None, min_steps=_MIN_STEPS):
     """Run a scripted drop through st_should_repin and return (fire_count, pinned_pose_or_None).
 
     The pinned pose is what st_goal_pose returns at the step the re-pin fires -- i.e. exactly what
@@ -430,15 +435,19 @@ def _play_drop(trajectory, *, settle_speed_mps=None, min_steps=_MIN_STEPS):
     """
     if settle_speed_mps is None:
         settle_speed_mps = _c3_rung_core.DEFAULT_ST_SETTLE_SPEED_MPS
+    if settle_ang_speed_rad_s is None:
+        settle_ang_speed_rad_s = _c3_rung_core.DEFAULT_ST_SETTLE_ANG_SPEED_RAD_S
     already = False
     fires = 0
     pinned = None
-    for step, speed, pos, quat in trajectory:
+    for step, speed, ang_speed, pos, quat in trajectory:
         if _c3_rung_core.st_should_repin(
             already_repinned=already,
             steps_since_reset=step,
             object_lin_speed_mps=speed,
+            object_ang_speed_rad_s=ang_speed,
             settle_speed_mps=settle_speed_mps,
+            settle_ang_speed_rad_s=settle_ang_speed_rad_s,
             min_steps=min_steps,
         ):
             fires += 1
@@ -484,7 +493,9 @@ def test_the_step_floor_alone_is_not_enough_either():
         already_repinned=False,
         steps_since_reset=61,
         object_lin_speed_mps=0.30,
+        object_ang_speed_rad_s=0.0,
         settle_speed_mps=0.05,
+        settle_ang_speed_rad_s=0.05,
         min_steps=_MIN_STEPS,
     )
 
@@ -494,7 +505,9 @@ def test_the_repin_fires_on_the_first_step_where_both_conditions_hold():
         already_repinned=False,
         steps_since_reset=61,
         object_lin_speed_mps=0.05,  # exactly at the ceiling -- inclusive
+        object_ang_speed_rad_s=0.05,  # likewise
         settle_speed_mps=0.05,
+        settle_ang_speed_rad_s=0.05,
         min_steps=_MIN_STEPS,
     )
     # ... and not one step earlier: the floor is strict (steps > min_steps), matching held_check's
@@ -503,7 +516,9 @@ def test_the_repin_fires_on_the_first_step_where_both_conditions_hold():
         already_repinned=False,
         steps_since_reset=60,
         object_lin_speed_mps=0.0,
+        object_ang_speed_rad_s=0.0,
         settle_speed_mps=0.05,
+        settle_ang_speed_rad_s=0.05,
         min_steps=_MIN_STEPS,
     )
 
@@ -513,7 +528,9 @@ def test_the_latch_blocks_every_later_step():
         already_repinned=True,
         steps_since_reset=999,
         object_lin_speed_mps=0.0,
+        object_ang_speed_rad_s=0.0,
         settle_speed_mps=0.05,
+        settle_ang_speed_rad_s=0.05,
         min_steps=_MIN_STEPS,
     )
 
@@ -521,10 +538,70 @@ def test_the_latch_blocks_every_later_step():
 def test_a_never_settling_leg_simply_keeps_the_provisional_goal():
     # No fire, no crash, no exception -- the provisional reset-time pin stands. Stated as a test so
     # the degenerate case is a known, benign outcome rather than an unexamined one.
-    never = [(s, 0.90, _SPAWN_POS, _SPAWN_QUAT) for s in (10, 60, 120, 300)]
+    never = [(s, 0.90, 2.0, _SPAWN_POS, _SPAWN_QUAT) for s in (10, 60, 120, 300)]
     fires, pinned = _play_drop(never)
     assert fires == 0
     assert pinned is None
+
+
+def test_the_repin_does_not_fire_while_the_leg_is_still_rotating():
+    # THE ANGULAR TERM'S OWN CASE (team-lead decision 2026-08-29). Step 65 of the trajectory is
+    # linearly still (0.01 m/s, under the 0.05 ceiling) and past the step floor, but still ROTATING
+    # at 0.80 rad/s in an orientation it will not come to rest at. A linear-only predicate pins
+    # _PIVOT_QUAT there -- a WRONG orientation captured at a moment of zero linear speed, which is
+    # the exact failure this bead removes, reached by a narrower path.
+    up_to_pivot = [t for t in _DROP_TRAJECTORY if t[0] <= 65]
+    fires, pinned = _play_drop(up_to_pivot)
+    assert fires == 0, f"re-pinned mid-pivot: {pinned}"
+    # and the full run still lands on the resting pose, never the pivot pose
+    _, pinned_full = _play_drop(_DROP_TRAJECTORY)
+    assert pinned_full[1] != _PIVOT_QUAT
+
+
+def test_the_angular_ceiling_is_inclusive_and_rejects_just_above():
+    common = dict(
+        already_repinned=False,
+        steps_since_reset=61,
+        object_lin_speed_mps=0.0,
+        settle_speed_mps=0.05,
+        settle_ang_speed_rad_s=0.05,
+        min_steps=_MIN_STEPS,
+    )
+    assert _c3_rung_core.st_should_repin(object_ang_speed_rad_s=0.05, **common)
+    assert not _c3_rung_core.st_should_repin(object_ang_speed_rad_s=0.0501, **common)
+
+
+def test_the_angular_default_comes_from_the_f50_f51_settled_pair():
+    # F50/F51: "settled (lin < 0.01 m/s, ang < 0.05 rad/s)". The ANGULAR half is taken verbatim.
+    assert _c3_rung_core.DEFAULT_ST_SETTLE_ANG_SPEED_RAD_S == 0.05
+
+
+def test_the_two_settle_thresholds_are_independent_not_a_shared_constant():
+    # Both read 0.05 but in DIFFERENT UNITS from DIFFERENT sources -- linear from
+    # --c2_max_resting_speed (cross-layer agreement with the generation side), angular from
+    # F50/F51. They are deliberately not linked; the docstring says so, and this pins that
+    # overriding one leaves the other alone, so nobody "unifies" them later.
+    staging = parse_c3_rung_env({"DEXRESET_C3_RUNG": "1", "DEXRESET_C3_ST_SETTLE_SPEED": "0.01"})
+    assert staging.st_settle_speed_mps == 0.01
+    assert staging.st_settle_ang_speed_rad_s == 0.05
+    staging = parse_c3_rung_env({"DEXRESET_C3_RUNG": "1", "DEXRESET_C3_ST_SETTLE_ANG_SPEED": "0.2"})
+    assert staging.st_settle_ang_speed_rad_s == 0.2
+    assert staging.st_settle_speed_mps == 0.05
+    # And the linear bound must NOT have been "fixed" to F50/F51's tighter 0.01 -- cross-layer
+    # agreement with --c2_max_resting_speed is the deliberate choice.
+    assert _c3_rung_core.DEFAULT_ST_SETTLE_SPEED_MPS == 0.05
+
+
+def test_a_zero_angular_settle_ceiling_is_rejected():
+    _raises(ValueError, parse_c3_rung_env, {"DEXRESET_C3_RUNG": "1", "DEXRESET_C3_ST_SETTLE_ANG_SPEED": "0"})
+    _raises(ValueError, parse_c3_rung_env, {"DEXRESET_C3_RUNG": "1", "DEXRESET_C3_ST_SETTLE_ANG_SPEED": "-1"})
+
+
+def test_a_non_numeric_angular_ceiling_is_rejected_with_the_variable_named():
+    exc = _raises(
+        ValueError, parse_c3_rung_env, {"DEXRESET_C3_RUNG": "1", "DEXRESET_C3_ST_SETTLE_ANG_SPEED": "slow"}
+    )
+    assert "DEXRESET_C3_ST_SETTLE_ANG_SPEED" in str(exc)
 
 
 def test_the_settle_speed_default_matches_the_generation_side_resting_convention():
@@ -544,7 +621,9 @@ def test_the_min_steps_argument_is_required_so_the_number_lives_in_one_place():
         already_repinned=False,
         steps_since_reset=61,
         object_lin_speed_mps=0.0,
+        object_ang_speed_rad_s=0.0,
         settle_speed_mps=0.05,
+        settle_ang_speed_rad_s=0.05,
     )
     src = (_MDP_DIR / "c3_rung_core.py").read_text()
     assert "SETTLE_STEPS" in src, "the pointer to the source of the number must be named"
@@ -594,6 +673,7 @@ def test_the_banner_states_the_repin_and_both_of_its_conditions():
     assert "RE-PINNED ONCE at the SETTLED pose" in text
     assert "held_check_core.SETTLE_STEPS" in text
     assert "0.050 m/s" in text
+    assert "0.050 rad/s" in text
     assert "dr-ai1.18" in text
 
 

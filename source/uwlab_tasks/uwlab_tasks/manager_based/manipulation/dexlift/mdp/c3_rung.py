@@ -265,6 +265,8 @@ class C3RungGoalPoseCommand(TaskStateVisPoseCommand):
         # this file is the only place that names the source.
         self._st_settle_speed_mps: float = float(cfg.st_settle_speed_mps)
         c3_rung_core.validate_st_settle_speed(self._st_settle_speed_mps)
+        self._st_settle_ang_speed_rad_s: float = float(cfg.st_settle_ang_speed_rad_s)
+        c3_rung_core.validate_st_settle_ang_speed(self._st_settle_ang_speed_rad_s)
         self._st_settle_min_steps: int = int(
             SETTLE_STEPS if cfg.st_settle_min_steps is None else cfg.st_settle_min_steps
         )
@@ -366,6 +368,14 @@ class C3RungGoalPoseCommand(TaskStateVisPoseCommand):
         # the step floor below and this speed ceiling. See c3_rung_core.DEFAULT_ST_SETTLE_SPEED_MPS
         # for the provenance of 0.05 m/s (--c2_max_resting_speed).
         speed = torch.linalg.vector_norm(self.object.data.root_lin_vel_w, dim=-1)
+        # ANGULAR speed too (team-lead decision 2026-08-29). NOT redundant with the linear term: a
+        # leg pivoting on a corner or spinning about a vertical axis has a near-zero LINEAR speed
+        # while its orientation is still changing -- and orientation is the quantity this whole
+        # re-pin exists to get right, so a linear-only predicate can pin a wrong orientation at a
+        # moment of zero linear speed. See c3_rung_core.DEFAULT_ST_SETTLE_ANG_SPEED_RAD_S, including
+        # why its 0.05 rad/s (F50/F51) and the linear 0.05 m/s (--c2_max_resting_speed) come from
+        # DIFFERENT sources on purpose and must not be "unified".
+        ang_speed = torch.linalg.vector_norm(self.object.data.root_ang_vel_w, dim=-1)
         steps = self._env.episode_length_buf
 
         # Tensor form of c3_rung_core.st_should_repin -- same three conditions, same order. The
@@ -374,6 +384,7 @@ class C3RungGoalPoseCommand(TaskStateVisPoseCommand):
             self._st_awaiting_repin
             & (steps > self._st_settle_min_steps)
             & (speed <= self._st_settle_speed_mps)
+            & (ang_speed <= self._st_settle_ang_speed_rad_s)
         )
         ready_ids = ready.nonzero().flatten()
         if ready_ids.numel() == 0:
@@ -437,6 +448,11 @@ class C3RungGoalPoseCommandCfg(TaskStateVisPoseCommandCfg):
     ``c3_rung_core.DEFAULT_ST_SETTLE_SPEED_MPS`` for the provenance of 0.05 and for why
     ``held_check``'s ``comove_speed_thresh`` is a different quantity that cannot be used here."""
 
+    st_settle_ang_speed_rad_s: float = c3_rung_core.DEFAULT_ST_SETTLE_ANG_SPEED_RAD_S
+    """rad/s ceiling on the object's ABSOLUTE angular speed for the same re-pin. Sourced from
+    F50/F51's settled pair, unlike the linear bound -- see
+    ``c3_rung_core.DEFAULT_ST_SETTLE_ANG_SPEED_RAD_S`` for why that divergence is deliberate."""
+
     st_settle_min_steps: int | None = None
     """Minimum steps since reset before S_t's re-pin may fire. ``None`` means
     ``held_check_core.SETTLE_STEPS``, resolved in :meth:`C3RungGoalPoseCommand.__init__` -- the
@@ -447,6 +463,7 @@ def upgrade_to_c3_rung(
     command_cfg: TaskStateVisPoseCommandCfg,
     s1_goal_delta_m: float,
     st_settle_speed_mps: float = c3_rung_core.DEFAULT_ST_SETTLE_SPEED_MPS,
+    st_settle_ang_speed_rad_s: float = c3_rung_core.DEFAULT_ST_SETTLE_ANG_SPEED_RAD_S,
     st_settle_min_steps: int | None = None,
 ) -> C3RungGoalPoseCommandCfg:
     """Rebuild an already-configured ``TaskStateVisPoseCommandCfg`` as a C3 rung goal command.
@@ -466,11 +483,19 @@ def upgrade_to_c3_rung(
     fields = {
         field.name: getattr(command_cfg, field.name)
         for field in dataclasses.fields(command_cfg)
-        if field.name not in ("class_type", "s1_goal_delta_m", "st_settle_speed_mps", "st_settle_min_steps")
+        if field.name
+        not in (
+            "class_type",
+            "s1_goal_delta_m",
+            "st_settle_speed_mps",
+            "st_settle_ang_speed_rad_s",
+            "st_settle_min_steps",
+        )
     }
     return C3RungGoalPoseCommandCfg(
         **fields,
         s1_goal_delta_m=s1_goal_delta_m,
         st_settle_speed_mps=st_settle_speed_mps,
+        st_settle_ang_speed_rad_s=st_settle_ang_speed_rad_s,
         st_settle_min_steps=st_settle_min_steps,
     )

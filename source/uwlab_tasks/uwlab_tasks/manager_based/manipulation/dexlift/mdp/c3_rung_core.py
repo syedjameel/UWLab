@@ -165,6 +165,37 @@ it does not mean "at rest on the table" and cannot be used here. Both halves of 
 settle logic ARE reused: the step count as :data:`ST_SETTLE_MIN_STEPS_SOURCE` below, and this
 absolute-speed ceiling alongside it. Neither is re-derived, and no third settle test is written."""
 
+DEFAULT_ST_SETTLE_ANG_SPEED_RAD_S = 0.05
+"""Ceiling on the object's ABSOLUTE angular speed (rad/s, world frame) for S_t's leg to count as
+settled (team-lead decision 2026-08-29, bead ``dr-ai1.18``).
+
+PROVENANCE: F50/F51's own settled definition, the measurement that produced the 99.02%-settle-flat
+figure this whole rung rests on -- "settled (lin < 0.01 m/s, ang < 0.05 rad/s)". The **angular**
+half of that pair is taken here verbatim.
+
+WHY AN ANGULAR TERM IS NOT REDUNDANT WITH THE LINEAR ONE. This bead exists because a pre-settle pin
+captures the wrong ORIENTATION. A leg pivoting on a corner, or spinning about a vertical axis, can
+have a near-zero LINEAR speed while its orientation is still changing -- so a linear-only predicate
+can pin a wrong orientation at a moment of zero linear speed, which is the failure mode being
+removed, arriving by a narrower path. The step floor covers most of that window, but "most" is not
+the standard for the one quantity the bead is about.
+
+DELIBERATE DIVERGENCE -- DO NOT "FIX" ONE OF THESE TO MATCH THE OTHER. The two thresholds come from
+DIFFERENT sources on purpose:
+
+* ANGULAR, here: **0.05 rad/s**, from F50/F51's settled pair.
+* LINEAR, :data:`DEFAULT_ST_SETTLE_SPEED_MPS`: **0.05 m/s**, from ``--c2_max_resting_speed`` --
+  NOT F50/F51's tighter 0.01 m/s.
+
+The linear bound intentionally follows the GENERATION side rather than the measurement, because
+cross-layer agreement on what "resting" means is worth more than internal agreement with F50/F51:
+the seam between the env side and the generation side is where this campaign keeps getting hurt, and
+a state this stage calls resting must be a state ``generate_reset_states_policy.py`` also calls
+resting. There is no such cross-layer consumer for the angular bound, so it follows the measurement.
+Numerically the two happen to both read 0.05 in their own units, which is a coincidence of unit
+choice and not a shared constant -- they are not linked and changing one must not change the other.
+"""
+
 ST_SETTLE_MIN_STEPS_SOURCE = "held_check_core.SETTLE_STEPS"
 """Where the minimum-step floor comes from -- a POINTER, not a copy of the number.
 
@@ -215,6 +246,17 @@ def validate_st_settle_speed(speed_mps: float) -> None:
         )
 
 
+def validate_st_settle_ang_speed(ang_speed_rad_s: float) -> None:
+    """Fail loudly on a non-positive angular settle ceiling -- same reasoning as
+    :func:`validate_st_settle_speed`: zero would mean the re-pin never fires and S_t would silently
+    revert to its spawn-pinned goal, a regression invisible in a log."""
+    if not ang_speed_rad_s > 0.0:
+        raise ValueError(
+            f"DEXRESET_C3_ST_SETTLE_ANG_SPEED must be > 0 rad/s; got {ang_speed_rad_s}. Zero would"
+            " mean the re-pin never fires and S_t silently keeps its spawn-pinned goal."
+        )
+
+
 def validate_st_settle_min_steps(min_steps: int) -> None:
     """Fail loudly on a negative step floor."""
     if min_steps < 0:
@@ -226,7 +268,9 @@ def st_should_repin(
     already_repinned: bool,
     steps_since_reset: int,
     object_lin_speed_mps: float,
+    object_ang_speed_rad_s: float,
     settle_speed_mps: float,
+    settle_ang_speed_rad_s: float,
     min_steps: int,
 ) -> bool:
     """Should S_t's goal be re-pinned at the object's CURRENT pose on this step?
@@ -261,7 +305,11 @@ def st_should_repin(
     """
     if already_repinned:
         return False
-    return steps_since_reset > min_steps and object_lin_speed_mps <= settle_speed_mps
+    return (
+        steps_since_reset > min_steps
+        and object_lin_speed_mps <= settle_speed_mps
+        and object_ang_speed_rad_s <= settle_ang_speed_rad_s
+    )
 
 
 @dataclass(frozen=True)
@@ -271,6 +319,7 @@ class C3RungStaging:
     s1_fraction: float
     s1_goal_delta_m: float
     st_settle_speed_mps: float = DEFAULT_ST_SETTLE_SPEED_MPS
+    st_settle_ang_speed_rad_s: float = DEFAULT_ST_SETTLE_ANG_SPEED_RAD_S
     st_settle_min_steps: int | None = None
     """``None`` means "use :data:`ST_SETTLE_MIN_STEPS_SOURCE`" -- resolved by ``c3_rung.py``, which
     can import it. Kept as ``None`` rather than eagerly resolved so this module holds no copy of the
@@ -300,6 +349,9 @@ def parse_c3_rung_env(environ) -> C3RungStaging | None:
       already uses.
     * ``DEXRESET_C3_ST_SETTLE_SPEED`` -- m/s ceiling on the object's absolute linear speed for S_t's
       deferred goal re-pin. Default :data:`DEFAULT_ST_SETTLE_SPEED_MPS` (0.05).
+    * ``DEXRESET_C3_ST_SETTLE_ANG_SPEED`` -- rad/s ceiling on the object's absolute ANGULAR speed
+      for the same re-pin. Default :data:`DEFAULT_ST_SETTLE_ANG_SPEED_RAD_S` (0.05). Sourced from
+      F50/F51, unlike the linear bound -- see that constant for why the divergence is deliberate.
     * ``DEXRESET_C3_ST_SETTLE_STEPS`` -- minimum steps since reset before the re-pin may fire.
       Unset (the default) means :data:`ST_SETTLE_MIN_STEPS_SOURCE`, resolved by the caller.
 
@@ -342,6 +394,16 @@ def parse_c3_rung_env(environ) -> C3RungStaging | None:
         ) from exc
     validate_st_settle_speed(settle_speed)
 
+    ang_raw = environ.get("DEXRESET_C3_ST_SETTLE_ANG_SPEED", str(DEFAULT_ST_SETTLE_ANG_SPEED_RAD_S))
+    try:
+        settle_ang_speed = float(ang_raw)
+    except ValueError as exc:
+        raise ValueError(
+            f"DEXRESET_C3_ST_SETTLE_ANG_SPEED must be a single radians-per-second value, e.g."
+            f" '0.05'; got {ang_raw!r}"
+        ) from exc
+    validate_st_settle_ang_speed(settle_ang_speed)
+
     steps_raw = environ.get("DEXRESET_C3_ST_SETTLE_STEPS")
     if steps_raw is None:
         settle_min_steps = None
@@ -358,6 +420,7 @@ def parse_c3_rung_env(environ) -> C3RungStaging | None:
         s1_fraction=s1_fraction,
         s1_goal_delta_m=delta_mm / 1000.0,
         st_settle_speed_mps=settle_speed,
+        st_settle_ang_speed_rad_s=settle_ang_speed,
         st_settle_min_steps=settle_min_steps,
     )
 
@@ -486,7 +549,8 @@ def c3_rung_banner(staging: C3RungStaging) -> str:
         " orientation, so the policy acquires and holds without transporting or reorienting."
         " S_t's goal is RE-PINNED ONCE at the SETTLED pose -- the first step with"
         f" steps_since_reset > {settle_steps_text}"
-        f" AND object linear speed <= {staging.st_settle_speed_mps:.3f} m/s -- NOT at the spawn"
+        f" AND object linear speed <= {staging.st_settle_speed_mps:.3f} m/s"
+        f" AND object angular speed <= {staging.st_settle_ang_speed_rad_s:.3f} rad/s -- NOT at the spawn"
         " pose, which is mid-air and in a randomized orientation up to ~90 deg from where the leg"
         " comes to rest (bead dr-ai1.18, V2_C3_DESIGN.md sec 7). This moves only WHEN the goal is"
         " read; the spawn is unchanged."

@@ -1092,6 +1092,7 @@ def _apply_c3_rung_stage(env_cfg, legacy_toggle_active: bool) -> bool:
         # stays None here on purpose -- C3RungGoalPoseCommand.__init__ resolves it from
         # held_check_core.SETTLE_STEPS, so the number is not copied into this file either.
         st_settle_speed_mps=staging.st_settle_speed_mps,
+        st_settle_ang_speed_rad_s=staging.st_settle_ang_speed_rad_s,
         st_settle_min_steps=staging.st_settle_min_steps,
     )
 
