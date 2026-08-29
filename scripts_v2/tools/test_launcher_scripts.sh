@@ -95,6 +95,33 @@ expect_refusal "r0: missing REPO_DIR" "REFUSING: REPO_DIR=" "$HERE/r0_control.sh
 echo "== wandb_sync_loop.sh =="
 expect_refusal "wandb: missing dir argument" "usage: wandb_sync_loop.sh" "$HERE/wandb_sync_loop.sh"
 
+echo "== r0_control.sh: record_timing emits valid JSON (closes O19) =="
+# The number sec 6.3's cut ordering depends on is written by this function after a ~20-minute
+# certification. A malformed heredoc here would be discovered only at the END of that run, which is
+# the most expensive moment to find it. So the function is extracted and exercised standalone.
+TMPJ=$(mktemp); TMPS=$(mktemp)
+{
+  echo 'set -uo pipefail'
+  echo 'CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}'
+  sed -n '/^record_timing()/,/^}/p' "$HERE/r0_control.sh"
+  echo "record_timing $TMPJ certification 1187 num_envs 256 episodes 512"
+} > "$TMPS"
+if bash "$TMPS" >/dev/null 2>&1 && python3 -c "
+import json,sys
+d=json.load(open('$TMPJ'))
+assert d['wall_clock_s']==1187, d
+assert abs(d['wall_clock_min']-19.78)<0.01, d
+assert d['rollout_only_s_approx']==1095, d      # total minus the measured 92 s Isaac startup
+assert d['num_envs']==256 and d['episodes']==512, d
+" 2>/dev/null; then
+  echo "PASS [r0: record_timing emits valid JSON with correct fields]"; PASS=$((PASS + 1))
+else
+  echo "FAIL [r0: record_timing produced invalid or wrong JSON]"
+  cat "$TMPJ" 2>/dev/null | head -20 | sed 's/^/        /'
+  FAIL=$((FAIL + 1))
+fi
+rm -f "$TMPJ" "$TMPS"
+
 echo "== lint: no apostrophe inside \${VAR:?...} or \${VAR:-...} =="
 # The specific construct that caused the swallowed-quote bug, checked directly rather than hoped
 # about. An earlier draft of this block counted REFUSING lines with grep and CLAIMED to be reading

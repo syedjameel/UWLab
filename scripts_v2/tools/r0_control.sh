@@ -81,6 +81,45 @@ assert_banner() {  # assert_banner <log> <human label> <grep -E pattern>
 }
 
 # ---------------------------------------------------------------------------------------------
+# WALL-CLOCK RECORDER. Not bookkeeping -- it closes an OPEN.
+# ---------------------------------------------------------------------------------------------
+# V2_REPOSE_RECIPE.md O19: the "~20 min" per-certification cost in sec 6.1 is an ESTIMATE that was
+# never measured, and sec 6.3's entire cut ordering is argued against it. R0's first half runs a
+# real certification through the real harness at the real settings, so its wall clock IS that
+# number. Recorded here, explicitly, rather than left to be reconstructed from file timestamps
+# later -- a reconstruction is a second measurement of a different thing, and this campaign has
+# already lost time to exactly that (F26/R7: a number whose provenance has to be re-derived is a
+# number nobody can safely cite).
+#
+# It also answers the question sec 6.3 leaves open. Certification is a rollout in the SAME dexlift
+# scene training uses, so it should get whatever speedup the scene gives -- EXCEPT that it runs at
+# num_envs 256, where throughput is worse (measured 1452 -> 5769 env-steps/s across 4096 -> 32768
+# envs). Whether a small-batch rollout moves with the scene is what decides whether sec 6.3's
+# ordering can ever invert. This number against the 32768-env training rate settles it.
+record_timing() {  # record_timing <json path> <label> <seconds> <extra json fields...>
+  local out="$1" label="$2" secs="$3"; shift 3
+  {
+    printf '{\n'
+    printf '  "schema": "dexreset.r0_timing.v1",\n'
+    printf '  "label": "%s",\n' "$label"
+    printf '  "wall_clock_s": %s,\n' "$secs"
+    printf '  "wall_clock_min": %s,\n' "$(awk -v s="$secs" 'BEGIN{printf "%.2f", s/60}')"
+    # The job pays Isaac startup ONCE, and every certification is its own job, so the TOTAL is the
+    # right number for sec 6's budget. The rollout-only figure is what answers the scene-speedup
+    # question, so both are recorded rather than one being left to subtraction by a later reader.
+    printf '  "isaac_startup_s_measured": 92,\n'
+    printf '  "rollout_only_s_approx": %s,\n' "$(awk -v s="$secs" 'BEGIN{printf "%.0f", (s-92>0)?s-92:0}')"
+    printf '  "host": "%s",\n' "$(hostname)"
+    printf '  "gpu": "%s",\n' "$CUDA_VISIBLE_DEVICES"
+    printf '  "utc": "%s",\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    while [ "$#" -ge 2 ]; do printf '  "%s": %s,\n' "$1" "$2"; shift 2; done
+    printf '  "closes": "V2_REPOSE_RECIPE.md O19 (sec 6.1 estimate, sec 6.3 ordering depends on it)"\n'
+    printf '}\n'
+  } > "$out"
+  echo "[r0] $label wall clock: ${secs}s ($(awk -v s="$secs" 'BEGIN{printf "%.1f", s/60}') min) -> $out"
+}
+
+# ---------------------------------------------------------------------------------------------
 # (a) CERTIFICATION -- gives P.
 # ---------------------------------------------------------------------------------------------
 if [ "$STAGE" = cert ] || [ "$STAGE" = both ]; then
@@ -89,6 +128,7 @@ if [ "$STAGE" = cert ] || [ "$STAGE" = both ]; then
   # A2's thresholds are stated at; certify_pose.py scores the whole ladder anyway, so the JSON
   # carries the other rungs too and R7 is satisfied by the file itself.
   LOG="$OUT_DIR/r0_cert.log"
+  _cert_t0=$(date +%s)
   TASK="$TASK" COLLIDERS=hullfix3 SELFCOLL=on HAND=ref ARM=ours \
     GPU="$CUDA_VISIBLE_DEVICES" TILT=0.3 DROP_Z=0.05 \
     EPISODES="${EPISODES:-512}" POS_TOL=0.03 ADR_DIFFICULTY=max \
@@ -96,7 +136,11 @@ if [ "$STAGE" = cert ] || [ "$STAGE" = both ]; then
     CERTIFY_PY="$REPO_DIR/scripts_v2/tools/certification/certify_pose.py" \
     OUT_DIR="$OUT_DIR" \
     bash scripts_v2/tools/certification/run_certify.sh r0_ep3600 "$CKPT" 2>&1 | tee "$LOG"
+  record_timing "$OUT_DIR/r0_cert_timing.json" "certification" "$(( $(date +%s) - _cert_t0 ))" \
+    num_envs "${NUM_ENVS:-256}" episodes "${EPISODES:-512}"
   echo "[r0] P (pass@30mm) is in $OUT_DIR/cert_r0_ep3600.json -- record it in V2_REPOSE_RECIPE.md sec 3.2"
+  echo "[r0] O19 CLOSED by r0_cert_timing.json: replace sec 6.1's estimated ~20 min with this number,"
+  echo "[r0]   recount sec 6.1's certification row (8 x this), and re-check sec 6.3's crossover."
 fi
 
 # ---------------------------------------------------------------------------------------------
@@ -116,11 +160,14 @@ if [ "$STAGE" = proxy ] || [ "$STAGE" = both ]; then
 
   LOG="$OUT_DIR/r0_proxy.log"
   OUT="$OUT_DIR/r0_gate_proxy.json"
+  _proxy_t0=$(date +%s)
   timeout -s KILL 7200 "$PYTHON_BIN" -u scripts_v2/tools/measure_gate_proxy.py \
       --task "$TASK" --checkpoint "$CKPT" \
       --num_envs "${NUM_ENVS:-256}" --steps "${PROXY_STEPS:-4000}" \
       --seed "${SEED:-12345}" --out "$OUT" --headless > "$LOG" 2>&1
   RC=$?
+  record_timing "$OUT_DIR/r0_proxy_timing.json" "gate_proxy_rollout" "$(( $(date +%s) - _proxy_t0 ))" \
+    num_envs "${NUM_ENVS:-256}" steps "${PROXY_STEPS:-4000}"
   echo "[r0] measure_gate_proxy rc=$RC"
 
   FAILED=0
