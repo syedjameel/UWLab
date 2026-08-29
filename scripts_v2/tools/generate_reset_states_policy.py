@@ -3858,7 +3858,20 @@ def main() -> None:
     if args_cli.c4_terminate_on_grasp:
         gate_names = ["settled", "opposed_contact", "low_obj_speed", "stable_grasp"]
     else:
-        gate_names = ["settled", "opposed_contact", "co_move", "probe_ready", "probe_gripper_moved", "probe_tracks"]
+        # co_move IS LAST, AFTER the probe gates, and the order is load-bearing (user decision
+        # 2026-08-29). It no longer gates acceptance -- held_decision dropped it, and it no longer
+        # arms the probe either (held_check.py's pre_probe_ok). This list is a FIRST-FAILING-GATE
+        # priority order, so a name listed before the probe gates short-circuits attribution: while
+        # co_move sat third, every co_move-false episode was attributed to co_move and NEVER
+        # contributed a probe_tracks observation. That ordering was accidentally correct about
+        # effective behaviour while co_move still armed the probe, and became wrong the moment it
+        # stopped. Trailing it keeps the attribution honest AND leaves the very observation the
+        # co_move drop exists to produce.
+        #
+        # Safe against misattributing an ACCEPTED episode: the first-failing-gate loop below runs
+        # only for `not success_now`, so a co_move-false acceptance is counted as accepted and
+        # never reaches this list.
+        gate_names = ["settled", "opposed_contact", "probe_ready", "probe_gripper_moved", "probe_tracks", "co_move"]
     if args_cli.c4_seating_gate:
         # Seated*.gate_breakdown() adds this key -- see that class's own gate_breakdown. Appended
         # last: an env that fails BOTH the base held-check's own last gate AND seated is attributed

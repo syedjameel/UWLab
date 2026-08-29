@@ -202,8 +202,18 @@ def held_decision(
     * It was also never the gate that catches the adversarial case below. This function's own
       brief says gates 1-3 are ALL satisfied by that case -- object at target, hand resting nearby
       with incidental contact, nothing moving. Only the probe separates "resting against" from
-      "held by", so ``tracks`` is what rejects it, not ``co_move``. Verified, not assumed: with
-      ``co_move`` removed, ``test_adversarial_case_rejected`` still rejects, via ``tracks`` alone.
+      "held by", so ``tracks`` is what rejects it, not ``co_move``.
+
+      SCOPE OF THAT CLAIM, stated exactly. ``test_adversarial_case_rejected`` shows that GIVEN a
+      finalized probe, ``tracks`` alone rejects the adversarial case. It passes ``probe_ready=True``
+      in directly, so it never exercises the ARMING path in ``held_check.py`` and cannot observe
+      whether something else gates acceptance upstream of this function. It did not, in fact:
+      ``co_move`` was dropped from this AND and left in ``held_check``'s ``pre_probe_ok``, so
+      acceptance still required a co_move-true instant until that was fixed. The upstream half is
+      pinned separately by
+      ``test_held_check_core.py::test_probe_arming_does_not_reintroduce_a_dropped_gate``, which
+      compares this function's returned expression against that arming condition -- the two must
+      not disagree about what is required.
 
     WHY ``gripper_moved`` STAYED, when the same change was first scoped to drop it too. It is not
     an acceptance gate. It is a VALIDITY CHECK ON THE MEASUREMENT: it does not judge the grasp, it

@@ -117,12 +117,25 @@ class held_with_probe(ManagerTermBase):
         self._palm_pos_at_probe_start = torch.zeros(n, 3, device=device)
         self._obj_disp_probe = torch.zeros(n, 3, device=device)
         self._gripper_disp_probe = torch.zeros(n, 3, device=device)
+        #   _co_move_at_arm -- co_move's value AT THE STEP THIS PROBE ARMED, carried to finalize.
+        #                      co_move no longer gates arming (it no longer gates anything), but it
+        #                      is the only way to answer the question that decision opened: of the
+        #                      probes that arm with co_move FALSE -- exactly the states the old
+        #                      chain rejected -- how many TRACK anyway. Before this, that question
+        #                      was unanswerable by construction, because no probe could ever
+        #                      finalize on a co_move-false state.
+        self._co_move_at_arm = torch.zeros(n, dtype=torch.bool, device=device)
         self._last_breakdown: dict[str, torch.Tensor] = {}
         # Cumulative diagnostics for the generator's end-of-run summary -- not used in any
         # decision, plain python ints incremented in __call__.
         self.n_probes_armed = 0
         self.n_probes_finalized = 0
         self.n_probes_tracked = 0
+        # The conditional the co_move drop exists to measure. Denominator and numerator, so a zero
+        # in the second is interpretable (V2_POSE_FINDINGS.md F29's rule, applied here).
+        self.n_probes_armed_co_move_false = 0
+        self.n_probes_finalized_co_move_false = 0
+        self.n_probes_tracked_co_move_false = 0
 
     def _tracks(self, obj_disp: torch.Tensor, gripper_disp: torch.Tensor) -> torch.Tensor:
         """Same relative-tolerance formula ``held_decision`` uses internally, exposed here so the
@@ -144,6 +157,7 @@ class held_with_probe(ManagerTermBase):
         self._palm_pos_at_probe_start[env_ids] = 0.0
         self._obj_disp_probe[env_ids] = 0.0
         self._gripper_disp_probe[env_ids] = 0.0
+        self._co_move_at_arm[env_ids] = False
 
     def __call__(self, env: ManagerBasedRLEnv) -> torch.Tensor:
         robot = env.scene[self.robot_cfg.name]
@@ -182,7 +196,19 @@ class held_with_probe(ManagerTermBase):
             comove_speed_thresh=self.comove_speed_thresh,
             comove_vz_thresh=self.comove_vz_thresh,
         )
-        pre_probe_ok = settled & opposed_contact_now & co_move_now
+        # co_move IS NOT HERE, and its absence is the point (user decision 2026-08-29, bead P0).
+        # It was removed from held_decision's AND, but it stayed in THIS condition -- and since
+        # _probe_ready is cleared on every reset(), probe_ready==True within an episode IMPLIED
+        # co_move was true at some step. Acceptance therefore still required a co_move-true
+        # instant: the gate had been moved from the chain to the trigger, not removed. Worse, the
+        # population the decision aimed at was untouched -- a bore-constrained leg that never
+        # co_moves never armed a probe, so it was rejected one layer up without ever reaching
+        # `tracks` to be judged there.
+        #
+        # THIS IS F27 IN A NEW SHAPE: a gate's definition in held_check_core and its ENABLING
+        # CONDITION here, each valid alone, checked against each other by nothing. See
+        # test_held_check_core.py::test_probe_arming_does_not_reintroduce_a_dropped_gate.
+        pre_probe_ok = settled & opposed_contact_now
 
         # -- RE-ARMING probe bookkeeping (see module docstring for why this replaced a fixed
         # single window). ARM: no probe currently active, and the three non-probe gates just
@@ -196,7 +222,9 @@ class held_with_probe(ManagerTermBase):
             self._probe_start_step[arm] = steps[arm]
             self.probe_active[arm] = True
             self._probe_ready[arm] = False  # this step's decision must not see a stale prior probe
+            self._co_move_at_arm[arm] = co_move_now[arm]
             self.n_probes_armed += int(arm.sum())
+            self.n_probes_armed_co_move_false += int((arm & ~co_move_now).sum())
 
         finalize = self.probe_active & (steps >= (self._probe_start_step + self.probe_steps))
         if finalize.any():
@@ -207,6 +235,13 @@ class held_with_probe(ManagerTermBase):
             self.n_probes_finalized += int(finalize.sum())
             tracked_now = self._tracks(self._obj_disp_probe, self._gripper_disp_probe)
             self.n_probes_tracked += int((finalize & tracked_now).sum())
+            # THE CONDITIONAL THE co_move DROP EXISTS TO MEASURE, read here because this is where
+            # the probe's verdict lands. `_co_move_at_arm` is co_move's value PROBE_STEPS ago, at
+            # the moment this window opened -- not now -- so the pairing is armed-state against
+            # its own outcome rather than against a later, unrelated co_move reading.
+            co_move_false = finalize & ~self._co_move_at_arm
+            self.n_probes_finalized_co_move_false += int(co_move_false.sum())
+            self.n_probes_tracked_co_move_false += int((co_move_false & tracked_now).sum())
             if os.environ.get("HELD_CHECK_DEBUG_PROBE"):
                 for i in torch.nonzero(finalize).flatten().tolist():
                     g = self._gripper_disp_probe[i].norm().item()
@@ -253,6 +288,10 @@ class held_with_probe(ManagerTermBase):
             "probe_ready": self._probe_ready.clone(),
             "probe_gripper_moved": gripper_moved,
             "probe_tracks": tracks,
+            # Not a gate. Reported so the generator's per-episode breakdown can tell a probe that
+            # armed on a co_move-true state from one that armed on a co_move-false state, which is
+            # the whole population the co_move drop was meant to admit.
+            "probe_co_move_at_arm": self._co_move_at_arm.clone(),
         }
 
         # -- AND with the host env's own generic safety gates, mirroring OmniReset's

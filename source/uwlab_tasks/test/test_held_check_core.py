@@ -147,6 +147,109 @@ def test_batched():
     assert held.tolist() == [False, True]
 
 
+
+# ---------------------------------------------------------------------------------------------
+# THE CHAIN AND ITS TRIGGER MUST AGREE (P0, 2026-08-29)
+# ---------------------------------------------------------------------------------------------
+#
+# co_move was dropped from held_decision's AND and LEFT IN held_check.py's probe-arming condition.
+# Because `_probe_ready` is cleared on every reset(), probe_ready==True within an episode implied
+# co_move had been true at some step -- so acceptance still required a co_move-true instant. The
+# gate had been moved from the chain to the trigger, not removed, and the population the change
+# aimed at (a bore-constrained leg that never co_moves) was rejected one layer up without ever
+# reaching `tracks` to be judged there.
+#
+# That is V2_POSE_FINDINGS.md F27 in a new shape: a gate's DEFINITION in held_check_core and its
+# ENABLING CONDITION in held_check, each valid alone, checked against each other by nothing.
+#
+# STRUCTURAL, via ast, and it has to be: held_check.py imports isaaclab and cannot be imported in
+# this environment at all. What can be proved without a GPU is that the trigger does not require a
+# gate the chain has stopped requiring.
+
+_HELD_CHECK_PATH = _CORE_PATH.parent / "held_check.py"
+# held_check names the live values `<gate>_now` to distinguish them from the cached breakdown rows.
+_NOW_SUFFIX = "_now"
+
+
+def _names_in(node) -> set[str]:
+    """Every bare identifier READ in an expression, with held_check's ``_now`` suffix normalised."""
+    import ast
+
+    out = set()
+    for n in ast.walk(node):
+        if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load):
+            name = n.id
+            out.add(name[: -len(_NOW_SUFFIX)] if name.endswith(_NOW_SUFFIX) else name)
+    return out
+
+
+def _chain_gates() -> set[str]:
+    """The identifiers held_decision's returned expression actually reads."""
+    import ast
+
+    for node in ast.walk(ast.parse(_CORE_PATH.read_text())):
+        if isinstance(node, ast.FunctionDef) and node.name == "held_decision":
+            returns = [n for n in ast.walk(node) if isinstance(n, ast.Return) and n.value is not None]
+            assert len(returns) == 1, f"held_decision should have exactly one return; got {len(returns)}"
+            return _names_in(returns[0].value)
+    raise AssertionError("held_decision not found in held_check_core.py")
+
+
+def _arming_gates(source: str | None = None) -> set[str]:
+    """The identifiers held_check's probe-arming condition reads."""
+    import ast
+
+    src = source if source is not None else _HELD_CHECK_PATH.read_text()
+    for node in ast.walk(ast.parse(src)):
+        # Every assignment form, not just ast.Assign: an annotated `pre_probe_ok: Tensor = ...`
+        # would otherwise slip past this walker silently.
+        if isinstance(node, ast.Assign):
+            targets = node.targets
+        elif isinstance(node, (ast.AnnAssign, ast.AugAssign)):
+            targets = [node.target]
+        else:
+            continue
+        if any(isinstance(t, ast.Name) and t.id == "pre_probe_ok" for t in targets):
+            return _names_in(node.value)
+    raise AssertionError("pre_probe_ok assignment not found in held_check.py")
+
+
+def test_probe_arming_does_not_reintroduce_a_dropped_gate():
+    """THE ONE THAT MATTERS. Whatever the probe-arming condition requires, the chain must require
+    too -- otherwise a gate removed from the AND still gates acceptance through the trigger, and
+    the states the removal was meant to admit are rejected one layer earlier instead.
+    """
+    chain, arming = _chain_gates(), _arming_gates()
+    extra = arming - chain
+    assert not extra, (
+        f"held_check.py's probe-arming condition requires {sorted(extra)}, which held_decision's"
+        " chain does NOT. Because _probe_ready is cleared on every reset, probe_ready==True then"
+        " implies those gates were true at some step -- so they still gate acceptance, one layer"
+        " up, on the population the chain deliberately stopped rejecting. Remove them from"
+        " pre_probe_ok, or put them back in the chain; do not leave the two disagreeing."
+    )
+
+
+def test_co_move_gates_neither_the_chain_nor_the_trigger():
+    """The user's decision, stated as an assertion rather than left to the reader of two files."""
+    assert "co_move" not in _chain_gates(), "co_move is back in held_decision's AND"
+    assert "co_move" not in _arming_gates(), "co_move is back in held_check's probe-arming condition"
+
+
+def test_negative_control_a_gate_left_only_in_the_trigger_is_detected():
+    """Prove the guard above actually fires, by putting co_move back in the trigger and nothing
+    else -- exactly the defect it was written for, which passed every other test in this file.
+    """
+    src = _HELD_CHECK_PATH.read_text()
+    old = "pre_probe_ok = settled & opposed_contact_now"
+    assert src.count(old) == 1, "negative control anchor is not unique; the control is not valid"
+    mutated = src.replace(old, old + " & co_move_now")
+    assert "co_move" in _arming_gates(mutated), "the mutation did not take"
+    assert "co_move" not in _chain_gates()
+    assert _arming_gates(mutated) - _chain_gates() == {"co_move"}, (
+        "the guard would NOT have caught a gate left only in the trigger"
+    )
+
 if __name__ == "__main__":
     test_adversarial_case_rejected()
     print("PASS: test_adversarial_case_rejected")
@@ -162,4 +265,10 @@ if __name__ == "__main__":
     print("PASS: test_missing_opposition_rejected")
     test_batched()
     print("PASS: test_batched")
+    test_probe_arming_does_not_reintroduce_a_dropped_gate()
+    print("PASS: test_probe_arming_does_not_reintroduce_a_dropped_gate")
+    test_co_move_gates_neither_the_chain_nor_the_trigger()
+    print("PASS: test_co_move_gates_neither_the_chain_nor_the_trigger")
+    test_negative_control_a_gate_left_only_in_the_trigger_is_detected()
+    print("PASS: test_negative_control_a_gate_left_only_in_the_trigger_is_detected")
     print("ALL PASS")
