@@ -1371,6 +1371,110 @@ def _attach_success_rate_metric(env_cfg) -> None:
     env_cfg.terminations.success_rate_log = mdp.success_rate_log_term_cfg()
 
 
+def _attach_gate_proxy_metric(env_cfg) -> None:
+    """Optionally log the TRAINING-TIME GATE PROXY (``V2_REPOSE_RECIPE.md`` sec 4, bead dr-tlx.2).
+
+    Off unless ``DEXRESET_GATE_PROXY=1``. Like :func:`_apply_pose_tilt_stage` and
+    :func:`_apply_c1_hand_pose_stage` it announces itself either way -- see "WHY IT PRINTS EVEN WHEN
+    OFF" below, which is not the usual reason.
+
+    === WHAT IT MEASURES, AND WHY THE CAMPAIGN NEEDS IT ===
+
+    ``RESET_SPEC_V2.md`` R2 wants ``accepted / attempted > 0.50`` per rung. Measured, that is a
+    requirement on the REPOSE POLICY and not on the pose sampler: in the v1 S1 run at least 90.8
+    percent of generation attempts died in the held-state gate chain before the rung's geometry was
+    ever evaluated, ``co_move`` alone rejecting 46.8 percent (``V2_POSE_FINDINGS.md`` F28, confirmed
+    on a second rung at 53.2 percent by F30). Discovering whether a checkpoint clears R2 by running
+    a generation pass costs roughly 25,000 attempts per 600-state chunk (F26/R6), which is far too
+    expensive to do while a ramp is deciding whether to advance.
+
+    So this publishes the three gates of that chain that need NO probe -- ``settled``,
+    ``opposed_contact``, ``co_move`` -- per episode and per mixture branch. It is a STRICT UPPER
+    BOUND on gate-chain pass rate, never a yield (R7), for the reason spelled out in
+    ``mdp/gate_proxy_core.py``: the other three gates need the probe action bias the generator
+    injects on top of the policy, and injecting that during training would perturb the thing being
+    trained. What it buys is a cheap assumption-free NECESSARY condition -- accepted states are a
+    subset of passive-three-passing states, so a run below 0.50 here provably cannot meet R2.
+
+    === WHY IT IS OPT-IN ===
+
+    The term costs a fingertip-sensor read and a palm/object velocity read every step, on every
+    task in this family, and adds a dozen log series. Off by default keeps the UNSET path
+    byte-for-byte the existing behaviour -- the same discipline :func:`_apply_c1_hand_pose_stage`
+    follows, and for the same reason.
+
+    === WHY IT PRINTS EVEN WHEN OFF ===
+
+    NOT decoration. ``V2_POSE_FINDINGS.md`` F40/F41 catalogue four flags in this repository that
+    were read by nothing, one of which reached a published model card; F42 records the in-tree
+    documentation of one of them going stale. The metric this term publishes is what the v2 ramp's
+    advance gate and its A4 no-progress abort are evaluated on, so "was it actually on?" has to be
+    answerable from the run's own log rather than from the launcher that was supposed to export the
+    variable -- ``RESET_SPEC_V2.md`` sec 1a trap 3 ("read the staged value back out of the run log
+    rather than trusting the command line"), applied to the instrument itself.
+
+    === PER-BRANCH SPLIT ===
+
+    Both this term and the success-rate logger are handed ``mdp.EPISODE_KIND_NAMES`` and
+    ``mdp.EPISODE_KIND_BUFFER_ATTR``, so each publishes ``.../classic``, ``.../low_goal``,
+    ``.../partial_assembly`` and ``.../transport`` series. Load-bearing in both directions: the
+    recipe's advance target is stated on TRANSPORT-kind episodes (the branch that actually carries
+    the leg to tip-down, which is what S1 generation depends on) and its collapse tripwire on
+    CLASSIC-kind episodes (the original task whose loss IS the collapse). An aggregate over four
+    branches muffles both signals exactly while the ramp is raising the tip-down fraction.
+
+    The mapping is passed in from here rather than looked up inside either term: this module already
+    imports ``mdp`` wholesale, while ``mdp/success.py`` does not import the mixture and
+    ``mdp/gate_proxy_core.py`` cannot (isaaclab at module scope). Two independently-written
+    int-to-name tables is F27's defect class; there is one, in ``episode_mixture.py``, next to the
+    integers it names.
+
+    Both splits are inert when the mixture is not wired: the terms read the kind buffer with
+    ``getattr(env, ..., None)`` and never CREATE it, so a run without the mixture reports
+    un-split metrics rather than labelling every episode ``classic``.
+    """
+    raw = os.environ.get("DEXRESET_GATE_PROXY")
+    if raw is not None and raw not in ("0", "1"):
+        raise ValueError(f"DEXRESET_GATE_PROXY must be '0' or '1'; got {raw!r}")
+    if raw != "1":
+        print(
+            "[dexreset] GATE PROXY not staged (DEXRESET_GATE_PROXY unset or 0): no GateProxy/*"
+            " series will be published, and the v2 ramp's advance gate and A4 abort"
+            " (V2_REPOSE_RECIPE.md sec 2.2, 3.3) have nothing to read. Expected for a run that is"
+            " not the v2 repose retrain.",
+            flush=True,
+        )
+        return
+
+    env_cfg.terminations.gate_proxy_log = mdp.gate_proxy_log_term_cfg(
+        kind_names=mdp.EPISODE_KIND_NAMES,
+    )
+    # The success rate gets the SAME split, from the same mapping, by re-attaching the term that
+    # ``_attach_success_rate_metric`` already created. Re-attached rather than edited in place
+    # because that function may have set the slot to ``None`` (no ADR term -> no thresholded
+    # success test to report), and a split of a metric that is not being computed is nothing.
+    if getattr(env_cfg.terminations, "success_rate_log", None) is not None:
+        env_cfg.terminations.success_rate_log = mdp.success_rate_log_term_cfg(
+            kind_names=mdp.EPISODE_KIND_NAMES,
+            kind_buffer_attr=mdp.EPISODE_KIND_BUFFER_ATTR,
+        )
+    print(
+        "[dexreset] GATE PROXY staged: publishing GateProxy/{settled,opposed_contact,co_move,"
+        "passive_three}_{atend,ever}_frac plus priority-ordered reach and first-fail counts, split"
+        f" by episode kind {sorted(mdp.EPISODE_KIND_NAMES.values())}. Thresholds are"
+        " held_check_core's own (settled > 60 steps, relative speed < 0.05 m/s, |obj vz| < 0.1"
+        " m/s), shared with the generator's held predicate via passive_gates -- not restated."
+        " THESE ARE AN UPPER BOUND ON GATE-CHAIN PASS RATE, NOT A YIELD (RESET_SPEC_V2.md R7):"
+        " the three PROBE gates cannot be measured without injecting the probe bias into training."
+        + (
+            " Success rate is split by the same mapping."
+            if getattr(env_cfg.terminations, "success_rate_log", None) is not None
+            else " Success rate is NOT split: no success_rate_log term exists on this config."
+        ),
+        flush=True,
+    )
+
+
 def _assert_root_pin_is_a_pin(env_cfg) -> None:
     """Fail construction unless ``events.reset_root`` is present AND writes a fixed pose.
 
@@ -2103,6 +2207,12 @@ class Ur5eDeltoMixinCfg:
         # two. Runs last because it reads the tolerances the ADR curriculum ended up with, which
         # ``super().__post_init__()`` derives and the Lift subclass then trims. See the function.
         _attach_success_rate_metric(self)
+
+        # -- metrics: the v2 gate proxy (V2_REPOSE_RECIPE.md sec 4, bead dr-tlx.2). Off unless
+        # DEXRESET_GATE_PROXY=1, and it prints either way. MUST run AFTER
+        # _attach_success_rate_metric, whose term it re-attaches with a per-kind split -- running
+        # before would have that call overwrite the split back off. See the function.
+        _attach_gate_proxy_metric(self)
 
 
 @configclass

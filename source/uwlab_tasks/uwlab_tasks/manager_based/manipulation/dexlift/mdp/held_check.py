@@ -54,7 +54,7 @@ import torch
 
 from isaaclab.managers import ManagerTermBase, SceneEntityCfg
 
-from .held_check_core import PROBE_STEPS, SETTLE_STEPS, held_decision
+from .held_check_core import PROBE_STEPS, SETTLE_STEPS, held_decision, passive_gates
 from .rewards import _sensor_force_magnitudes  # reused, not reimplemented -- see rewards.py:40-76
 
 if TYPE_CHECKING:
@@ -165,14 +165,24 @@ class held_with_probe(ManagerTermBase):
         )
         obj_vz = obj.data.root_lin_vel_w[:, 2]
 
-        settled = steps > self.settle_steps
-        pre_probe_ok = (
-            settled
-            & thumb_loaded
-            & tip_loaded
-            & (relative_speed < self.comove_speed_thresh)
-            & (obj_vz.abs() < self.comove_vz_thresh)
+        # The three probe-free gates, from the ONE implementation in held_check_core -- not
+        # rewritten here. This used to be five inline comparisons, and the same five appeared again
+        # in `_last_breakdown` below and a third time in `held_decision`: three copies of a
+        # definition, individually valid, checked against each other by nothing. That is
+        # V2_POSE_FINDINGS.md F27 exactly, and the training-time logger (mdp/gate_proxy.py) would
+        # have made a fourth. See `held_check_core.passive_gates` for why it has to be one function
+        # rather than one set of shared constants.
+        settled, opposed_contact_now, co_move_now = passive_gates(
+            steps_since_reset=steps,
+            thumb_loaded=thumb_loaded,
+            tip_loaded=tip_loaded,
+            relative_speed=relative_speed,
+            obj_vz=obj_vz,
+            settle_steps=self.settle_steps,
+            comove_speed_thresh=self.comove_speed_thresh,
+            comove_vz_thresh=self.comove_vz_thresh,
         )
+        pre_probe_ok = settled & opposed_contact_now & co_move_now
 
         # -- RE-ARMING probe bookkeeping (see module docstring for why this replaced a fixed
         # single window). ARM: no probe currently active, and the three non-probe gates just
@@ -234,9 +244,12 @@ class held_with_probe(ManagerTermBase):
         gripper_moved = torch.linalg.norm(self._gripper_disp_probe, dim=-1) > self.probe_min_disp
         tracks = self._tracks(self._obj_disp_probe, self._gripper_disp_probe)
         self._last_breakdown = {
-            "settled": steps > self.settle_steps,
-            "opposed_contact": thumb_loaded & tip_loaded,
-            "co_move": (relative_speed < self.comove_speed_thresh) & (obj_vz.abs() < self.comove_vz_thresh),
+            # The three probe-free rows reuse the tensors `passive_gates` already returned above
+            # rather than recomputing the same comparisons -- so the breakdown the generator reports
+            # and the decision the term actually made cannot disagree.
+            "settled": settled,
+            "opposed_contact": opposed_contact_now,
+            "co_move": co_move_now,
             "probe_ready": self._probe_ready.clone(),
             "probe_gripper_moved": gripper_moved,
             "probe_tracks": tracks,

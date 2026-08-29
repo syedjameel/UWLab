@@ -54,6 +54,56 @@ practice), but an excessively large jog is still worth avoiding on its own terms
 marginal-but-real grasp apart with the probe itself, which is not what "measure, don't disturb" means."""
 
 
+def passive_gates(
+    steps_since_reset: torch.Tensor,
+    thumb_loaded: torch.Tensor,
+    tip_loaded: torch.Tensor,
+    relative_speed: torch.Tensor,
+    obj_vz: torch.Tensor,
+    settle_steps: int = SETTLE_STEPS,
+    comove_speed_thresh: float = 0.05,
+    comove_vz_thresh: float = 0.1,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """The three gates of :func:`held_decision` that need NO probe: ``(settled, opposed_contact,
+    co_move)``, each ``(N,)`` bool.
+
+    WHY THIS IS A SEPARATE FUNCTION AND NOT A COPY. These three are the only gates in the chain
+    that can be evaluated during TRAINING. The fourth gate needs a probe, and the probe is an
+    action bias the generator's rollout loop injects on top of the policy
+    (:data:`PROBE_ARM_ACTION_BIAS`) -- injecting it during training would perturb the thing being
+    trained. So a training-time predictor of the generator's gate-chain pass rate can only be built
+    from these three (``V2_REPOSE_RECIPE.md`` sec 4.1), and it must agree with the generator
+    EXACTLY or it predicts nothing.
+
+    "Agree exactly" is why this is a factored-out function rather than the same five lines written
+    again in the logging term. ``V2_POSE_FINDINGS.md`` F27 is a recurring defect of this project --
+    a constant or a definition established in one place and restated in another, each individually
+    valid, wrong only against each other, with nothing checking. Importing the thresholds and
+    re-writing the comparisons would still leave two implementations. There is now one:
+    :func:`held_decision` calls this, and so does the training-time logger. A change to either
+    threshold or to either comparison reaches both by construction.
+
+    Args:
+        steps_since_reset: ``(N,)``, e.g. ``env.episode_length_buf``.
+        thumb_loaded: ``(N,)`` bool, >=1 thumb-side fingertip above the force threshold.
+        tip_loaded: ``(N,)`` bool, >=1 non-thumb fingertip above the force threshold.
+        relative_speed: ``(N,)`` ``|v_obj - v_palm|`` in m/s.
+        obj_vz: ``(N,)`` object world-frame z linear velocity in m/s.
+        settle_steps: episode-length threshold before anything is trusted.
+        comove_speed_thresh: m/s ceiling on ``relative_speed``.
+        comove_vz_thresh: m/s ceiling on ``|obj_vz|``.
+
+    Returns:
+        ``(settled, opposed_contact, co_move)``, in the priority order the generator's rejection
+        histogram reports them (``V2_POSE_FINDINGS.md`` F28/F30). ``co_move`` is the dominant
+        rejector on both band-gated v1 rungs -- 46.8% and 53.2% of all attempts.
+    """
+    settled = steps_since_reset > settle_steps
+    opposed_contact = thumb_loaded & tip_loaded
+    co_move = (relative_speed < comove_speed_thresh) & (obj_vz.abs() < comove_vz_thresh)
+    return settled, opposed_contact, co_move
+
+
 def held_decision(
     steps_since_reset: torch.Tensor,
     thumb_loaded: torch.Tensor,
@@ -120,9 +170,16 @@ def held_decision(
     ``|obj_disp_probe - gripper_disp_probe| >= probe_track_tol`` and gate 4 -- and therefore the
     whole AND -- is False. See ``test_held_check_core.py::test_adversarial_case_rejected``.
     """
-    settled = steps_since_reset > settle_steps
-    opposed_contact = thumb_loaded & tip_loaded
-    co_move = (relative_speed < comove_speed_thresh) & (obj_vz.abs() < comove_vz_thresh)
+    settled, opposed_contact, co_move = passive_gates(
+        steps_since_reset=steps_since_reset,
+        thumb_loaded=thumb_loaded,
+        tip_loaded=tip_loaded,
+        relative_speed=relative_speed,
+        obj_vz=obj_vz,
+        settle_steps=settle_steps,
+        comove_speed_thresh=comove_speed_thresh,
+        comove_vz_thresh=comove_vz_thresh,
+    )
 
     gripper_disp_norm = torch.linalg.norm(gripper_disp_probe, dim=-1)
     gripper_moved = gripper_disp_norm > probe_min_disp

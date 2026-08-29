@@ -95,3 +95,13 @@ from .c1_hand_pose import *  # noqa: F401, F403
 # exported name is new. ``c3_rung_core`` (the Isaac-free half, unit-tested standalone) is
 # deliberately NOT star-imported here, same convention as ``c1_hand_pose_core`` above.
 from .c3_rung import *  # noqa: F401, F403
+
+# TRAINING-TIME GATE PROXY -- the three probe-free gates of the generator's held chain, logged per
+# episode and per mixture branch (V2_REPOSE_RECIPE.md sec 4, bead dr-tlx.2). Off by default; wired
+# only by ``dexlift_ur5e_delto_env_cfg._attach_gate_proxy_metric`` when ``DEXRESET_GATE_PROXY=1``.
+# Imported after ``episode_mixture`` (it reads that module's ``EPISODE_KIND_NAMES`` and
+# ``EPISODE_KIND_BUFFER_ATTR`` rather than restating the kind integers) and after ``held_check``
+# (it calls the same ``passive_gates`` ``held_decision`` calls, so the proxy and the generator
+# cannot drift apart). ``gate_proxy_core`` (the Isaac-free half, unit-tested standalone) is
+# deliberately NOT star-imported here, same convention as ``held_check_core``/``c1_hand_pose_core``.
+from .gate_proxy import *  # noqa: F401, F403

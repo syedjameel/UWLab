@@ -206,6 +206,8 @@ __all__ = [
     "EPISODE_KIND_LOW_GOAL",
     "EPISODE_KIND_PARTIAL_ASSEMBLY",
     "EPISODE_KIND_TRANSPORT",
+    "EPISODE_KIND_NAMES",
+    "EPISODE_KIND_BUFFER_ATTR",
     "LOW_GOAL_POS_Z_RANGE",
     "PARKED_FIXTURE_POSE_RANGE",
     "assert_episode_mixture_is_sane",
@@ -227,6 +229,23 @@ object's own spawn x/y. See ``c3_transport_core``'s module docstring (bead dr-ai
 full argument: this is the branch missing from the mixture that actually asks the policy to bring
 the leg to a tip-down pose, as opposed to holding it near-horizontal (classic/low-goal) or already
 being there with nothing to do (partial-assembly)."""
+
+EPISODE_KIND_NAMES: dict[int, str] = {
+    EPISODE_KIND_CLASSIC: "classic",
+    EPISODE_KIND_LOW_GOAL: "low_goal",
+    EPISODE_KIND_PARTIAL_ASSEMBLY: "partial_assembly",
+    EPISODE_KIND_TRANSPORT: "transport",
+}
+"""Series-name for each kind code, defined HERE because the codes are defined here.
+
+Exists so that a consumer wanting per-branch metrics (``mdp/gate_proxy.py``,
+``mdp/success.py``'s per-kind success split) does not restate the integers next to names of its
+own. Two independently-written int->name tables, each individually valid, disagreeing after
+someone renumbers a branch, is V2_POSE_FINDINGS.md F27's defect class, and adding a fifth branch is
+exactly the edit that would produce it. The Isaac-free core that consumes this
+(``gate_proxy_core.build_log_entries``) takes it as a REQUIRED argument and has no default of its
+own -- it cannot import this module (isaaclab at module scope), and the correct response to that is
+to make the caller name the convention, not to keep a second copy."""
 
 LOW_GOAL_POS_Z_RANGE: tuple[float, float] = (0.02, 0.15)
 """Absolute z range (metres, robot-root frame) for the LOW goal band -- roughly table height.
@@ -274,7 +293,18 @@ margin against both the fixture's and the leg's own extents (each well under 0.3
 :data:`PARKED_FIXTURE_POSE_RANGE`'s 2.0 m parking offset -- a real regression would fail this by
 metres, not centimetres, so there is no risk of the margin itself being the flaky part."""
 
-_EPISODE_KIND_BUFFER_ATTR = "_dexlift_episode_kind"
+EPISODE_KIND_BUFFER_ATTR = "_dexlift_episode_kind"
+"""Attribute name of the per-env kind buffer on ``env``.
+
+PUBLIC, where it used to be ``_EPISODE_KIND_BUFFER_ATTR``, because a READ-ONLY consumer outside
+this module now exists (``mdp/gate_proxy.py``, which splits its metrics by branch). It reads via
+``getattr(env, EPISODE_KIND_BUFFER_ATTR, None)`` and degrades to un-split metrics when the mixture
+is not wired -- it deliberately does NOT call :func:`_get_episode_kind_buffer`, which CREATES the
+buffer, because a metric term that conjures the thing it is measuring would report every episode as
+CLASSIC in a run that has no mixture at all."""
+
+_EPISODE_KIND_BUFFER_ATTR = EPISODE_KIND_BUFFER_ATTR
+"""Back-compat alias for this module's own internal uses; do not add new references."""
 
 
 def _get_episode_kind_buffer(env) -> torch.Tensor:

@@ -563,13 +563,29 @@ class EpisodeSuccessRateLogger(EpisodeSuccessProbe):
         self._total_success = 0
         self._total_attempts = 0
         self._keys: tuple[str, str] | None = None
+        # PER-BRANCH SPLIT (V2_REPOSE_RECIPE.md sec 3.1). None -> aggregate only, which is the
+        # pre-existing behaviour and stays the default. The mapping is NOT built here: it is
+        # `episode_mixture.EPISODE_KIND_NAMES`, passed in by the cfg-time attach function, so this
+        # module neither imports the mixture nor keeps a second copy of the kind integers (F27).
+        self._kind_names: dict[int, str] | None = cfg.params.get("kind_names", None)
+        self._kind_buffer_attr: str | None = cfg.params.get("kind_buffer_attr", None)
 
     def __call__(
         self,
         env: ManagerBasedRLEnv,
         adr_term_name: str = ADR_TERM_NAME,
         log_key_prefix: str = RL_GAMES_EPISODE_LOG_PREFIX,
+        kind_names: dict[int, str] | None = None,
+        kind_buffer_attr: str | None = None,
     ) -> torch.Tensor:
+        # `kind_names` / `kind_buffer_attr` are consumed in __init__ and IGNORED here, but they MUST
+        # still appear in this signature. IsaacLab's ManagerBase._resolve_common_term_cfg checks
+        # `set(signature_args) == set(term_cfg.params)` statically at construction, and it does the
+        # comparison on the SET, so a params key with no matching argument raises
+        # "expects mandatory parameters ... but received ..." before the sim ever starts. A
+        # `**kwargs` catch-all does not satisfy it either -- `kwargs` itself is then counted as a
+        # parameter without a default and fails the same check.
+        del kind_names, kind_buffer_attr
         self._log_key_prefix = log_key_prefix
         never = super().__call__(env, adr_term_name)
         # STICKY OR, the reference recorder's ``record_post_step`` in one line. "Reached the goal at
@@ -609,7 +625,40 @@ class EpisodeSuccessRateLogger(EpisodeSuccessProbe):
         log = self._env.extras.setdefault("log", {})
         log[self._log_key_prefix + episode_key] = successes / attempts
         log[self._log_key_prefix + cumulative_key] = self._total_success / self._total_attempts
+        self._publish_per_kind(env_ids, flags, ran, episode_key, log)
         self._episode_success[env_ids] = False
+
+    def _publish_per_kind(self, env_ids, flags, ran, episode_key: str, log: dict) -> None:
+        """Split the SAME flags by episode kind. No second success computation, on purpose.
+
+        WHY THIS IS HERE RATHER THAN IN ITS OWN TERM. ``V2_REPOSE_RECIPE.md`` sec 3.1's collapse
+        tripwire (A1) is stated on CLASSIC-kind episodes specifically -- the aggregate is diluted by
+        three other branches and muffles the signal exactly when the ramp is raising the tip-down
+        fraction, which is the moment the signature is supposed to appear. A separate term would
+        have had to recompute the success predicate, and a second independently-computed success
+        rate that disagrees with the first is F27's defect class. These are the same ``flags`` and
+        the same ``ran`` mask the aggregate above just used, indexed.
+
+        Silently inert when the mixture is not wired (no buffer) or no mapping was configured.
+        """
+        if self._kind_names is None or self._kind_buffer_attr is None:
+            return
+        kind = getattr(self._env, self._kind_buffer_attr, None)
+        if kind is None:
+            return
+        kind = kind[env_ids]
+        for kind_value, kind_label in sorted(self._kind_names.items()):
+            in_kind = ran & (kind == kind_value)
+            n_kind = int(in_kind.sum().item())
+            # Count published even at zero so "no episodes of this kind finished in this batch" is
+            # distinguishable from "they all failed" -- the conflation F15 records for
+            # ``Curriculum/adr``, which reads 0.0 both for "never succeeds" and "curriculum stalled".
+            log[f"{self._log_key_prefix}{episode_key}/episodes/{kind_label}"] = float(n_kind)
+            if n_kind == 0:
+                continue
+            log[f"{self._log_key_prefix}{episode_key}/{kind_label}"] = (
+                int((flags & in_kind).sum().item()) / n_kind
+            )
 
     def _resolved_keys(self) -> tuple[str, str]:
         """Cache the key pair; the tolerances cannot change within a run, but resolving is not free."""
@@ -624,14 +673,27 @@ class EpisodeSuccessRateLogger(EpisodeSuccessProbe):
 
 
 def success_rate_log_term_cfg(
-    adr_term_name: str = ADR_TERM_NAME, log_key_prefix: str = RL_GAMES_EPISODE_LOG_PREFIX
+    adr_term_name: str = ADR_TERM_NAME,
+    log_key_prefix: str = RL_GAMES_EPISODE_LOG_PREFIX,
+    kind_names: dict[int, str] | None = None,
+    kind_buffer_attr: str | None = None,
 ) -> TerminationTermCfg:
     """Term config a TRAINING config adds to ``terminations`` to log the episode success rate.
 
     See :data:`RL_GAMES_EPISODE_LOG_PREFIX` for what ``log_key_prefix`` is for and when to blank it.
+
+    ``kind_names`` / ``kind_buffer_attr`` opt into the per-branch split
+    (``episode_mixture.EPISODE_KIND_NAMES`` and ``EPISODE_KIND_BUFFER_ATTR``). Both default to
+    ``None``, so an existing call site is byte-for-byte unchanged: the split is additive and no
+    pre-existing series moves or changes meaning.
     """
     return TerminationTermCfg(
         func=EpisodeSuccessRateLogger,
-        params={"adr_term_name": adr_term_name, "log_key_prefix": log_key_prefix},
+        params={
+            "adr_term_name": adr_term_name,
+            "log_key_prefix": log_key_prefix,
+            "kind_names": kind_names,
+            "kind_buffer_attr": kind_buffer_attr,
+        },
         time_out=False,
     )
