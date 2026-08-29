@@ -872,7 +872,9 @@ def test_the_latch_is_written_only_in_the_three_documented_methods():
         if not isinstance(item, ast.FunctionDef):
             continue
         for n in ast.walk(item):
-            if isinstance(n, (ast.Assign, ast.AugAssign)):
+            # AnnAssign included deliberately: `self.x: float = ...` is NOT ast.Assign, and
+            # missing it would let an annotated write escape this test silently.
+            if isinstance(n, (ast.Assign, ast.AugAssign, ast.AnnAssign)):
                 targets = n.targets if isinstance(n, ast.Assign) else [n.target]
                 if any(_LATCH in ast.unparse(t) for t in targets):
                     writers.add(item.name)
@@ -901,17 +903,60 @@ def test_the_command_does_not_recompute_the_settle_conditions_anywhere_else():
     # thresholds, that is the duplication this change exists to prevent.
     import ast
 
-    uses = 0
+    readers = set()
     for item in _command_class().body:
         if isinstance(item, ast.FunctionDef):
             for n in ast.walk(item):
                 # ctx=Load only -- the __init__ assignment TARGET is an Attribute in Store
                 # context and is not a read of the value.
                 if isinstance(n, ast.Attribute) and n.attr == "_st_settle_speed_mps" and isinstance(n.ctx, ast.Load):
-                    uses += 1
-    # One in __init__ (passed to validate_st_settle_speed) and one in _update_command (the mask).
-    # Anything more is a second place deciding "is it settled yet".
-    assert uses == 2, f"_st_settle_speed_mps READ {uses} times; expected 2 (init validate + mask)"
+                    readers.add(item.name)
+    # __init__ passes it to validate_st_settle_speed; _update_command builds the mask;
+    # st_settle_thresholds reports it. A bare COUNT was the wrong instrument here -- it cannot
+    # distinguish a new accessor from a new recomputation. Pinning the method set can: a read
+    # appearing in any OTHER method is a second place deciding "is it settled yet" and fails.
+    assert readers == {"__init__", "_update_command", "st_settle_thresholds"}, readers
+
+
+def test_st_settle_thresholds_returns_the_resolved_values_not_the_cfg():
+    # The point of the accessor: min_steps is resolved in __init__ (cfg's value may be None meaning
+    # "use held_check_core.SETTLE_STEPS"), so it must come from the private resolved field, not from
+    # cfg. If someone "simplifies" this to read cfg.st_settle_min_steps, a caller gets None and
+    # re-implements the fallback -- a second place deciding the step floor.
+    import ast
+
+    fn = _method("st_settle_thresholds")
+    body = [st for st in fn.body if not (isinstance(st, ast.Expr) and isinstance(st.value, ast.Constant))]
+    assert len(body) == 1, ast.unparse(fn)
+    got = ast.unparse(body[0])
+    assert got == (
+        "return (self._st_settle_speed_mps, self._st_settle_ang_speed_rad_s, self._st_settle_min_steps)"
+    ), got
+    assert "self.cfg" not in got, "must return the RESOLVED fields, never the cfg's unresolved ones"
+
+
+def test_st_settle_thresholds_is_read_only():
+    import ast
+
+    assert [ast.unparse(d) for d in _method("st_settle_thresholds").decorator_list] == ["property"]
+    assert "st_settle_thresholds.setter" not in _C3_RUNG_SRC
+
+
+def test_the_settle_thresholds_are_written_only_in_init():
+    # Config, not state: fixed at __init__ and never mutated. A write anywhere else would make the
+    # accessor a moving target and would mean the mask and the reported values could disagree.
+    import ast
+
+    writers = set()
+    for item in _command_class().body:
+        if not isinstance(item, ast.FunctionDef):
+            continue
+        for n in ast.walk(item):
+            if isinstance(n, (ast.Assign, ast.AugAssign, ast.AnnAssign)):
+                targets = n.targets if isinstance(n, ast.Assign) else [n.target]
+                if any("_st_settle_" in ast.unparse(t) for t in targets):
+                    writers.add(item.name)
+    assert writers == {"__init__"}, writers
 
 
 if __name__ == "__main__":

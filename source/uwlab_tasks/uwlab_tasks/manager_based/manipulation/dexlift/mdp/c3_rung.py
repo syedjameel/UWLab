@@ -347,6 +347,30 @@ class C3RungGoalPoseCommand(TaskStateVisPoseCommand):
         """
         return ~self._st_awaiting_repin
 
+    @property
+    def st_settle_thresholds(self) -> tuple[float, float, int]:
+        """The RESOLVED settle configuration S_t's deferred re-pin actually uses, as
+        ``(speed_mps, ang_speed_rad_s, min_steps)``. Read this rather than the private fields, and
+        rather than restating the numbers.
+
+        WHY THIS EXISTS SEPARATELY FROM ``cfg`` -- one of the three is NOT readable off the cfg.
+        ``cfg.st_settle_speed_mps`` and ``cfg.st_settle_ang_speed_rad_s`` are always the effective
+        values, so those two could be read straight off the cfg. ``cfg.st_settle_min_steps`` CANNOT:
+        it is ``None`` by default, meaning "use ``held_check_core.SETTLE_STEPS``", and the resolution
+        happens in ``__init__``. A caller reading the cfg field directly gets ``None`` and then has
+        to re-implement the fallback -- which is a second place deciding what the step floor is, the
+        exact duplication ``goal_is_final`` exists to prevent. Returning all three together means a
+        caller cannot half-read the configuration or accidentally take the unresolved one.
+
+        NOTE THIS IS CONFIG, NOT STATE, and the distinction matters for how much to trust it. These
+        three are fixed at ``__init__`` and never change, so unlike the ``goal_is_final`` latch there
+        is no runtime drift to guard against -- the risk here is only a stale COPY of the numbers, not
+        two live computations disagreeing. Do not generalise "expose everything" from this: the latch
+        needed an accessor because two layers were computing a condition; this one exists because one
+        of the three values is not otherwise reachable.
+        """
+        return (self._st_settle_speed_mps, self._st_settle_ang_speed_rad_s, self._st_settle_min_steps)
+
     def _resample_command(self, env_ids: Sequence[int]):
         env_ids_t = env_ids if torch.is_tensor(env_ids) else torch.as_tensor(env_ids, device=self.device)
         if env_ids_t.numel() == 0:
