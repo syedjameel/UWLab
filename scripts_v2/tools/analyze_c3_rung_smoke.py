@@ -639,6 +639,35 @@ def run_settle_gates(data: np.lib.npyio.NpzFile, meta: dict, n: int, args: argpa
                 flush=True,
             )
 
+        # -- FLOOR+1 CAUTION (c3-impl, informational, no gate): passing GATE S4 at floor+1 is a
+        # HEALTHY-LOOKING result that can mean two different things -- "the speed condition was
+        # already satisfied well before the floor opened, so the step floor alone explains the
+        # timing" (the speed condition never got to DO anything) vs. "the speed condition was
+        # genuinely still binding right up to the floor". Both pass every gate above identically;
+        # only how far BELOW the ceiling the recorded speed sits at floor+1 distinguishes them, so
+        # that margin is reported here rather than left implicit in a clean-looking pass.
+        floor_plus_one = fired_steps == (settle_steps + 1)
+        n_floor_plus_one = int(floor_plus_one.sum())
+        if n_floor_plus_one > 0:
+            speed_margin_frac = 1.0 - (fired_speed[floor_plus_one] / settle_speed_mps)
+            ang_margin_frac = 1.0 - (fired_ang_speed[floor_plus_one] / settle_ang_speed_rad_s)
+            comfortably_under = bool((speed_margin_frac.min() > 0.5) and (ang_margin_frac.min() > 0.5))
+            print(
+                f"[analyze_c3_rung] NOTE (floor+1, informational): {n_floor_plus_one}/{n_st_repinned}"
+                f" re-pins fired at EXACTLY repin_step={settle_steps + 1}. Median margin below the"
+                f" speed ceilings there: linear {float(np.median(speed_margin_frac)):.0%},"
+                f" angular {float(np.median(ang_margin_frac)):.0%} of the ceiling."
+                + (
+                    " Comfortably under both (>50% margin) -- consistent with 'the speed gates never"
+                    " bound, the step floor alone explains the timing' (c3-impl's caution): this run"
+                    " does not by itself demonstrate the speed conditions can reject a still-moving leg."
+                    if comfortably_under
+                    else " At least one close to a ceiling -- the speed condition plausibly was the"
+                    " binding one for some of these, not just the step floor."
+                ),
+                flush=True,
+            )
+
     log_text = Path(args.log).read_text()
     failures += run_log_gate(log_text, args.expected_s1_fraction, args.expected_pose_tilt, args.log_number_atol)
 
