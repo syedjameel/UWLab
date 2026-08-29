@@ -110,8 +110,10 @@ script's settle-mode assertions rather than trusted). At the SAME instant (the s
 it also records the object's absolute linear and angular speed
 (``torch.linalg.vector_norm(obj.data.root_lin_vel_w / root_ang_vel_w, dim=-1)``), so the analysis
 script can check the re-pin predicate's other two conditions -- not just the step floor -- against
-the speed ceilings read off the LIVE ``cmd_term`` (``_st_settle_speed_mps`` /
-``_st_settle_ang_speed_rad_s``), never a restated default. See ``analyze_c3_rung_smoke.py`` for what
+the speed ceilings AND the step floor itself resolved together via ``cmd_term.st_settle_thresholds``
+(bead ``dr-ai1.18`` follow-up, commit ``b47cba0`` -- one tuple, not three separate private reads;
+``cfg.st_settle_min_steps`` alone is unresolved ``None`` by default, so reading it directly instead
+of through the accessor would silently hand back the wrong floor). See ``analyze_c3_rung_smoke.py`` for what
 gets asserted from the settle-mode npz -- most importantly that a re-pin never fires while the leg is
 still moving (either linearly or, the newer and easier condition to miss, angularly).
 
@@ -248,7 +250,9 @@ import yaml  # noqa: E402
 
 from uwlab_tasks.manager_based.manipulation.dexlift.mdp import c3_rung  # noqa: E402
 from uwlab_tasks.manager_based.manipulation.dexlift.mdp import c3_rung_core  # noqa: E402
-from uwlab_tasks.manager_based.manipulation.dexlift.mdp import held_check_core  # noqa: E402
+# NOTE: no held_check_core import here on purpose -- SETTLE_STEPS is read RESOLVED off
+# cmd_term.st_settle_thresholds (see the --mode settle block below), not off this module directly,
+# so this smoke cannot become a second place deciding what the step floor is.
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 LEG_METADATA_CANDIDATES = [
@@ -433,8 +437,24 @@ else:
     # ==================================== PHASE 2: SETTLE (bead dr-ai1.20) ====================
     # Exercises the deferred S_t re-pin (goal_is_final, _update_command) -- see the module
     # docstring's PHASE 2 section for why --mode reset cannot exercise this at all.
-    SETTLE_STEPS = held_check_core.SETTLE_STEPS  # imported, never restated (60 today)
+    # -- The re-pin predicate's RESOLVED settle configuration, read as one tuple off the live
+    # command-term instance (bead dr-ai1.18 follow-up, commit b47cba0) rather than three separate
+    # private reads. Two of the three (speed_mps, ang_speed_rad_s) are also public on cfg and a
+    # private read of THOSE was only a naming risk -- but cfg.st_settle_min_steps is a genuine trap:
+    # it is None BY DEFAULT ("use held_check_core.SETTLE_STEPS"), resolved only inside __init__, so
+    # reading the cfg field directly would hand back None instead of the floor this run actually
+    # uses. st_settle_thresholds returns all three RESOLVED, so the window below and GATE S3's
+    # threshold (via meta.settle_steps) track what THIS run's predicate enforces -- not
+    # held_check_core.SETTLE_STEPS's default, which only happens to agree unless
+    # --c3_st_settle_min_steps-equivalent staging overrode it. This smoke must not become a second
+    # place deciding what the floor is.
+    st_settle_speed_mps, st_settle_ang_speed_rad_s, SETTLE_STEPS = cmd_term.st_settle_thresholds
     total_window = SETTLE_STEPS + args_cli.settle_margin
+    print(
+        f"[smoke_c3_rung] re-pin thresholds (resolved, from the live cfg): step floor >{SETTLE_STEPS}"
+        f" steps, linear <= {st_settle_speed_mps} m/s, angular <= {st_settle_ang_speed_rad_s} rad/s",
+        flush=True,
+    )
 
     # -- Headroom refusal, not an assumption: episode_length_s must comfortably outlast the settle
     # window or a mid-window auto-reset (ManagerBasedRLEnv resets a done sub-env INSIDE the SAME
@@ -463,20 +483,6 @@ else:
     )
 
     zero_action = torch.zeros((args_cli.num_envs, unwrapped.action_manager.total_action_dim), device=device)
-
-    # -- The re-pin predicate's own speed ceilings, read off the LIVE command-term instance -- never
-    # a restated constant, never c3_rung_core's DEFAULT_ST_SETTLE_SPEED_MPS /
-    # DEFAULT_ST_SETTLE_ANG_SPEED_RAD_S, which this run may have overridden. Team-lead's own point:
-    # S3 checked the step floor; nothing checked the linear or angular ceiling, and the angular term
-    # is the newest code in the stage (added specifically because a leg can read near-zero linear
-    # speed while still pivoting) -- so both are captured at the exact instant each re-pin fires.
-    st_settle_speed_mps = float(cmd_term._st_settle_speed_mps)  # noqa: SLF001
-    st_settle_ang_speed_rad_s = float(cmd_term._st_settle_ang_speed_rad_s)  # noqa: SLF001
-    print(
-        f"[smoke_c3_rung] re-pin speed ceilings (from the live cfg): linear <= {st_settle_speed_mps}"
-        f" m/s, angular <= {st_settle_ang_speed_rad_s} rad/s",
-        flush=True,
-    )
 
     kind_all = []
     goal_pos_t0_all, goal_quat_t0_all = [], []
@@ -578,6 +584,20 @@ else:
             f" S_t envs repinned {n_st_repinned_r}/{n_st_r}, contaminated envs {n_contam_r}",
             flush=True,
         )
+        # -- The observed repin_step distribution NEXT TO the staged thresholds turns the number into
+        # a check, not just a report (c3-impl's suggestion): the earliest fire should sit just above
+        # SETTLE_STEPS: everything landing at exactly SETTLE_STEPS+1 would mean the speed gates never
+        # actually bound (only the step floor did); a long tail well past it means legs are still
+        # moving well after the floor opens.
+        if n_st_repinned_r > 0:
+            fired_this_round = repin_step[repin_step >= 0].float()
+            print(
+                f"[smoke_c3_rung] round {r} repin_step (floor >{SETTLE_STEPS}, thresholds"
+                f" linear<={st_settle_speed_mps} m/s ang<={st_settle_ang_speed_rad_s} rad/s):"
+                f" min={int(fired_this_round.min())} median={int(fired_this_round.median())}"
+                f" max={int(fired_this_round.max())}",
+                flush=True,
+            )
 
     kind_all = torch.cat(kind_all, dim=0)
     goal_pos_t0_all = torch.cat(goal_pos_t0_all, dim=0)
@@ -628,15 +648,17 @@ else:
         "requested_s1_fraction": args_cli.s1_fraction,
         "requested_pose_tilt": args_cli.pose_tilt,
         "seed": args_cli.seed,
-        "settle_steps_source": "held_check_core.SETTLE_STEPS",
+        "settle_steps_source": "cmd_term.st_settle_thresholds[2] (resolves to held_check_core.SETTLE_STEPS unless overridden)",
         "settle_steps": SETTLE_STEPS,
         "settle_margin": args_cli.settle_margin,
         "total_settle_window_steps": total_window,
         "episode_length_s": episode_length_s,
         "step_dt": step_dt,
         "usable_steps": usable_steps,
-        # -- Read off the live cfg (cmd_term._st_settle_speed_mps / _ang_speed_rad_s), not
-        # c3_rung_core's DEFAULT_ST_SETTLE_*: this run may have overridden either.
+        # -- All three resolved from cmd_term.st_settle_thresholds (not read off cfg or restated
+        # from c3_rung_core's DEFAULT_ST_SETTLE_*): this run may have overridden any of them, and
+        # cfg.st_settle_min_steps in particular is unresolved (None) unless read through the
+        # accessor -- see this block's own comment above where the tuple is unpacked.
         "st_settle_speed_mps": st_settle_speed_mps,
         "st_settle_ang_speed_rad_s": st_settle_ang_speed_rad_s,
         "n_samples": n,
