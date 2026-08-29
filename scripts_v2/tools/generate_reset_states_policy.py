@@ -1601,17 +1601,8 @@ class _SpawnPoseToleranceAddon:
 
     THE MATH ITSELF lives in ``spawn_tolerance_core.py`` (pure torch, no Isaac, unit-tested in
     ``test_spawn_tolerance_stage.py`` without a GPU) -- this class is only the Isaac-touching half:
-    resolving the object, capturing its live pose off ``env.scene``, and calling
-    :func:`pose_distance`/:func:`within_spawn_tolerance`. Checked against ``c3_rung_core.py``
-    (bead dr-ai1.4) before writing this: that module defines NO "distance from spawn pose" or
-    rotation-metric convention of its own (its only frame arithmetic is the tip/root ``cos(tilt)``
-    Z-conversion for banner/logging purposes, ``goal_tip_z_from_root_z``, which this class's
-    criterion does not need -- S_t's tolerance is a direct 3D pose delta from the leg's own spawn,
-    never projected through a tip/root Z band). There is therefore nothing to reuse or conflict with
-    for the specific quantity this class computes.
-
-    FAILS LOUDLY AT CONSTRUCTION, not inside a deferred callback -- same idiom as
-    ``_SeatingGateAddon``/``held_with_probe``.
+    resolving the object, reading its live pose and the COMMANDED GOAL off ``env``, and calling
+    :func:`pose_distance`/:func:`within_spawn_tolerance`.
 
     TOLERANCES HAVE NO DEFAULT. ``pos_tol_m``/``rot_tol_rad`` are threaded straight into
     :class:`~uwlab_tasks.manager_based.manipulation.dexlift.mdp.spawn_tolerance_core.SpawnToleranceConfig`,
@@ -1625,38 +1616,50 @@ class _SpawnPoseToleranceAddon:
     shipped one invented constant (``RESET_SPEC_V2.md`` sec 6 item 0, the withdrawn ``stays_seated``
     6.02%->43.19% pair).
 
-    "SPAWN POSE" MEANS THE SETTLED POSE, NOT THE POSE AT THE INSTANT OF RESET -- CORRECTED
-    2026-08-29, same day as the first version, after reading bead ``dr-ai1.18``
-    (``dexlift/mdp/c3_rung.py``/``c3_rung_core.py``, committed by the concurrent env-side session).
-    That bead found and fixed the IDENTICAL defect in S_t's GOAL command: pinning at the literal
-    reset-time pose pins it where the leg WAS, mid-air, in a randomized orientation -- settling is
-    precisely the process that carries it to its actual resting pose (F50/F51: 99.02% end up lying
-    flat), so a reset-time reference can be off by up to ~90 deg. This class's FIRST version (see
-    git history) captured on the first ``check()`` after reset, which is the SAME bug: "first call
-    after reset" is still before the leg has settled. Fixed the same way ``c3_rung.py`` fixed its
-    goal, and REUSING that fix's own predicate rather than restating a second one (team-lead
-    instruction: same convention, same frame, same rotation metric, import don't restate) --
-    :func:`c3_rung_core.st_should_repin`'s three conditions: step floor (``SETTLE_STEPS``, imported
-    from ``held_check_core``, never restated -- same F49b API-shape discipline), absolute object
-    LINEAR speed ceiling (``c3_rung_core.DEFAULT_ST_SETTLE_SPEED_MPS``, sourced from
-    ``--c2_max_resting_speed``'s own provenance), AND absolute object ANGULAR speed ceiling
-    (``c3_rung_core.DEFAULT_ST_SETTLE_ANG_SPEED_RAD_S``, a LATER, separate team-lead decision same
-    day, sourced from F50/F51's own settled pair -- "a leg pivoting on a corner... can have a
-    near-zero LINEAR speed while its orientation is still changing", the identical capture-the-wrong-
-    orientation failure reached by a narrower path; that constant's own docstring is explicit that
-    the two 0.05s are NOT a shared constant and must never be "unified"). The tensor expression in
-    :meth:`check` below is the SAME "tensor form of ``st_should_repin``" idiom ``c3_rung.py``'s own
-    ``_update_command`` uses -- a second, independently-written site using the identical three
-    conditions, not a second definition of them. **This class's own SECOND version omitted the
-    angular term** (written before the angular-term commit landed) and has been updated to match,
-    the same day, before ever being wired to a live run -- see git history for both corrections.
+    SECOND CORRECTION, 2026-08-29 (team-lead review, superseding the first). The first version of
+    this class captured its OWN reference pose (either at the literal reset-time pose, then --
+    after reading bead dr-ai1.18 -- at a self-detected "settled" moment). BOTH were wrong for the
+    same reason team-lead named directly: a state this addon judges is ALSO the state
+    ``C3RungGoalPoseCommand`` is separately, concurrently deciding is "the goal" -- two
+    independently-computed notions of "the leg's reference pose" is the F27 defect class exactly,
+    two individually-valid definitions consumed as if they were one. If this addon's own settle
+    detection ever disagreed with c3_rung.py's by even one step, "acceptance" and "the goal" would
+    silently describe two different poses.
 
-    Practically: the reference pose this addon compares against is captured ONCE per episode, on
-    the first step at which the leg has both waited out the step floor and come to rest -- never at
-    the literal spawn/reset moment. An env whose reference pose has not yet been captured (still
-    settling) reads ``last_within_tolerance = False`` unconditionally (fails closed), exactly the
-    same discipline ``_SeatingGateAddon``'s construction-time assert uses for "refuse to measure
-    against nothing".
+    THE FIX: there is no self-captured reference pose left in this class at all. :meth:`check`
+    reads the COMMANDED GOAL directly off ``env.command_manager.get_term(command_name).pose_command_w``
+    (public API: ``CommandManager.get_term`` returns the live ``CommandTerm`` instance;
+    ``pose_command_w`` is ``TaskStateVisPoseCommand``'s own already-computed WORLD-frame command
+    buffer, ``task_state_vis.py:240-245``, the exact quantity ``success.py``'s ``goal_pose_error``
+    recomputes independently by hand -- reading it here instead of recombining
+    ``robot_root * pose_command_b`` a second time is the SAME reuse discipline applied one level
+    deeper). ``command_name`` defaults to ``dexlift_mdp.GOAL_COMMAND_NAME`` (``"object_pose"``,
+    ``success.py:100``), the term name ``_apply_c3_rung_stage`` installs
+    ``C3RungGoalPoseCommand`` under (``env_cfg.commands.object_pose = mdp.upgrade_to_c3_rung(...)``)
+    -- imported, not restated, so a rename on the env side cannot silently desync this addon.
+
+    PRE-SETTLE WINDOW, READ THIS BEFORE TRUSTING ``pose_command_w`` ON ANY GIVEN STEP.
+    ``V2_C3_DESIGN.md`` sec 7's own "Two accepted consequences": S_t's goal is PROVISIONALLY pinned
+    at the leg's mid-air reset-time pose and REPLACED once, on the first step
+    ``c3_rung_core.st_should_repin`` fires (step floor + absolute linear speed + absolute angular
+    speed, all past their ceilings). Before that fires, ``pose_command_w`` is the WRONG reference
+    (mid-air, up to ~90 deg off) -- evaluating acceptance against it would be exactly the bug this
+    correction removes, one layer further out. **No public accessor for "has this env's goal been
+    repinned yet" was found** (``C3RungGoalPoseCommand``'s own latch, ``_st_awaiting_repin``, is
+    private, and this class deliberately does not reach into it -- see the implementing session's
+    own report for the open question of whether c3-impl should expose a public one instead). Absent
+    that, this class gates acceptance on an INDEPENDENTLY-EVALUATED copy of the SAME public
+    predicate ``c3_rung_core.st_should_repin`` -- not a second REFERENCE POSE (there is none left to
+    duplicate), only a second READING of "has this env been at rest, past the step floor, at any
+    point since its last reset" -- latched, exactly mirroring ``_st_awaiting_repin``'s own semantics.
+    This is a narrower duplication than the one just removed (a boolean latch, not a pose), built
+    from the SAME imported constants/validators (``SETTLE_STEPS``,
+    ``c3_rung_core.DEFAULT_ST_SETTLE_SPEED_MPS``, ``c3_rung_core.DEFAULT_ST_SETTLE_ANG_SPEED_RAD_S``,
+    never restated), and is flagged explicitly rather than shipped silently.
+
+    An env whose trust latch has never fired reads ``last_within_tolerance = False`` unconditionally
+    (fails closed), same discipline ``_SeatingGateAddon``'s construction-time assert uses for
+    "refuse to measure against nothing".
     """
 
     def __init__(
@@ -1666,6 +1669,7 @@ class _SpawnPoseToleranceAddon:
         pos_tol_m: float,
         rot_tol_rad: float | None = None,
         *,
+        command_name: str = dexlift_mdp.GOAL_COMMAND_NAME,
         settle_min_steps: int = SETTLE_STEPS,
         settle_speed_mps: float = c3_rung_core.DEFAULT_ST_SETTLE_SPEED_MPS,
         settle_ang_speed_rad_s: float = c3_rung_core.DEFAULT_ST_SETTLE_ANG_SPEED_RAD_S,
@@ -1690,6 +1694,7 @@ class _SpawnPoseToleranceAddon:
         self._settle_min_steps = int(settle_min_steps)
         self._settle_speed_mps = float(settle_speed_mps)
         self._settle_ang_speed_rad_s = float(settle_ang_speed_rad_s)
+        self.command_name = command_name
 
         self.object_cfg = object_cfg
         self.object_cfg.resolve(env.scene)
@@ -1698,15 +1703,24 @@ class _SpawnPoseToleranceAddon:
             "in the scene. Refusing to construct a gate that would silently have nothing to "
             "measure against."
         )
+        # FAIL LOUDLY HERE, not on the first check() -- confirm the named command term actually
+        # exists and is a C3RungGoalPoseCommand (has pose_command_w) before this addon is trusted
+        # to read from it every step. Same "resolve at construction, not in a deferred callback"
+        # idiom as object_cfg.resolve() above / _SeatingGateAddon's own receptive_object_cfg check.
+        goal_term = env.command_manager.get_term(self.command_name)
+        assert hasattr(goal_term, "pose_command_w"), (
+            f"_SpawnPoseToleranceAddon: command term {self.command_name!r} "
+            f"({type(goal_term).__name__}) has no pose_command_w -- this addon reads the COMMANDED"
+            " GOAL (team-lead correction, dr-sj6.22) and needs a TaskStateVisPoseCommand-derived"
+            " term (C3RungGoalPoseCommand is one). Refusing to construct a gate that would read the"
+            " wrong quantity or crash mid-run instead of at construction."
+        )
 
         n = env.num_envs
         device = env.device
-        self._spawn_pos_w = torch.zeros(n, 3, device=device)
-        self._spawn_quat_w = torch.zeros(n, 4, device=device)
-        self._spawn_quat_w[:, 0] = 1.0  # identity until the settled capture in check() overwrites it
-        # False here means "has not yet captured its settled reference pose this episode" -- see
-        # this class's own docstring, "'SPAWN POSE' MEANS THE SETTLED POSE".
-        self._captured = torch.zeros(n, dtype=torch.bool, device=device)
+        # Latched "has this env been observed at rest, past the step floor, since its last
+        # reset" -- see this class's own docstring, "PRE-SETTLE WINDOW". NOT a captured pose.
+        self._goal_trusted = torch.zeros(n, dtype=torch.bool, device=device)
 
         self.last_pos_dist_m = torch.zeros(n, device=device)
         self.last_rot_dist_rad = torch.zeros(n, device=device)
@@ -1718,53 +1732,56 @@ class _SpawnPoseToleranceAddon:
             f"rot_tol={rot_tol_str}  settle_min_steps={self._settle_min_steps}"
             f"  settle_speed_mps={self._settle_speed_mps:.3f}"
             f"  settle_ang_speed_rad_s={self._settle_ang_speed_rad_s:.3f}  object={self.object_cfg.name}"
-            "  -- reference pose is the SETTLED pose (bead dr-ai1.18's own predicate, reused),"
-            " never the reset-time pose",
+            f"  command_name={self.command_name}"
+            "  -- reference pose is the COMMANDED GOAL (team-lead correction, dr-sj6.22),"
+            " never a self-captured pose",
             flush=True,
         )
 
     def reset(self, env_ids) -> None:
-        """Mark these envs as needing a fresh settled-pose capture. Does NOT read scene state here
-        -- see this class's own docstring."""
+        """Clear the trust latch for these envs. Does NOT read scene/command state here -- same
+        deferred-read discipline the first version's docstring already argued for, now applied to
+        a boolean latch instead of a pose."""
         if env_ids is None:
             env_ids = slice(None)
-        self._captured[env_ids] = False
+        self._goal_trusted[env_ids] = False
 
     def check(self, env) -> torch.Tensor:
         obj = env.scene[self.object_cfg.name]
         live_pos_w = obj.data.root_pos_w
         live_quat_w = obj.data.root_quat_w
 
+        goal_term = env.command_manager.get_term(self.command_name)
+        goal_pos_w = goal_term.pose_command_w[:, :3]
+        goal_quat_w = goal_term.pose_command_w[:, 3:]
+
         # -- Tensor form of c3_rung_core.st_should_repin -- SAME three conditions (step floor,
         # absolute LINEAR speed ceiling, absolute ANGULAR speed ceiling), SAME semantics, as
         # c3_rung.py's own _update_command uses to decide when S_t's GOAL may re-pin (bead
-        # dr-ai1.18): not yet captured AND past the step floor AND at rest, linearly AND angularly.
-        # NEITHER speed is held_check's relative co-move speed (a leg carried steadily by the hand
-        # would pass that and is not "at rest") -- both are absolute, world-frame. The angular term
-        # matters on its own: a leg pivoting on a corner can read near-zero LINEAR speed while its
-        # orientation is still changing, which a linear-only gate would miss (see this class's own
-        # docstring). See that docstring for why this predicate is reused rather than restated.
+        # dr-ai1.18). Used HERE only to latch "is pose_command_w trustworthy yet", never to
+        # capture a reference pose of this class's own -- see this class's own docstring,
+        # "PRE-SETTLE WINDOW". NEITHER speed is held_check's relative co-move speed (a leg carried
+        # steadily by the hand would pass that and is not "at rest") -- both are absolute,
+        # world-frame.
         steps = env.episode_length_buf
         lin_speed = torch.linalg.vector_norm(obj.data.root_lin_vel_w, dim=-1)
         ang_speed = torch.linalg.vector_norm(obj.data.root_ang_vel_w, dim=-1)
-        ready_to_capture = (
-            (~self._captured)
+        newly_trusted = (
+            (~self._goal_trusted)
             & (steps > self._settle_min_steps)
             & (lin_speed <= self._settle_speed_mps)
             & (ang_speed <= self._settle_ang_speed_rad_s)
         )
-        if ready_to_capture.any():
-            self._spawn_pos_w[ready_to_capture] = live_pos_w[ready_to_capture]
-            self._spawn_quat_w[ready_to_capture] = live_quat_w[ready_to_capture]
-            self._captured[ready_to_capture] = True
+        if newly_trusted.any():
+            self._goal_trusted[newly_trusted] = True
 
-        pos_dist_m, rot_dist_rad = pose_distance(self._spawn_pos_w, self._spawn_quat_w, live_pos_w, live_quat_w)
+        pos_dist_m, rot_dist_rad = pose_distance(goal_pos_w, goal_quat_w, live_pos_w, live_quat_w)
         self.last_pos_dist_m = pos_dist_m
         self.last_rot_dist_rad = rot_dist_rad
 
-        # An env that has never captured a settled reference pose this episode cannot be judged --
-        # fails closed rather than comparing against the identity-quat/zero-pos placeholder.
-        within = within_spawn_tolerance(pos_dist_m, rot_dist_rad, self.cfg) & self._captured
+        # An env whose goal has never been trusted yet cannot be judged -- fails closed rather than
+        # comparing against a still-provisional (mid-air) commanded goal.
+        within = within_spawn_tolerance(pos_dist_m, rot_dist_rad, self.cfg) & self._goal_trusted
         self.last_within_tolerance = within
         return within
 
@@ -1806,6 +1823,8 @@ class SpawnToleranceHeldWithProbe(dexlift_mdp.held_with_probe):
             settle_kwargs["settle_speed_mps"] = st_cfg["settle_speed_mps"]
         if st_cfg.get("settle_ang_speed_rad_s") is not None:
             settle_kwargs["settle_ang_speed_rad_s"] = st_cfg["settle_ang_speed_rad_s"]
+        if st_cfg.get("command_name") is not None:
+            settle_kwargs["command_name"] = st_cfg["command_name"]
         self._spawn_tolerance = _SpawnPoseToleranceAddon(
             env, self.object_cfg, st_cfg.get("pos_tol_m"), st_cfg.get("rot_tol_rad"), **settle_kwargs
         )
