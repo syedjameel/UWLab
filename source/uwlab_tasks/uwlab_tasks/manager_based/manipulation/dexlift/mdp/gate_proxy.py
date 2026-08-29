@@ -45,7 +45,7 @@ from isaaclab.managers import ManagerTermBase, SceneEntityCfg, TerminationTermCf
 
 from . import gate_proxy_core
 from .episode_mixture import EPISODE_KIND_BUFFER_ATTR, EPISODE_KIND_NAMES
-from .held_check_core import SETTLE_STEPS, passive_gates
+from .held_check_core import COMOVE_SPEED_THRESH, COMOVE_VZ_THRESH, SETTLE_STEPS, passive_gates
 from .rewards import _sensor_force_magnitudes  # reused, not reimplemented -- see rewards.py:40-76
 
 if TYPE_CHECKING:
@@ -68,18 +68,21 @@ class GateProxyLogger(ManagerTermBase):
     def __init__(self, cfg: TerminationTermCfg, env: ManagerBasedRLEnv):
         super().__init__(cfg, env)
         p = cfg.params
-        # DEFAULTS COPIED FROM held_with_probe's OWN PARAM BLOCK, deliberately, and this is the one
-        # place a value is restated in this module. They are `cfg.params.get` defaults on a term
-        # this file cannot import an instance of (it may not even be constructed in a training
-        # run), so there is nothing to read them off. Guarded instead: `_assert_thresholds_match`
-        # below fails construction if a held_with_probe term IS present and disagrees.
+        # The three GATE thresholds are IMPORTED from held_check_core, never restated -- they have
+        # a second consumer (c3_rung.py imports SETTLE_STEPS for S_t's goal re-pin step floor,
+        # bead dr-ai1.18), so a local copy would silently describe another subsystem's timing.
+        # The scene-entity and force defaults below ARE copied from held_with_probe's own param
+        # block: they are `cfg.params.get` defaults on a term this file cannot import an instance
+        # of (it may not even be constructed in a training run), so there is nothing to read them
+        # off. Guarded instead -- `_assert_thresholds_match` fails construction if a
+        # held_with_probe term IS present and disagrees.
         self.robot_cfg: SceneEntityCfg = p.get("robot_cfg", SceneEntityCfg("robot", body_names="rl_dg_mount"))
         self.object_cfg: SceneEntityCfg = p.get("object_cfg", SceneEntityCfg("object"))
         self.thumb_contact_names = p.get("thumb_contact_names", ("rl_dg_1_tip", "rl_dg_5_tip"))
         self.tip_contact_names = p.get("tip_contact_names", ("rl_dg_2_tip", "rl_dg_3_tip", "rl_dg_4_tip"))
         self.force_threshold = p.get("force_threshold", 0.2)
-        self.comove_speed_thresh = p.get("comove_speed_thresh", 0.05)
-        self.comove_vz_thresh = p.get("comove_vz_thresh", 0.1)
+        self.comove_speed_thresh = p.get("comove_speed_thresh", COMOVE_SPEED_THRESH)
+        self.comove_vz_thresh = p.get("comove_vz_thresh", COMOVE_VZ_THRESH)
         self.settle_steps = p.get("settle_steps", SETTLE_STEPS)
         self.kind_names: dict[int, str] | None = p.get("kind_names", EPISODE_KIND_NAMES)
         self._log_key_prefix: str = p.get("log_key_prefix", gate_proxy_core.DEFAULT_LOG_PREFIX)
@@ -246,6 +249,46 @@ class GateProxyLogger(ManagerTermBase):
         for name in self._ever:
             self._ever[name][env_ids] = False
             self._atend[name][env_ids] = False
+
+
+# Defaults are declared ONCE, here, and both the term and the banner read them from this dict --
+# so the number a run PRINTS and the number it USES cannot diverge. The three that belong to
+# held_check_core are imported from it, never restated: SETTLE_STEPS has a second consumer in
+# c3_rung.py (S_t's goal re-pin step floor, bead dr-ai1.18), so a copy here would silently describe
+# a different subsystem's timing too.
+GATE_PROXY_DEFAULTS: dict[str, float] = {
+    "settle_steps": SETTLE_STEPS,
+    "comove_speed_thresh": COMOVE_SPEED_THRESH,
+    "comove_vz_thresh": COMOVE_VZ_THRESH,
+}
+
+
+def gate_proxy_banner(kind_labels: list[str], success_split: bool) -> str:
+    """The exact banner text printed when the gate proxy is staged (R5).
+
+    Returned as a string rather than printed, so a test can assert on it byte-for-byte -- the same
+    technique ``c3_transport_core.transport_goal_banner`` uses, and for the reason F42 records: an
+    earlier version of this banner stated "settled > 60 steps, relative speed < 0.05 m/s" as
+    LITERALS. That is the F27 defect class in the one place it does most damage, because a stale
+    banner is what a reader checks a run's staging AGAINST (RESET_SPEC_V2.md sec 1a trap 3). Every
+    number below is interpolated from :data:`GATE_PROXY_DEFAULTS`, which reads held_check_core.
+    """
+    return (
+        "[dexreset] GATE PROXY staged: publishing GateProxy/{settled,opposed_contact,co_move,"
+        "passive_three}_{atend,ever}_frac plus priority-ordered reach and first-fail counts, split"
+        f" by episode kind {sorted(kind_labels)}. Thresholds are held_check_core's own, imported"
+        f" not restated: settled > {GATE_PROXY_DEFAULTS['settle_steps']} steps, relative speed <"
+        f" {GATE_PROXY_DEFAULTS['comove_speed_thresh']} m/s, |obj vz| <"
+        f" {GATE_PROXY_DEFAULTS['comove_vz_thresh']} m/s -- the same values, via the same"
+        " passive_gates call, that the generator's held predicate uses."
+        " THESE ARE AN UPPER BOUND ON GATE-CHAIN PASS RATE, NOT A YIELD (RESET_SPEC_V2.md R7):"
+        " the three PROBE gates cannot be measured without injecting the probe bias into training."
+        + (
+            " Success rate is split by the same mapping."
+            if success_split
+            else " Success rate is NOT split: no success_rate_log term exists on this config."
+        )
+    )
 
 
 def gate_proxy_log_term_cfg(

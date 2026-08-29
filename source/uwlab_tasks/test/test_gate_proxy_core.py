@@ -438,10 +438,13 @@ def test_negative_control_comove_threshold_change_is_detected():
         # Under the mutation 0.051 now passes; under the real source it does not.
         assert bool(co_move[0]) is True, "mutation did not take effect -- the control proves nothing"
 
+    # Anchored on the SINGLE named constant, which is a strictly better control than the old
+    # per-signature default it replaced: it also proves the constant actually propagates to both
+    # passive_gates and held_decision rather than each carrying its own copy.
     _with_mutated_source(
         _MDP / "held_check_core.py",
-        "    comove_speed_thresh: float = 0.05,\n    comove_vz_thresh: float = 0.1,\n) -> tuple[",
-        "    comove_speed_thresh: float = 0.5,\n    comove_vz_thresh: float = 0.1,\n) -> tuple[",
+        "COMOVE_SPEED_THRESH = 0.05",
+        "COMOVE_SPEED_THRESH = 0.5",
         check,
     )
     # And the real source rejects it again, so the mutation really was the cause.
@@ -502,6 +505,101 @@ def test_negative_control_priority_order_collapse_is_detected():
         settled=_b(True), opposed_contact=_b(False), co_move=_b(False), ran=_b(True)
     )
     assert int(chain["first_fail_co_move"].sum()) == 0
+
+
+# ---------------------------------------------------------------------------------------------
+# THE BANNER MUST NOT GO STALE. gate_proxy.py imports isaaclab, so this reads it with ast.
+# ---------------------------------------------------------------------------------------------
+
+
+def _banner_code_without_docstring() -> str:
+    """Source of ``gate_proxy_banner``'s executable body, docstring EXCLUDED.
+
+    The docstring deliberately quotes the stale literals it exists to warn about
+    ("settled > 60 steps ... as LITERALS"), so a naive scan of the whole function flags the very
+    comment that documents the fix. Strip it with ast and scan only what runs.
+    """
+    import ast
+
+    tree = ast.parse((_MDP / "gate_proxy.py").read_text())
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == "gate_proxy_banner":
+            body = node.body[1:] if ast.get_docstring(node) is not None else node.body
+            return "\n".join(ast.unparse(stmt) for stmt in body)
+    raise AssertionError("gate_proxy_banner not found")
+
+
+def test_banner_interpolates_thresholds_and_states_no_literal():
+    """The banner must PRINT the thresholds it actually uses.
+
+    An earlier revision spelled them out -- "settled > 60 steps, relative speed < 0.05 m/s" -- in
+    the one place a stale number does most damage, because a banner is what a reader checks a run's
+    staging against (RESET_SPEC_V2.md sec 1a trap 3) and the R0/ramp launchers grep for it.
+    V2_POSE_FINDINGS.md F42 is this repo's own record of in-tree documentation going stale that way.
+    """
+    body = _banner_code_without_docstring()
+    for literal in ("> 60 steps", "< 0.05 m/s", "< 0.1 m/s"):
+        assert literal not in body, f"banner hardcodes {literal!r}; interpolate it instead"
+    for key in ("settle_steps", "comove_speed_thresh", "comove_vz_thresh"):
+        assert "GATE_PROXY_DEFAULTS" in body and key in body, f"banner does not interpolate {key}"
+
+
+def test_gate_proxy_defaults_come_from_held_check_core_not_a_copy():
+    """GATE_PROXY_DEFAULTS must reference held_check_core's names, never repeat their values.
+
+    SETTLE_STEPS has a SECOND consumer -- c3_rung.py imports it as S_t's goal re-pin step floor
+    (bead dr-ai1.18) -- so a local copy in the gate proxy would silently describe a different
+    subsystem's timing as well as its own.
+    """
+    src = (_MDP / "gate_proxy.py").read_text()
+    start = src.index("GATE_PROXY_DEFAULTS: dict[str, float] = {")
+    body = src[start : src.index("}", start)]
+    assert '"settle_steps": SETTLE_STEPS' in body
+    assert '"comove_speed_thresh": COMOVE_SPEED_THRESH' in body
+    assert '"comove_vz_thresh": COMOVE_VZ_THRESH' in body
+    for numeral in ("60", "0.05", "0.1"):
+        assert numeral not in body, f"GATE_PROXY_DEFAULTS restates the literal {numeral}"
+    # And the names it references really are held_check_core's, with the documented values.
+    assert _held.SETTLE_STEPS == 60
+    assert _held.COMOVE_SPEED_THRESH == 0.05
+    assert _held.COMOVE_VZ_THRESH == 0.1
+
+
+def test_naming_the_comove_thresholds_did_not_change_their_values():
+    """Naming COMOVE_SPEED_THRESH / COMOVE_VZ_THRESH must be a pure rename.
+
+    held_check_core now has a second subsystem depending on it, so a "harmless" retune smuggled in
+    with a refactor would change S_t's re-pin timing and the generator's held predicate at once.
+    These are the values every v1 number in V2_POSE_FINDINGS.md F28/F30 was measured under.
+    """
+    import inspect
+
+    for fn in (_held.held_decision, _held.passive_gates):
+        params = inspect.signature(fn).parameters
+        assert params["comove_speed_thresh"].default == 0.05, fn.__name__
+        assert params["comove_vz_thresh"].default == 0.1, fn.__name__
+        assert params["settle_steps"].default == 60, fn.__name__
+
+
+def test_negative_control_a_stale_banner_literal_is_detected():
+    """Prove the staleness check fires: put a literal back and confirm the suite objects."""
+
+    def check(_module):
+        try:
+            test_banner_interpolates_thresholds_and_states_no_literal()
+        except AssertionError as exc:
+            assert "hardcodes" in str(exc)
+            return
+        raise AssertionError("the staleness check did not fire on a hardcoded literal")
+
+    _with_mutated_source(
+        _MDP / "gate_proxy.py",
+        "f\" not restated: settled > {GATE_PROXY_DEFAULTS['settle_steps']} steps, relative speed <\"",
+        '" not restated: settled > 60 steps, relative speed <"',
+        check,
+        load=False,
+    )
+    test_banner_interpolates_thresholds_and_states_no_literal()
 
 
 # ---------------------------------------------------------------------------------------------

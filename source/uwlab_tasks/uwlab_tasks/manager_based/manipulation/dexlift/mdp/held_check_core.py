@@ -54,6 +54,22 @@ practice), but an excessively large jog is still worth avoiding on its own terms
 marginal-but-real grasp apart with the probe itself, which is not what "measure, don't disturb" means."""
 
 
+COMOVE_SPEED_THRESH = 0.05
+"""m/s ceiling on ``|v_obj - v_palm|`` for the co-move gate.
+
+NAMED, not new. This is the same 0.05 that was already the default of :func:`held_decision` and
+:func:`passive_gates`; nothing about the value changes, and nothing that consumed the default
+before behaves differently. It is given a name so that a CONSUMER OUTSIDE THE DECISION -- the
+training-time gate proxy's banner (``mdp/gate_proxy.py``) -- can print the threshold it is actually
+using instead of a literal that goes stale (V2_POSE_FINDINGS.md F42). Do not retune it here: it is
+read by both the generator's held predicate and the proxy that is supposed to predict it, and a
+change needs both re-validated."""
+
+COMOVE_VZ_THRESH = 0.1
+"""m/s ceiling on ``|obj_vz|`` for the co-move gate. Named for the same reason and under the same
+caution as :data:`COMOVE_SPEED_THRESH`; the value is unchanged."""
+
+
 def passive_gates(
     steps_since_reset: torch.Tensor,
     thumb_loaded: torch.Tensor,
@@ -61,8 +77,8 @@ def passive_gates(
     relative_speed: torch.Tensor,
     obj_vz: torch.Tensor,
     settle_steps: int = SETTLE_STEPS,
-    comove_speed_thresh: float = 0.05,
-    comove_vz_thresh: float = 0.1,
+    comove_speed_thresh: float = COMOVE_SPEED_THRESH,
+    comove_vz_thresh: float = COMOVE_VZ_THRESH,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """The three gates of :func:`held_decision` that need NO probe: ``(settled, opposed_contact,
     co_move)``, each ``(N,)`` bool.
@@ -114,8 +130,8 @@ def held_decision(
     obj_disp_probe: torch.Tensor,
     gripper_disp_probe: torch.Tensor,
     settle_steps: int = 60,
-    comove_speed_thresh: float = 0.05,
-    comove_vz_thresh: float = 0.1,
+    comove_speed_thresh: float = COMOVE_SPEED_THRESH,
+    comove_vz_thresh: float = COMOVE_VZ_THRESH,
     probe_min_disp: float = 0.003,
     probe_track_tol: float = 0.003,
     probe_track_tol_frac: float = 0.3,

@@ -1458,18 +1458,15 @@ def _attach_gate_proxy_metric(env_cfg) -> None:
             kind_names=mdp.EPISODE_KIND_NAMES,
             kind_buffer_attr=mdp.EPISODE_KIND_BUFFER_ATTR,
         )
+    # Built by mdp.gate_proxy_banner, which interpolates every threshold from held_check_core
+    # rather than printing a literal. An earlier revision of this banner spelled the numbers out --
+    # F27 in the one place it does most damage, since a banner is what a reader checks a run's
+    # staging AGAINST (RESET_SPEC_V2.md sec 1a trap 3), and F42 records this repo's own in-tree
+    # documentation of a flag going stale exactly that way.
     print(
-        "[dexreset] GATE PROXY staged: publishing GateProxy/{settled,opposed_contact,co_move,"
-        "passive_three}_{atend,ever}_frac plus priority-ordered reach and first-fail counts, split"
-        f" by episode kind {sorted(mdp.EPISODE_KIND_NAMES.values())}. Thresholds are"
-        " held_check_core's own (settled > 60 steps, relative speed < 0.05 m/s, |obj vz| < 0.1"
-        " m/s), shared with the generator's held predicate via passive_gates -- not restated."
-        " THESE ARE AN UPPER BOUND ON GATE-CHAIN PASS RATE, NOT A YIELD (RESET_SPEC_V2.md R7):"
-        " the three PROBE gates cannot be measured without injecting the probe bias into training."
-        + (
-            " Success rate is split by the same mapping."
-            if getattr(env_cfg.terminations, "success_rate_log", None) is not None
-            else " Success rate is NOT split: no success_rate_log term exists on this config."
+        mdp.gate_proxy_banner(
+            kind_labels=list(mdp.EPISODE_KIND_NAMES.values()),
+            success_split=getattr(env_cfg.terminations, "success_rate_log", None) is not None,
         ),
         flush=True,
     )
