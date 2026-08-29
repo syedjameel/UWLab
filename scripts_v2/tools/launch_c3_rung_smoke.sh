@@ -9,6 +9,10 @@
 #   launch_c3_rung_smoke.sh <gpu-index> [num_envs] [rounds]
 #     e.g. launch_c3_rung_smoke.sh 1
 #          launch_c3_rung_smoke.sh 1 256 4
+#          MODE=settle SETTLE_MARGIN=60 launch_c3_rung_smoke.sh 1 256 2   # phase 2, bead dr-ai1.20
+#
+# MODE=reset (default, bead dr-ai1.4) or MODE=settle (bead dr-ai1.20, exercises the deferred S_t
+# goal re-pin -- needs stepping, so budget more wall time and prefer fewer --rounds).
 #
 # GPU INDEX IS REQUIRED, NOT DEFAULTED, ON PURPOSE -- per this box's own compute policy: run
 # `nvidia-smi` immediately before firing this, pick a device with low Volatile GPU-Util AND small
@@ -28,6 +32,12 @@ NUM_ENVS="${2:-256}"
 ROUNDS="${3:-4}"
 S1_FRACTION="${S1_FRACTION:-0.5}"
 POSE_TILT="${POSE_TILT:-0.3}"
+MODE="${MODE:-reset}"
+SETTLE_MARGIN="${SETTLE_MARGIN:-60}"
+if [ "$MODE" != "reset" ] && [ "$MODE" != "settle" ]; then
+  echo "REFUSING: MODE must be 'reset' or 'settle', got '$MODE'"
+  exit 1
+fi
 
 export CUDA_VISIBLE_DEVICES="$GPU"
 export OMNI_KIT_ACCEPT_EULA=YES
@@ -58,22 +68,31 @@ PYTHON_BIN="${PYTHON_BIN:-/home/dom_iva/venv_uwlab/bin/python}"
 TS="$(date +%Y%m%d_%H%M%S)"
 OUT_DIR="$REPO_ROOT/logs"
 mkdir -p "$OUT_DIR"
-NPZ="$OUT_DIR/c3_rung_smoke_${TS}.npz"
-LOG="$OUT_DIR/c3_rung_smoke_${TS}.log"
-ANALYSIS_LOG="$OUT_DIR/c3_rung_smoke_${TS}_analysis.log"
+NPZ="$OUT_DIR/c3_rung_smoke_${MODE}_${TS}.npz"
+LOG="$OUT_DIR/c3_rung_smoke_${MODE}_${TS}.log"
+ANALYSIS_LOG="$OUT_DIR/c3_rung_smoke_${MODE}_${TS}_analysis.log"
 
-echo "GPU=$GPU NUM_ENVS=$NUM_ENVS ROUNDS=$ROUNDS S1_FRACTION=$S1_FRACTION POSE_TILT=$POSE_TILT"
+echo "GPU=$GPU MODE=$MODE NUM_ENVS=$NUM_ENVS ROUNDS=$ROUNDS S1_FRACTION=$S1_FRACTION POSE_TILT=$POSE_TILT"
+[ "$MODE" = "settle" ] && echo "SETTLE_MARGIN=$SETTLE_MARGIN"
 echo "npz -> $NPZ"
 echo "log -> $LOG"
 
 # -- ~92 s of Isaac startup, measured (not assumed), before the first env.reset() prints anything.
-# num_envs=256 * rounds=4 resets, no policy stepping (this script never calls env.step()), so the
-# whole job is startup-dominated -- 900 s gives ample headroom without risking a false-negative
-# timeout on a slow boot.
-timeout -s KILL 900 "$PYTHON_BIN" -u scripts_v2/tools/smoke_c3_rung_isaac.py \
+# MODE=reset: num_envs*rounds resets, no stepping -- startup-dominated, 900 s is ample headroom.
+# MODE=settle: additionally steps (SETTLE_STEPS + SETTLE_MARGIN) times per round with zero actions
+# -- budget more; 1800 s covers a slow boot plus a generous settle window at default num_envs/rounds.
+SMOKE_TIMEOUT=900
+EXTRA_ARGS=()
+if [ "$MODE" = "settle" ]; then
+  SMOKE_TIMEOUT=1800
+  EXTRA_ARGS+=(--mode settle --settle_margin "$SETTLE_MARGIN")
+fi
+
+timeout -s KILL "$SMOKE_TIMEOUT" "$PYTHON_BIN" -u scripts_v2/tools/smoke_c3_rung_isaac.py \
   --task "$TASK" \
   --num_envs "$NUM_ENVS" --rounds "$ROUNDS" \
   --s1_fraction "$S1_FRACTION" --pose_tilt "$POSE_TILT" \
+  "${EXTRA_ARGS[@]}" \
   --out "$NPZ" --headless \
   > "$LOG" 2>&1
 SMOKE_EXIT=$?

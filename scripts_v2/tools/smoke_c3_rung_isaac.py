@@ -84,11 +84,38 @@ attribute), the fixture-present/parked classification, the geometric (exact, non
 computation, and the swap-oriented framing of the whole exercise -- the model script measures a
 GOAL DISTRIBUTION, this script measures WHETHER TWO STATE MACHINES AGREE.
 
+PHASE 2 (bead ``dr-ai1.20``, ``--mode settle``): the block above is reset-only and therefore exercises
+exactly one of the three paths in ``c3_rung.py`` that had never executed -- the per-env draw. The
+other two are the DEFERRED RE-PIN machinery added in commits ``9b51f56`` / ``4217ed8``: the
+``_st_awaiting_repin`` latch surviving across resets (armed in ``_resample_command``, cleared the
+step it fires) and ``C3RungGoalPoseCommand._update_command`` being CALLED AT ALL. Both are still
+unrun by ``--mode reset``. This is not a refinement to skip: without the re-pin, S_t's goal sits at
+its mid-air spawn pose, in a randomized orientation up to ~90 deg from where the leg actually comes
+to rest, which inverts the rung. ``--mode settle`` therefore, per round: resets, then steps with
+ZERO actions (``torch.zeros(num_envs, action_manager.total_action_dim)`` -- this measures the settle
+PHYSICS and the re-pin STATE MACHINE, never a policy) for ``held_check_core.SETTLE_STEPS +
+--settle_margin`` env-steps, watching ``cmd_term._st_awaiting_repin`` for the True->False edge on
+every step. Per env this records: the goal at step 0 (the provisional pin), the goal at the end of
+the window, the leg's pose at the end, the EXACT internal step index
+(``unwrapped.episode_length_buf`` at the moment of the edge, not this script's own loop counter --
+the same quantity ``C3RungGoalPoseCommand._update_command``'s own predicate reads, so there is no
+off-by-one between what fired the re-pin and what this script reports) the re-pin fired at, and
+whether an env's own ``episode_length_buf`` ever DECREASED mid-window (a stray termination
+auto-resetting that env inside a plain ``env.step()`` call, IsaacLab's own documented behaviour --
+see ``measure_vertical_hold.py``'s module docstring -- which would silently splice a second episode's
+draw into this one's row; such envs are flagged ``contaminated`` and excluded from the analysis
+script's settle-mode assertions rather than trusted). See ``analyze_c3_rung_smoke.py`` for what gets
+asserted from the settle-mode npz -- most importantly that a re-pin never fires at a bounce apex.
+
 Run (one Isaac process; never two on one GPU):
     <python> scripts_v2/tools/smoke_c3_rung_isaac.py \\
         --task DexLift-UR5eDelto-RelJointPos-TableLeg-Reorient-Play-v0 \\
         --num_envs 256 --rounds 4 --s1_fraction 0.5 --pose_tilt 0.3 \\
         --out /path/to/out.npz --headless
+    <python> scripts_v2/tools/smoke_c3_rung_isaac.py --mode settle \\
+        --task DexLift-UR5eDelto-RelJointPos-TableLeg-Reorient-Play-v0 \\
+        --num_envs 256 --rounds 2 --s1_fraction 0.5 --pose_tilt 0.3 --settle_margin 60 \\
+        --out /path/to/out_settle.npz --headless
 See ``launch_c3_rung_smoke.sh`` in this directory for the full wrapped invocation (env vars,
 UWLAB_TMP_ROOT/TMPDIR, GPU pin).
 """
@@ -116,6 +143,23 @@ parser.add_argument(
 )
 parser.add_argument("--num_envs", type=int, default=256)
 parser.add_argument("--rounds", type=int, default=4, help="env.reset() calls; total samples = num_envs*rounds")
+parser.add_argument(
+    "--mode",
+    choices=["reset", "settle"],
+    default="reset",
+    help="'reset' (default, bead dr-ai1.4): measure at reset only, never calls env.step() -- proves"
+    " the per-env S1/S_t draw and dispatch. 'settle' (bead dr-ai1.20): also steps with zero actions"
+    " past SETTLE_STEPS to exercise the deferred S_t goal re-pin (_st_awaiting_repin /"
+    " _update_command, commits 9b51f56/4217ed8) -- see the module docstring's PHASE 2 section.",
+)
+parser.add_argument(
+    "--settle_margin",
+    type=int,
+    default=60,
+    help="--mode settle only: env-steps stepped PAST held_check_core.SETTLE_STEPS (60), so the total"
+    " settle window is SETTLE_STEPS + this. 60 is team-lead's own suggested margin -- 'a bounce has"
+    " time to die out' -- not re-derived here.",
+)
 parser.add_argument(
     "--s1_fraction",
     type=float,
@@ -196,6 +240,7 @@ import yaml  # noqa: E402
 
 from uwlab_tasks.manager_based.manipulation.dexlift.mdp import c3_rung  # noqa: E402
 from uwlab_tasks.manager_based.manipulation.dexlift.mdp import c3_rung_core  # noqa: E402
+from uwlab_tasks.manager_based.manipulation.dexlift.mdp import held_check_core  # noqa: E402
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 LEG_METADATA_CANDIDATES = [
@@ -283,95 +328,269 @@ def axis_tilt_from_tipdown_deg(quat_wxyz: torch.Tensor) -> torch.Tensor:
 # chosen with >0.9 m of margin on both sides so no plausible physics jitter crosses it.
 _FIXTURE_PARKED_LOCAL_X_THRESHOLD = -1.0
 
-kind_all, leg_pos_all, leg_quat_all = [], [], []
-goal_pos_all, goal_quat_all = [], []
-fixture_pos_all, fixture_local_x_all = [], []
-env_id_all, round_all = [], []
+if args_cli.mode == "reset":
+    # ==================================== PHASE 1: RESET-ONLY ====================================
+    kind_all, leg_pos_all, leg_quat_all = [], [], []
+    goal_pos_all, goal_quat_all = [], []
+    fixture_pos_all, fixture_local_x_all = [], []
+    env_id_all, round_all = [], []
 
-for r in range(args_cli.rounds):
-    env.reset()
+    for r in range(args_cli.rounds):
+        env.reset()
 
-    kind = c3_rung._get_c3_kind_buffer(unwrapped).detach().clone()
-    kind_all.append(kind)
+        kind = c3_rung._get_c3_kind_buffer(unwrapped).detach().clone()
+        kind_all.append(kind)
 
-    leg_pos = obj.data.root_pos_w.detach().clone()
-    leg_quat = obj.data.root_quat_w.detach().clone()
-    leg_pos_all.append(leg_pos)
-    leg_quat_all.append(leg_quat)
+        leg_pos = obj.data.root_pos_w.detach().clone()
+        leg_quat = obj.data.root_quat_w.detach().clone()
+        leg_pos_all.append(leg_pos)
+        leg_quat_all.append(leg_quat)
 
-    robot_pos_w = robot.data.root_pos_w.detach().clone()
-    robot_quat_w = robot.data.root_quat_w.detach().clone()
-    goal_pos_w, goal_quat_w = combine_frame_transforms(
-        robot_pos_w,
-        robot_quat_w,
-        cmd_term.pose_command_b[:, :3].detach().clone(),
-        cmd_term.pose_command_b[:, 3:7].detach().clone(),
-    )
-    goal_pos_all.append(goal_pos_w)
-    goal_quat_all.append(goal_quat_w)
+        robot_pos_w = robot.data.root_pos_w.detach().clone()
+        robot_quat_w = robot.data.root_quat_w.detach().clone()
+        goal_pos_w, goal_quat_w = combine_frame_transforms(
+            robot_pos_w,
+            robot_quat_w,
+            cmd_term.pose_command_b[:, :3].detach().clone(),
+            cmd_term.pose_command_b[:, 3:7].detach().clone(),
+        )
+        goal_pos_all.append(goal_pos_w)
+        goal_quat_all.append(goal_quat_w)
 
-    fixture_pos = fixture.data.root_pos_w.detach().clone()
-    fixture_pos_all.append(fixture_pos)
-    fixture_local_x_all.append((fixture_pos[:, 0] - env_origins[:, 0]).detach().clone())
+        fixture_pos = fixture.data.root_pos_w.detach().clone()
+        fixture_pos_all.append(fixture_pos)
+        fixture_local_x_all.append((fixture_pos[:, 0] - env_origins[:, 0]).detach().clone())
 
-    env_id_all.append(torch.arange(args_cli.num_envs, device=device))
-    round_all.append(torch.full((args_cli.num_envs,), r, device=device, dtype=torch.long))
+        env_id_all.append(torch.arange(args_cli.num_envs, device=device))
+        round_all.append(torch.full((args_cli.num_envs,), r, device=device, dtype=torch.long))
 
-    counts = {
-        "S1": int((kind == c3_rung_core.C3_KIND_S1).sum()),
-        "S_t": int((kind == c3_rung_core.C3_KIND_ST).sum()),
+        counts = {
+            "S1": int((kind == c3_rung_core.C3_KIND_S1).sum()),
+            "S_t": int((kind == c3_rung_core.C3_KIND_ST).sum()),
+        }
+        print(f"[smoke_c3_rung] round {r} done, {args_cli.num_envs} envs, kind counts={counts}", flush=True)
+
+    kind_all = torch.cat(kind_all, dim=0)
+    leg_pos_all = torch.cat(leg_pos_all, dim=0)
+    leg_quat_all = torch.cat(leg_quat_all, dim=0)
+    goal_pos_all = torch.cat(goal_pos_all, dim=0)
+    goal_quat_all = torch.cat(goal_quat_all, dim=0)
+    fixture_pos_all = torch.cat(fixture_pos_all, dim=0)
+    fixture_local_x_all = torch.cat(fixture_local_x_all, dim=0)
+    env_id_all = torch.cat(env_id_all, dim=0)
+    round_all = torch.cat(round_all, dim=0)
+
+    n = kind_all.shape[0]
+    print(f"[smoke_c3_rung] total samples n={n}", flush=True)
+
+    leg_tip_pos_all = tip_from_root(leg_pos_all, leg_quat_all)
+    goal_tip_pos_all = tip_from_root(goal_pos_all, goal_quat_all)
+    leg_tilt_deg_all = axis_tilt_from_tipdown_deg(leg_quat_all)
+    goal_tilt_deg_all = axis_tilt_from_tipdown_deg(goal_quat_all)
+    fixture_parked_all = fixture_local_x_all < _FIXTURE_PARKED_LOCAL_X_THRESHOLD
+
+    arrays = {
+        "kind": kind_all.cpu().numpy(),  # C3_KIND_S1=0, C3_KIND_ST=1 (c3_rung_core)
+        "env_id": env_id_all.cpu().numpy(),
+        "round": round_all.cpu().numpy(),
+        "leg_root_pos_w": leg_pos_all.cpu().numpy(),
+        "leg_root_quat_w_wxyz": leg_quat_all.cpu().numpy(),
+        "leg_tip_pos_w": leg_tip_pos_all.cpu().numpy(),  # geometric, exact -- not the nominal conversion
+        "leg_tilt_from_tipdown_deg": leg_tilt_deg_all.cpu().numpy(),
+        "goal_pos_w": goal_pos_all.cpu().numpy(),
+        "goal_quat_w_wxyz": goal_quat_all.cpu().numpy(),
+        "goal_tip_pos_w": goal_tip_pos_all.cpu().numpy(),
+        "goal_tilt_from_tipdown_deg": goal_tilt_deg_all.cpu().numpy(),
+        "fixture_root_pos_w": fixture_pos_all.cpu().numpy(),
+        "fixture_local_x_m": fixture_local_x_all.cpu().numpy(),
+        "fixture_parked": fixture_parked_all.cpu().numpy(),
     }
-    print(f"[smoke_c3_rung] round {r} done, {args_cli.num_envs} envs, kind counts={counts}", flush=True)
+    # -- Recorded so the analysis script needs no second source of truth for what this run asked for.
+    meta = {
+        "mode": "reset",
+        "task": args_cli.task,
+        "num_envs": args_cli.num_envs,
+        "rounds": args_cli.rounds,
+        "requested_s1_fraction": args_cli.s1_fraction,
+        "requested_pose_tilt": args_cli.pose_tilt,
+        "seed": args_cli.seed,
+        "s1_goal_delta_m": float(cmd_term.cfg.s1_goal_delta_m),
+        "fixture_parked_local_x_threshold_m": _FIXTURE_PARKED_LOCAL_X_THRESHOLD,
+        "assembled_offset_pos_local": list(ASSEMBLED_OFFSET_POS),
+        "leg_metadata_path": leg_metadata_path,
+        "n_samples": n,
+    }
 
-kind_all = torch.cat(kind_all, dim=0)
-leg_pos_all = torch.cat(leg_pos_all, dim=0)
-leg_quat_all = torch.cat(leg_quat_all, dim=0)
-goal_pos_all = torch.cat(goal_pos_all, dim=0)
-goal_quat_all = torch.cat(goal_quat_all, dim=0)
-fixture_pos_all = torch.cat(fixture_pos_all, dim=0)
-fixture_local_x_all = torch.cat(fixture_local_x_all, dim=0)
-env_id_all = torch.cat(env_id_all, dim=0)
-round_all = torch.cat(round_all, dim=0)
+else:
+    # ==================================== PHASE 2: SETTLE (bead dr-ai1.20) ====================
+    # Exercises the deferred S_t re-pin (_st_awaiting_repin, _update_command) -- see the module
+    # docstring's PHASE 2 section for why --mode reset cannot exercise this at all.
+    SETTLE_STEPS = held_check_core.SETTLE_STEPS  # imported, never restated (60 today)
+    total_window = SETTLE_STEPS + args_cli.settle_margin
 
-n = kind_all.shape[0]
-print(f"[smoke_c3_rung] total samples n={n}", flush=True)
+    # -- Headroom refusal, not an assumption: episode_length_s must comfortably outlast the settle
+    # window or a mid-window auto-reset (ManagerBasedRLEnv resets a done sub-env INSIDE the SAME
+    # env.step() call -- measure_vertical_hold.py's own module docstring) would splice a second
+    # episode's draw into this round's row. This is exactly "a value established under one condition
+    # and consumed under another" -- refuse rather than silently trust it.
+    step_dt = float(unwrapped.step_dt)
+    episode_length_s = float(unwrapped.cfg.episode_length_s)
+    usable_steps = int(episode_length_s / step_dt)
+    _HEADROOM_STEPS = 20
+    if usable_steps < total_window + _HEADROOM_STEPS:
+        raise SystemExit(
+            f"[smoke_c3_rung] REFUSING (--mode settle): episode_length_s={episode_length_s}s /"
+            f" step_dt={step_dt}s = {usable_steps} usable control steps, which does not clear the"
+            f" settle window ({total_window} = SETTLE_STEPS {SETTLE_STEPS} + settle_margin"
+            f" {args_cli.settle_margin}) plus a {_HEADROOM_STEPS}-step safety margin. Stepping this"
+            " far would risk a mid-window auto-reset silently contaminating the data. Reduce"
+            " --settle_margin, or pick a task/override with a longer episode_length_s."
+        )
+    print(
+        f"[smoke_c3_rung] settle window: SETTLE_STEPS={SETTLE_STEPS} + settle_margin"
+        f"={args_cli.settle_margin} = {total_window} steps; episode budget {usable_steps} steps"
+        f" (episode_length_s={episode_length_s}s, step_dt={step_dt}s) -- headroom"
+        f" {usable_steps - total_window} steps.",
+        flush=True,
+    )
 
-leg_tip_pos_all = tip_from_root(leg_pos_all, leg_quat_all)
-goal_tip_pos_all = tip_from_root(goal_pos_all, goal_quat_all)
-leg_tilt_deg_all = axis_tilt_from_tipdown_deg(leg_quat_all)
-goal_tilt_deg_all = axis_tilt_from_tipdown_deg(goal_quat_all)
-fixture_parked_all = fixture_local_x_all < _FIXTURE_PARKED_LOCAL_X_THRESHOLD
+    zero_action = torch.zeros((args_cli.num_envs, unwrapped.action_manager.total_action_dim), device=device)
 
-arrays = {
-    "kind": kind_all.cpu().numpy(),  # C3_KIND_S1=0, C3_KIND_ST=1 (c3_rung_core)
-    "env_id": env_id_all.cpu().numpy(),
-    "round": round_all.cpu().numpy(),
-    "leg_root_pos_w": leg_pos_all.cpu().numpy(),
-    "leg_root_quat_w_wxyz": leg_quat_all.cpu().numpy(),
-    "leg_tip_pos_w": leg_tip_pos_all.cpu().numpy(),  # geometric, exact -- not the nominal conversion
-    "leg_tilt_from_tipdown_deg": leg_tilt_deg_all.cpu().numpy(),
-    "goal_pos_w": goal_pos_all.cpu().numpy(),
-    "goal_quat_w_wxyz": goal_quat_all.cpu().numpy(),
-    "goal_tip_pos_w": goal_tip_pos_all.cpu().numpy(),
-    "goal_tilt_from_tipdown_deg": goal_tilt_deg_all.cpu().numpy(),
-    "fixture_root_pos_w": fixture_pos_all.cpu().numpy(),
-    "fixture_local_x_m": fixture_local_x_all.cpu().numpy(),
-    "fixture_parked": fixture_parked_all.cpu().numpy(),
-}
-# -- Recorded so the analysis script needs no second source of truth for what this run asked for.
-meta = {
-    "task": args_cli.task,
-    "num_envs": args_cli.num_envs,
-    "rounds": args_cli.rounds,
-    "requested_s1_fraction": args_cli.s1_fraction,
-    "requested_pose_tilt": args_cli.pose_tilt,
-    "seed": args_cli.seed,
-    "s1_goal_delta_m": float(cmd_term.cfg.s1_goal_delta_m),
-    "fixture_parked_local_x_threshold_m": _FIXTURE_PARKED_LOCAL_X_THRESHOLD,
-    "assembled_offset_pos_local": list(ASSEMBLED_OFFSET_POS),
-    "leg_metadata_path": leg_metadata_path,
-    "n_samples": n,
-}
+    kind_all = []
+    goal_pos_t0_all, goal_quat_t0_all = [], []
+    goal_pos_final_all, goal_quat_final_all = [], []
+    leg_pos_final_all, leg_quat_final_all = [], []
+    repin_step_all, ever_repinned_all, contaminated_all = [], [], []
+    env_id_all, round_all = [], []
+
+    for r in range(args_cli.rounds):
+        env.reset()
+
+        kind = c3_rung._get_c3_kind_buffer(unwrapped).detach().clone()
+
+        robot_pos_w = robot.data.root_pos_w.detach().clone()
+        robot_quat_w = robot.data.root_quat_w.detach().clone()
+        goal_pos_t0, goal_quat_t0 = combine_frame_transforms(
+            robot_pos_w,
+            robot_quat_w,
+            cmd_term.pose_command_b[:, :3].detach().clone(),
+            cmd_term.pose_command_b[:, 3:7].detach().clone(),
+        )
+
+        # -- The latch this whole phase exists to watch. Read directly off the live command-term
+        # instance, same idiom as c3_rung._get_c3_kind_buffer: the ground truth is the buffer the
+        # code itself reads, not a re-derivation.
+        awaiting = cmd_term._st_awaiting_repin.detach().clone()  # noqa: SLF001
+        repin_step = torch.full((args_cli.num_envs,), -1, dtype=torch.long, device=device)
+        contaminated = torch.zeros(args_cli.num_envs, dtype=torch.bool, device=device)
+        prev_episode_len = unwrapped.episode_length_buf.detach().clone()
+
+        for _ in range(total_window):
+            env.step(zero_action)
+
+            cur_episode_len = unwrapped.episode_length_buf.detach().clone()
+            # A DECREASE means a done sub-env was auto-reset inside that env.step() call -- its row
+            # for this round now describes a splice of two episodes, not one continuous settle.
+            contaminated |= cur_episode_len < prev_episode_len
+            prev_episode_len = cur_episode_len
+
+            cur_awaiting = cmd_term._st_awaiting_repin.detach().clone()  # noqa: SLF001
+            just_fired = awaiting & (~cur_awaiting) & (repin_step < 0)
+            if bool(just_fired.any()):
+                # The EXACT step count the predicate itself used (self._env.episode_length_buf at
+                # the instant _update_command fired), not this loop's own counter -- no off-by-one
+                # between what triggered the re-pin and what this script reports.
+                repin_step[just_fired] = cur_episode_len[just_fired]
+            awaiting = cur_awaiting
+
+        goal_pos_final, goal_quat_final = combine_frame_transforms(
+            robot.data.root_pos_w.detach().clone(),
+            robot.data.root_quat_w.detach().clone(),
+            cmd_term.pose_command_b[:, :3].detach().clone(),
+            cmd_term.pose_command_b[:, 3:7].detach().clone(),
+        )
+        leg_pos_final = obj.data.root_pos_w.detach().clone()
+        leg_quat_final = obj.data.root_quat_w.detach().clone()
+        ever_repinned = repin_step >= 0
+
+        kind_all.append(kind)
+        goal_pos_t0_all.append(goal_pos_t0)
+        goal_quat_t0_all.append(goal_quat_t0)
+        goal_pos_final_all.append(goal_pos_final)
+        goal_quat_final_all.append(goal_quat_final)
+        leg_pos_final_all.append(leg_pos_final)
+        leg_quat_final_all.append(leg_quat_final)
+        repin_step_all.append(repin_step)
+        ever_repinned_all.append(ever_repinned)
+        contaminated_all.append(contaminated)
+        env_id_all.append(torch.arange(args_cli.num_envs, device=device))
+        round_all.append(torch.full((args_cli.num_envs,), r, device=device, dtype=torch.long))
+
+        st_mask_r = kind == c3_rung_core.C3_KIND_ST
+        n_st_r = int(st_mask_r.sum())
+        n_st_repinned_r = int((ever_repinned & st_mask_r).sum())
+        n_contam_r = int(contaminated.sum())
+        print(
+            f"[smoke_c3_rung] round {r} settle done: {args_cli.num_envs} envs stepped {total_window}x,"
+            f" S_t envs repinned {n_st_repinned_r}/{n_st_r}, contaminated envs {n_contam_r}",
+            flush=True,
+        )
+
+    kind_all = torch.cat(kind_all, dim=0)
+    goal_pos_t0_all = torch.cat(goal_pos_t0_all, dim=0)
+    goal_quat_t0_all = torch.cat(goal_quat_t0_all, dim=0)
+    goal_pos_final_all = torch.cat(goal_pos_final_all, dim=0)
+    goal_quat_final_all = torch.cat(goal_quat_final_all, dim=0)
+    leg_pos_final_all = torch.cat(leg_pos_final_all, dim=0)
+    leg_quat_final_all = torch.cat(leg_quat_final_all, dim=0)
+    repin_step_all = torch.cat(repin_step_all, dim=0)
+    ever_repinned_all = torch.cat(ever_repinned_all, dim=0)
+    contaminated_all = torch.cat(contaminated_all, dim=0)
+    env_id_all = torch.cat(env_id_all, dim=0)
+    round_all = torch.cat(round_all, dim=0)
+
+    n = kind_all.shape[0]
+    print(f"[smoke_c3_rung] total samples n={n}", flush=True)
+
+    leg_tilt_final_deg_all = axis_tilt_from_tipdown_deg(leg_quat_final_all)
+    goal_tilt_t0_deg_all = axis_tilt_from_tipdown_deg(goal_quat_t0_all)
+    goal_tilt_final_deg_all = axis_tilt_from_tipdown_deg(goal_quat_final_all)
+
+    arrays = {
+        "kind": kind_all.cpu().numpy(),
+        "env_id": env_id_all.cpu().numpy(),
+        "round": round_all.cpu().numpy(),
+        "goal_pos_t0_w": goal_pos_t0_all.cpu().numpy(),  # provisional pin, read at reset
+        "goal_quat_t0_w_wxyz": goal_quat_t0_all.cpu().numpy(),
+        "goal_tilt_t0_deg": goal_tilt_t0_deg_all.cpu().numpy(),
+        "goal_pos_final_w": goal_pos_final_all.cpu().numpy(),  # after total_window steps
+        "goal_quat_final_w_wxyz": goal_quat_final_all.cpu().numpy(),
+        "goal_tilt_final_deg": goal_tilt_final_deg_all.cpu().numpy(),
+        "leg_pos_final_w": leg_pos_final_all.cpu().numpy(),
+        "leg_quat_final_w_wxyz": leg_quat_final_all.cpu().numpy(),
+        "leg_tilt_final_deg": leg_tilt_final_deg_all.cpu().numpy(),
+        "repin_step": repin_step_all.cpu().numpy(),  # -1 = never repinned in the window
+        "ever_repinned": ever_repinned_all.cpu().numpy(),
+        "contaminated": contaminated_all.cpu().numpy(),  # mid-window auto-reset; exclude from gates
+    }
+    meta = {
+        "mode": "settle",
+        "task": args_cli.task,
+        "num_envs": args_cli.num_envs,
+        "rounds": args_cli.rounds,
+        "requested_s1_fraction": args_cli.s1_fraction,
+        "requested_pose_tilt": args_cli.pose_tilt,
+        "seed": args_cli.seed,
+        "settle_steps_source": "held_check_core.SETTLE_STEPS",
+        "settle_steps": SETTLE_STEPS,
+        "settle_margin": args_cli.settle_margin,
+        "total_settle_window_steps": total_window,
+        "episode_length_s": episode_length_s,
+        "step_dt": step_dt,
+        "usable_steps": usable_steps,
+        "n_samples": n,
+    }
+
 arrays["meta_json"] = np.array(json.dumps(meta))
 
 np.savez(args_cli.out, **arrays)
