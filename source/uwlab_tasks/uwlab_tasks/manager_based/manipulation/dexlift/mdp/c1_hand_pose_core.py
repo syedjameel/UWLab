@@ -391,3 +391,42 @@ def palm_down_self_check(approach_local: torch.Tensor, atol: float = 1e-4) -> to
     if not torch.allclose(check, world_down, atol=atol):
         raise AssertionError(f"palm_down_self_check failed: approach_local -> {check}, expected {world_down}")
     return quat
+
+
+class RetryAttemptCounter:
+    """Pure R2 accepted/attempted bookkeeping for the C1 post-solve retry loop (bead dr-sj6.21).
+
+    ``RESET_SPEC_V2.md`` R2, pinned: ``yield = accepted / attempted``, and the denominator "counts
+    every attempt including held-state-gate deaths... nothing that consumed an attempt may be
+    excluded from the count." C1 has no held-state gate chain (it is R1-exempt, see
+    ``c1_hand_pose.py``'s own module docstring) -- the analogous compute-consuming unit is one
+    IK-solve-and-measure ATTEMPT inside :func:`~.c1_hand_pose.reset_end_effector_c1_hand_pose`'s
+    bounded-retry loop, so a round that still fails after a retry is counted here exactly as it was
+    spent, not folded away.
+
+    THIS IS THE ONLY IMPLEMENTATION of the counting rule -- ``reset_end_effector_c1_hand_pose``
+    calls :meth:`start_round`/:meth:`end_call` verbatim rather than restating the arithmetic inline,
+    the same F27 discipline this project applies everywhere else (a rule written twice is a rule
+    that can silently disagree). Extracted here, torch-free and Isaac-free, specifically so the
+    counting rule is unit-testable without a running Isaac Sim process -- see
+    ``source/uwlab_tasks/test/test_c1_hand_pose_stage.py``.
+    """
+
+    def __init__(self) -> None:
+        self.attempted = 0
+        self.accepted = 0
+
+    def start_round(self, pending_count: int) -> None:
+        """Call once per retry-loop iteration, BEFORE any of the ``pending_count`` envs entering
+        it can resolve -- every one of them is about to spend an IK-solve attempt whether or not it
+        ultimately passes ``ik_gate_pass``, so it belongs in the denominator now."""
+        self.attempted += pending_count
+
+    def end_call(self, m: int, still_pending: int) -> None:
+        """Call once after the retry loop finishes for one ``__call__`` invocation covering ``m``
+        envs. Whatever is no longer pending passed ``ik_gate_pass`` within the retry budget --
+        accepted. Whatever remains in ``still_pending`` is exhausted: NOT accepted, even though the
+        caller still writes its best-of-attempts fallback state for it (see that function's own
+        "retry budget exhausted" comment -- a written state is not the same claim as an accepted
+        one)."""
+        self.accepted += m - still_pending

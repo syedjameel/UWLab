@@ -71,7 +71,7 @@ from uwlab.envs.mdp.actions.actions_cfg import DifferentialInverseKinematicsActi
 from uwlab_tasks.manager_based.manipulation.omnireset.mdp import utils as omnireset_utils
 from uwlab_tasks.manager_based.manipulation.omnireset.mdp.events import _wrap_joints_into_limits
 
-from .c1_hand_pose_core import C1HandPoseStage, ik_gate_pass, quat_from_two_vectors
+from .c1_hand_pose_core import C1HandPoseStage, RetryAttemptCounter, ik_gate_pass, quat_from_two_vectors
 
 _WORLD_DOWN = (0.0, 0.0, -1.0)
 
@@ -105,6 +105,13 @@ class reset_end_effector_c1_hand_pose(ManagerTermBase):
         # from the log, not assumed).
         self._cumulative_calls = 0
         self._cumulative_exhausted = 0
+        # bead dr-sj6.21 -- R2 accounting (RESET_SPEC_V2.md R2-pinned: accepted/attempted, every
+        # attempt including held-state/gate deaths counted in the denominator). The counting rule
+        # itself lives in ``RetryAttemptCounter`` (``c1_hand_pose_core.py``), NOT restated here, so
+        # it has one implementation and is unit-testable without Isaac -- see that class's own
+        # docstring. This term only calls ``start_round``/``end_call`` at the right points in the
+        # loop below and reads ``.attempted``/``.accepted`` for the printed cumulative totals.
+        self._retry_counter = RetryAttemptCounter()
 
         robot_ik_solver_cfg = DifferentialInverseKinematicsActionCfg(
             asset_name=robot_ik_cfg.name,
@@ -199,6 +206,9 @@ class reset_end_effector_c1_hand_pose(ManagerTermBase):
         for _attempt in range(max_retries + 1):
             if pending_local.numel() == 0:
                 break
+            # bead dr-sj6.21: count THIS round's attempts before any of them can resolve -- see
+            # RetryAttemptCounter.start_round's own docstring for why this must happen here.
+            self._retry_counter.start_round(int(pending_local.numel()))
             pending_global = env_ids[pending_local]
 
             # XY/Z/orientation sampled for the FULL batch every attempt -- matches
@@ -276,6 +286,11 @@ class reset_end_effector_c1_hand_pose(ManagerTermBase):
 
             pending_local = pending_local[~ok]
 
+        # bead dr-sj6.21: whatever is NOT in ``pending_local`` now passed ``ik_gate_pass`` within
+        # budget -- accepted, by construction, before the exhaustion fallback below ever runs. See
+        # RetryAttemptCounter.end_call's own docstring.
+        self._retry_counter.end_call(m, int(pending_local.numel()))
+
         # -- retry budget exhausted for whatever remains in ``pending_local``: restore each one's
         # BEST attempt (may already equal its last, in which case this is a harmless re-write) and
         # report the count LOUDLY, every time it happens -- never a silent fallback to an ungated
@@ -300,3 +315,24 @@ class reset_end_effector_c1_hand_pose(ManagerTermBase):
                 " max_pos_err_m/max_ori_err_rad/min_joint_margin_rad of the exact commanded pose.",
                 flush=True,
             )
+
+        # bead dr-sj6.21 -- R2 ACCOUNTING, PRINTED UNCONDITIONALLY EVERY CALL (not behind a debug
+        # flag): RESET_SPEC_V2.md's R2-pinned yield is accepted/attempted, denominator including
+        # every attempt that consumed compute. ``attempted`` here is the sum of every retry-loop
+        # iteration's pending-env count above, NOT ``_cumulative_calls`` (a call count) times
+        # envs-per-call -- a caller does not need to know envs-per-call to recover the yield from
+        # this line, only to read it. Cumulative and monotonic, so the LAST such line printed
+        # before a generation run ends already states the run's own totals.
+        attempted = self._retry_counter.attempted
+        accepted = self._retry_counter.accepted
+        yield_str = f"{accepted / attempted:.4f}" if attempted > 0 else "n/a (0 attempts)"
+        print(
+            f"[dexlift] C1_HAND R2: cumulative accepted={accepted} attempted={attempted}"
+            f" (yield={yield_str})"
+            " -- attempted counts every IK attempt including retries (RESET_SPEC_V2.md R2's"
+            " pinned denominator); accepted counts envs that met ik_gate_pass within max_retries"
+            " (excludes the exhausted-env best-of-attempts fallback above, which is not accepted)"
+            f" -- across {self._cumulative_calls} reset() calls so far"
+            f" ({self._cumulative_exhausted} envs exhausted cumulative).",
+            flush=True,
+        )

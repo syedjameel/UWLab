@@ -54,6 +54,7 @@ quat_apply = _c1_hand_pose_core.quat_apply
 worst_case_composed_angle_rad = _c1_hand_pose_core.worst_case_composed_angle_rad
 ik_gate_pass = _c1_hand_pose_core.ik_gate_pass
 C1HandPoseStage = _c1_hand_pose_core.C1HandPoseStage
+RetryAttemptCounter = _c1_hand_pose_core.RetryAttemptCounter
 
 # Ur5eDelto/metadata.yaml's gripper_approach_direction, read directly (not guessed) -- same value
 # scripts_v2/tools/analyze_grasp_orientation_distribution.py uses.
@@ -428,6 +429,78 @@ def test_per_axis_tilt_extremes_do_not_bound_the_composed_rotation_to_tilt():
     # measured palm-angle p95/max should compare against THIS number, not against 45 deg.
     print(f"[c1_hand_pose] worst-case 3-axis corner at tilt=+-45deg composes to {worst_angle:.2f} deg total rotation from nominal (single-axis: {single_axis_angle:.2f} deg)", flush=True)
     assert worst_angle < 3 * math.degrees(tilt) + 1.0  # sanity upper bound: composition is not additive either
+
+
+# -- bead dr-sj6.21: R2 accepted/attempted accounting (c1_hand_pose_core.RetryAttemptCounter).
+# reset_end_effector_c1_hand_pose's own retry loop is Isaac-touching and cannot be exercised here;
+# these tests instead drive the counter's public interface (start_round/end_call) the SAME way
+# that loop does, round by round, proving the counting rule itself: every retry round spends an
+# attempt whether or not it passes, and only envs that pass WITHIN budget are accepted.
+
+
+def test_retry_attempt_counter_attempted_counts_every_round_including_retries():
+    # m=5 envs, max_retries=2 (3 rounds total): round 0 all 5 pending, 2 pass, 3 remain; round 1
+    # 3 pending, 1 passes, 2 remain; round 2 (last) 2 pending, 1 passes, 1 exhausted.
+    # attempted = 5 + 3 + 2 = 10 -- every round's pending count is spent, not just each env's FIRST
+    # attempt (RESET_SPEC_V2.md R2: "nothing that consumed an attempt may be excluded").
+    counter = RetryAttemptCounter()
+    m = 5
+    pending = m
+    counter.start_round(pending)  # round 0
+    pending -= 2
+    counter.start_round(pending)  # round 1
+    pending -= 1
+    counter.start_round(pending)  # round 2
+    pending -= 1
+    counter.end_call(m, pending)
+
+    assert counter.attempted == 5 + 3 + 2, counter.attempted
+    assert counter.accepted == m - pending == 4, counter.accepted
+
+
+def test_retry_attempt_counter_an_env_needing_more_retries_contributes_more_attempts():
+    # env A passes on its first attempt (1 round); env B needs 3 rounds. Attempted must charge B
+    # for its extra retries, not treat "one env accepted" as "one attempt" regardless of retries.
+    counter = RetryAttemptCounter()
+
+    counter.start_round(1)  # env A, round 0: passes
+    counter.end_call(1, 0)
+
+    counter.start_round(1)  # env B, round 0: fails
+    counter.start_round(1)  # env B, round 1: fails
+    counter.start_round(1)  # env B, round 2: passes
+    counter.end_call(1, 0)
+
+    assert counter.attempted == 1 + 3, counter.attempted
+    assert counter.accepted == 2, counter.accepted
+
+
+def test_retry_attempt_counter_exhausted_env_is_attempted_but_not_accepted():
+    # An env that never passes within budget spent an attempt every round (it is NOT excluded from
+    # the denominator) but is not accepted, even though c1_hand_pose.py still WRITES its
+    # best-of-attempts state -- a written state is not the same claim as an accepted one (see
+    # RetryAttemptCounter.end_call's own docstring).
+    counter = RetryAttemptCounter()
+    max_retries = 2
+    for _ in range(max_retries + 1):
+        counter.start_round(1)  # single env, still pending every round
+    counter.end_call(1, still_pending=1)
+
+    assert counter.attempted == max_retries + 1, counter.attempted
+    assert counter.accepted == 0, counter.accepted
+
+
+def test_retry_attempt_counter_accumulates_across_multiple_calls():
+    # c1_hand_pose.py keeps ONE RetryAttemptCounter per term instance across every reset() call
+    # (self._retry_counter) -- confirm totals are cumulative, not reset per call.
+    counter = RetryAttemptCounter()
+    counter.start_round(4)
+    counter.end_call(4, 0)  # call 1: 4 attempted, 4 accepted
+    counter.start_round(2)
+    counter.end_call(2, 1)  # call 2: 2 attempted, 1 accepted
+
+    assert counter.attempted == 4 + 2, counter.attempted
+    assert counter.accepted == 4 + 1, counter.accepted
 
 
 if __name__ == "__main__":
