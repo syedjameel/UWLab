@@ -427,10 +427,31 @@ parser.add_argument(
 parser.add_argument(
     "--c3_st_pos_tol_mm", type=float, default=None,
     help=(
-        "REQUIRED when --c3_st_spawn_tolerance is passed; no default. Max position drift (mm) of "
-        "the leg from the commanded goal. OPEN per V2_ACCEPTANCE_CRITERIA.md sec 4 / bead "
-        "dr-sj6.24 -- pass a value to run a measurement pass, not a value you believe is correct; "
-        "the run's own SpawnToleranceConfig raises if this is missing or non-positive."
+        "REQUIRED when --c3_st_spawn_tolerance is passed, UNLESS --c3_st_tolerance_measure_only is "
+        "also passed (bead dr-sj6.24: that mode exists precisely to produce the distribution this "
+        "value is supposed to come from -- passing both is an error, not a precedence rule). No "
+        "default. Max position drift (mm) of the leg from the commanded goal. OPEN per "
+        "V2_ACCEPTANCE_CRITERIA.md sec 4 -- pass a value to run a PRODUCTION pass with a number "
+        "already derived from a measure-only run, not a value you believe is correct; the run's own "
+        "SpawnToleranceConfig raises if this is missing or non-positive."
+    ),
+)
+parser.add_argument(
+    "--c3_st_tolerance_measure_only", action="store_true",
+    help=(
+        "BREAKS THE TOLERANCE DEADLOCK (bead dr-sj6.24, team-lead instruction 2026-08-29): "
+        "--c3_st_pos_tol_mm is required with no default so nobody guesses it, but its value is "
+        "supposed to be DERIVED from an R4 run's own measured displacement distribution -- and R4 "
+        "cannot run without a value to pass. This flag resolves the circularity: "
+        "_SpawnPoseToleranceAddon still computes and records pos_dist_m/rot_dist_rad/axis_tilt_rad "
+        "every step (surfaced via gate_breakdown(), same keys as the gated mode) but GATES NOTHING "
+        "-- acceptance is held_with_probe ALONE. MUTUALLY EXCLUSIVE with --c3_st_pos_tol_mm/"
+        "--c3_st_rot_tol_deg (passing either alongside this is a construction-time error, not a "
+        "precedence rule). The output bank is NOT a production S_t bank: its filename gets a "
+        "'_MEASUREONLY' marker and every recorded state carries initial_state.measure_only=True "
+        "in the file itself (not just a log line), so it cannot be mistaken for one downstream. "
+        "Prints a loud unconditional banner naming the mode, since an all-accepted run looks "
+        "identical in every OTHER respect to a run whose gate happened to pass everything."
     ),
 )
 parser.add_argument(
@@ -643,6 +664,41 @@ class _DexliftToTrainingSceneRecorder(StableStateRecorder):
         state["rigid_object"] = {
             self._RENAME.get(name, name): tensors for name, tensors in rigid_object.items() if name not in self._DROP
         }
+        return key, state
+
+
+class _MeasureOnlyBankRecorder(_DexliftToTrainingSceneRecorder):
+    """``_DexliftToTrainingSceneRecorder``, plus ONE extra field stamped into every recorded state:
+    ``initial_state.measure_only = True``. Used ONLY when ``--c3_st_tolerance_measure_only`` is
+    passed (bead dr-sj6.24, team-lead instruction 2026-08-29).
+
+    WHY A MARKER INSIDE THE FILE, NOT JUST THE FILENAME. Team-lead's own requirement: "A bank
+    generated with no S_t acceptance gate must never be mistakable for a production bank" -- a
+    filename can be renamed, copied, or typo'd past by a script that globs ``resets_*.pt``; a value
+    living inside the ``.pt`` itself survives all three. ``env_cfg.recorders.dataset_filename`` is
+    ALSO given a ``_MEASUREONLY`` suffix in ``main()`` (belt-and-suspenders, per team-lead's own
+    fallback instruction), but this class is the actual in-file mechanism.
+
+    WHY A SIBLING KEY UNDER ``initial_state``, NOT A NEW TOP-LEVEL RECORDER TERM. The dataset file
+    handler (``TorchDatasetFileHandler.write_episode``) has no metadata mechanism of its own --
+    ``add_env_args`` exists but is a no-op (``pass``) -- so there is no ready slot to write into
+    outside the recorder terms' own returned ``(key, state)`` pairs, all of which currently share
+    the ONE key ``"initial_state"`` (``StableStateRecorder.record_pre_reset``). Registering a whole
+    SECOND recorder term for one boolean would be more moving parts than the fact needs; a sibling
+    key inside the SAME ``state`` dict this class already returns is the smaller change. Confirmed
+    SAFE before adding it: grepped every consumer of ``dataset["initial_state"]`` in this repo
+    (``omnireset/mdp/events.py``'s ``MultiResetManager``) -- every one indexes a SPECIFIC named
+    subkey (``["articulation"]``, ``["rigid_object"]``), none ever enumerates
+    ``dataset["initial_state"].keys()`` itself, so an extra sibling key here is inert to every
+    existing consumer rather than a schema break.
+    """
+
+    def record_pre_reset(self, env_ids):
+        key, state = super().record_pre_reset(env_ids)
+        ids = env_ids if env_ids is not None else torch.arange(self._env.num_envs, device=self._env.device)
+        if not isinstance(ids, torch.Tensor):
+            ids = torch.as_tensor(ids, device=self._env.device)
+        state["measure_only"] = torch.ones(ids.numel(), dtype=torch.bool, device=self._env.device)
         return key, state
 
 
@@ -1715,23 +1771,47 @@ class _SpawnPoseToleranceAddon:
 
     An env whose goal is not yet final reads ``last_within_tolerance = False`` unconditionally
     (fails closed), same discipline ``_SeatingGateAddon``'s construction-time assert uses for
-    "refuse to measure against nothing".
+    "refuse to measure against nothing" -- UNLESS ``measure_only=True``, see below.
+
+    MEASURE-ONLY MODE (bead dr-sj6.24, team-lead instruction 2026-08-29) -- BREAKS THE TOLERANCE
+    DEADLOCK. ``pos_tol_m``/``rot_tol_rad`` have no default (by design: nobody should guess them),
+    but the VALUE is supposed to be DERIVED from an R4 run's measured displacement distribution --
+    and R4 cannot run without a value to pass. ``measure_only=True`` resolves the circularity: no
+    ``SpawnToleranceConfig`` is constructed at all (``self.cfg = None``), :meth:`check` still
+    computes and records ``last_pos_dist_m``/``last_rot_dist_rad``/``last_axis_tilt_rad`` every step
+    exactly as normal, but returns all-``True`` instead of evaluating ``within_spawn_tolerance`` --
+    it GATES NOTHING. Every state ``held_with_probe`` itself accepts is accepted; the tolerance
+    distribution comes out the OTHER end, through ``gate_breakdown()``, un-pre-filtered by any
+    tolerance. Mutually exclusive with providing ``pos_tol_m``/``rot_tol_rad`` -- passing both is a
+    construction-time error, not a precedence rule (a caller who could silently get "measure-only
+    wins" or "the tolerance wins" depending on which line ran last would not know which they got).
     """
 
     def __init__(
         self,
         env,
         object_cfg: SceneEntityCfg,
-        pos_tol_m: float,
+        pos_tol_m: float | None,
         rot_tol_rad: float | None = None,
         *,
         command_name: str = dexlift_mdp.GOAL_COMMAND_NAME,
+        measure_only: bool = False,
     ) -> None:
-        # NB: no default for pos_tol_m/rot_tol_rad at THIS signature either -- but a caller passing
-        # an explicit ``None`` (e.g. an unset CLI flag threaded straight through) would not trip a
-        # bare missing-argument TypeError, so the REAL validation lives in
-        # SpawnToleranceConfig.__post_init__, invoked unconditionally right here.
-        self.cfg = SpawnToleranceConfig(pos_tol_m=pos_tol_m, rot_tol_rad=rot_tol_rad)
+        self.measure_only = bool(measure_only)
+        if self.measure_only:
+            assert pos_tol_m is None and rot_tol_rad is None, (
+                "_SpawnPoseToleranceAddon(measure_only=True) must not ALSO receive a tolerance -- "
+                "measure-only mode exists BECAUSE no tolerance is sourced yet (bead dr-sj6.24); "
+                "passing one here would leave it ambiguous whether this run gates or merely "
+                f"records. Got pos_tol_m={pos_tol_m!r}, rot_tol_rad={rot_tol_rad!r}."
+            )
+            self.cfg = None
+        else:
+            # NB: no default for pos_tol_m/rot_tol_rad at THIS signature either -- but a caller
+            # passing an explicit ``None`` (e.g. an unset CLI flag threaded straight through) would
+            # not trip a bare missing-argument TypeError, so the REAL validation lives in
+            # SpawnToleranceConfig.__post_init__, invoked unconditionally right here.
+            self.cfg = SpawnToleranceConfig(pos_tol_m=pos_tol_m, rot_tol_rad=rot_tol_rad)
         self.command_name = command_name
 
         self.object_cfg = object_cfg
@@ -1768,14 +1848,26 @@ class _SpawnPoseToleranceAddon:
         self.last_axis_tilt_rad = torch.zeros(n, device=device)
         self.last_within_tolerance = torch.zeros(n, dtype=torch.bool, device=device)
 
-        rot_tol_str = "disabled" if self.cfg.rot_tol_rad is None else f"{math.degrees(self.cfg.rot_tol_rad):.2f}deg"
-        print(
-            f"[c3-st-spawn-tolerance-gate] ENABLED pos_tol={self.cfg.pos_tol_m * 1000.0:.2f}mm "
-            f"rot_tol={rot_tol_str}  object={self.object_cfg.name}  command_name={self.command_name}"
-            "  -- reference pose is the COMMANDED GOAL, gated on goal_is_final (bead dr-ai1.18),"
-            " never a self-captured pose or a locally re-evaluated settle predicate",
-            flush=True,
-        )
+        if self.measure_only:
+            print(
+                "[c3-st-spawn-tolerance-gate] *** MEASURE-ONLY MODE (bead dr-sj6.24) *** "
+                f"object={self.object_cfg.name}  command_name={self.command_name}  -- GATES NOTHING;"
+                " pos_dist_m/rot_dist_rad/axis_tilt_rad recorded every step, held_with_probe ALONE"
+                " decides acceptance. This bank is NOT a production S_t bank -- see the output"
+                " filename and the recorded initial_state.measure_only marker.",
+                flush=True,
+            )
+        else:
+            rot_tol_str = (
+                "disabled" if self.cfg.rot_tol_rad is None else f"{math.degrees(self.cfg.rot_tol_rad):.2f}deg"
+            )
+            print(
+                f"[c3-st-spawn-tolerance-gate] ENABLED pos_tol={self.cfg.pos_tol_m * 1000.0:.2f}mm "
+                f"rot_tol={rot_tol_str}  object={self.object_cfg.name}  command_name={self.command_name}"
+                "  -- reference pose is the COMMANDED GOAL, gated on goal_is_final (bead dr-ai1.18),"
+                " never a self-captured pose or a locally re-evaluated settle predicate",
+                flush=True,
+            )
 
     def reset(self, env_ids) -> None:
         """No-op: this class holds no per-env state of its own to clear any more -- goal_is_final
@@ -1799,9 +1891,17 @@ class _SpawnPoseToleranceAddon:
         # last_axis_tilt_rad and spawn_tolerance_core.py's own "TWO ROTATION METRICS" docstring.
         self.last_axis_tilt_rad = axis_tilt_rad(goal_quat_w, live_quat_w)
 
-        # goal_is_final: False while pose_command_w is still the provisional mid-air spawn pose
-        # (S_t, pre-repin) -- fails closed rather than comparing against it. Always True for S1.
-        within = within_spawn_tolerance(pos_dist_m, rot_dist_rad, self.cfg) & goal_term.goal_is_final
+        if self.measure_only:
+            # GATES NOTHING (bead dr-sj6.24) -- see this class's own docstring, "MEASURE-ONLY MODE".
+            # The displacement above is still recorded (that is the entire point of this mode); only
+            # the accept/reject decision is skipped, unconditionally True, even during the pre-settle
+            # window -- a measure-only bank is not meant to be read as "these states are within any
+            # tolerance", only as raw material for choosing one.
+            within = torch.ones_like(goal_term.goal_is_final)
+        else:
+            # goal_is_final: False while pose_command_w is still the provisional mid-air spawn pose
+            # (S_t, pre-repin) -- fails closed rather than comparing against it. Always True for S1.
+            within = within_spawn_tolerance(pos_dist_m, rot_dist_rad, self.cfg) & goal_term.goal_is_final
         self.last_within_tolerance = within
         return within
 
@@ -1826,11 +1926,12 @@ class SpawnToleranceHeldWithProbe(dexlift_mdp.held_with_probe):
             "SpawnToleranceHeldWithProbe constructed but env.cfg.c3_st_spawn_tolerance_config is "
             "missing -- the caller must set env_cfg.c3_st_spawn_tolerance_config BEFORE gym.make() "
             "whenever this class is wired in as terminations.success, as a dict with an EXPLICIT "
-            "'pos_tol_m' key (and optionally 'rot_tol_rad') -- see this class's own docstring, "
-            "'CONFIGURATION COMES FROM', and _SpawnPoseToleranceAddon's own docstring for why there "
-            "is no default to silently fall back to."
+            "'pos_tol_m' key (and optionally 'rot_tol_rad'), OR 'measure_only': True instead (bead "
+            "dr-sj6.24) -- see this class's own docstring, 'CONFIGURATION COMES FROM', and "
+            "_SpawnPoseToleranceAddon's own docstring for why there is no default to silently fall "
+            "back to."
         )
-        # command_name is the only OPTIONAL override left (bead dr-ai1.18 retired the
+        # command_name/measure_only are the only OPTIONAL overrides left (bead dr-ai1.18 retired the
         # settle_min_steps/settle_speed_mps/settle_ang_speed_rad_s overrides along with the settle
         # predicate they tuned -- _SpawnPoseToleranceAddon now reads goal_is_final directly instead
         # of recomputing it, so there is nothing left here to override). Built as a kwargs dict so
@@ -1839,6 +1940,8 @@ class SpawnToleranceHeldWithProbe(dexlift_mdp.held_with_probe):
         addon_kwargs = {}
         if st_cfg.get("command_name") is not None:
             addon_kwargs["command_name"] = st_cfg["command_name"]
+        if st_cfg.get("measure_only"):
+            addon_kwargs["measure_only"] = True
         self._spawn_tolerance = _SpawnPoseToleranceAddon(
             env, self.object_cfg, st_cfg.get("pos_tol_m"), st_cfg.get("rot_tol_rad"), **addon_kwargs
         )
@@ -3337,7 +3440,25 @@ def main() -> None:
     # guard must not trust either one alone.
     _reset_type_requests_partial_assembly = args_cli.reset_type == "ObjectPartiallyAssembledEEGrasped"
     _dexlift_partial_env_set = os.environ.get("DEXLIFT_PARTIAL_ASSEMBLY") == "1"
-    _built_partial_assembly = _dexlift_partial_env_set and _reset_object_is_partial_assembly_term
+    # -- P0 FIX (team-lead audit, 2026-08-29): under DEXRESET_C3_RUNG=1, _apply_c3_rung_stage
+    # unconditionally overrides events.reset_object.func to C3RungResetObject
+    # (dexlift_ur5e_delto_tableleg_env_cfg.py:1094) -- for BOTH S1 and S_t, not just S_t. That is
+    # NOT dexlift_mdp.SpawnPartialAssembly (a strict identity check), so
+    # _reset_object_is_partial_assembly_term was False for every DEXRESET_C3_RUNG=1 run regardless
+    # of --reset_type, breaking the ORIGINAL guard for C3(S1) (--reset_type
+    # ObjectPartiallyAssembledEEGrasped, requested=True) exactly as it broke the new C3(S_t)
+    # carve-out below (requested=True there too) -- both sides asked "did the scene get built with
+    # receptive_object", one side answered with a check that had gone stale the moment C3RungResetObject
+    # started being used for that. Computed SEPARATELY from _reset_object_is_partial_assembly_term
+    # (left alone -- the verify print branch above still needs it to mean literally SpawnPartialAssembly,
+    # not "any partial-assembly-shaped term") so this fix cannot make that print pick the wrong
+    # params-keys branch.
+    _reset_object_is_c3_rung_term = (
+        os.environ.get("DEXRESET_C3_RUNG") == "1" and _reset_object_func is dexlift_mdp.C3RungResetObject
+    )
+    _built_partial_assembly = _dexlift_partial_env_set and (
+        _reset_object_is_partial_assembly_term or _reset_object_is_c3_rung_term
+    )
     # -- C3(S_t) CARVE-OUT (bead dr-sj6.22, team-lead's --reset_type decision, 2026-08-29). Team-lead:
     # --reset_type is a NAMING/output-path selector, not a machinery selector (its own help string:
     # "Reset type name for the output path"; v1 precedent, launch_dexreset_s1_s2_bank_gen.sh:27,
@@ -3359,10 +3480,13 @@ def main() -> None:
         actual=_built_partial_assembly,
         message=(
             f"requires DEXLIFT_PARTIAL_ASSEMBLY=1 exported AND events.reset_object.func built as "
-            f"SpawnPartialAssembly; got DEXLIFT_PARTIAL_ASSEMBLY={os.environ.get('DEXLIFT_PARTIAL_ASSEMBLY')!r} "
-            f"and events.reset_object.func={_reset_object_func.__name__!r}. (--c3_st_spawn_tolerance="
-            f"{args_cli.c3_st_spawn_tolerance} also requests this scene, independent of --reset_type; "
-            "see the carve-out comment above this guard.)"
+            f"SpawnPartialAssembly (or, under DEXRESET_C3_RUNG=1, C3RungResetObject -- see the P0 fix "
+            f"comment above this guard); got DEXLIFT_PARTIAL_ASSEMBLY="
+            f"{os.environ.get('DEXLIFT_PARTIAL_ASSEMBLY')!r}, DEXRESET_C3_RUNG="
+            f"{os.environ.get('DEXRESET_C3_RUNG')!r}, and events.reset_object.func="
+            f"{_reset_object_func.__name__!r}. (--c3_st_spawn_tolerance={args_cli.c3_st_spawn_tolerance} "
+            "also requests this scene, independent of --reset_type; see the carve-out comment above "
+            "this guard.)"
         ),
     )
 
@@ -3402,6 +3526,11 @@ def main() -> None:
     # as the C4 flags immediately above, not folded into their assert: S_t is a DIFFERENT rung with
     # a different success_func family, and conflating the messages would blur which gate a given
     # failure is about.
+    assert args_cli.c3_st_spawn_tolerance or not args_cli.c3_st_tolerance_measure_only, (
+        "--c3_st_tolerance_measure_only only makes sense alongside --c3_st_spawn_tolerance -- it "
+        "configures HOW that gate behaves (record-only vs. gated), it does not stand alone. Pass "
+        "both, or neither."
+    )
     if args_cli.c3_st_spawn_tolerance:
         assert not (args_cli.c4_seating_gate or args_cli.c4_terminate_on_grasp or args_cli.c4_rewind_deepest), (
             "--c3_st_spawn_tolerance is mutually exclusive with --c4_seating_gate/"
@@ -3427,20 +3556,40 @@ def main() -> None:
             "env_cfg.commands.object_pose is never upgraded to C3RungGoalPoseCommand and this gate "
             "would construct against the wrong command term (or crash trying)."
         )
+        # -- MEASURE-ONLY MODE vs. a real tolerance -- MUTUALLY EXCLUSIVE, explicit opt-in only
+        # (bead dr-sj6.24, team-lead instruction 2026-08-29: "passing both is an error, not a
+        # precedence rule"; "it must never be what happens when a tolerance is omitted"). Checked
+        # BEFORE the tolerance-required assert below, so a caller who passed neither flag still
+        # hits the ORIGINAL "no default, refuses to start" failure, not this one.
+        assert not (
+            args_cli.c3_st_tolerance_measure_only
+            and (args_cli.c3_st_pos_tol_mm is not None or args_cli.c3_st_rot_tol_deg is not None)
+        ), (
+            "--c3_st_tolerance_measure_only is mutually exclusive with --c3_st_pos_tol_mm/"
+            "--c3_st_rot_tol_deg -- measure-only mode exists BECAUSE no tolerance is sourced yet; "
+            f"got measure_only={args_cli.c3_st_tolerance_measure_only}, "
+            f"pos_tol_mm={args_cli.c3_st_pos_tol_mm!r}, rot_tol_deg={args_cli.c3_st_rot_tol_deg!r}. "
+            "Refusing to start rather than silently deciding which one wins."
+        )
         # EXISTENCE check only, at the CLI boundary, for a fast/clear failure before Isaac starts --
         # the RANGE check (must be > 0) is SpawnToleranceConfig's own job (spawn_tolerance_core.py),
         # not restated here, so there is exactly one place that decides what a valid tolerance is.
-        assert args_cli.c3_st_pos_tol_mm is not None, (
-            "--c3_st_spawn_tolerance requires --c3_st_pos_tol_mm explicitly -- there is no default "
-            "(V2_ACCEPTANCE_CRITERIA.md sec 4 / bead dr-sj6.24: this number is OPEN, meant to be "
-            "DERIVED from this flag's own R4 validation run, not guessed). Refusing to start rather "
-            "than falling back to a plausible-looking value."
-        )
-        assert args_cli.c3_st_rot_tol_deg is None or args_cli.c3_st_rot_tol_deg > 0.0, (
-            f"--c3_st_rot_tol_deg must be > 0 or omitted (omitted disables the rotation gate; 0 "
-            f"would silently mean the same thing, which is not what an explicit 0 should mean); got "
-            f"{args_cli.c3_st_rot_tol_deg}."
-        )
+        # Skipped ONLY in measure-only mode (asserted mutually exclusive just above) -- omitting the
+        # tolerance WITHOUT that flag must still refuse to start, which is exactly what this
+        # unconditional-unless-measure_only assert does.
+        if not args_cli.c3_st_tolerance_measure_only:
+            assert args_cli.c3_st_pos_tol_mm is not None, (
+                "--c3_st_spawn_tolerance requires --c3_st_pos_tol_mm explicitly, UNLESS "
+                "--c3_st_tolerance_measure_only is also passed -- there is no default "
+                "(V2_ACCEPTANCE_CRITERIA.md sec 4 / bead dr-sj6.24: this number is OPEN, meant to be "
+                "DERIVED from a measure-only run, not guessed). Refusing to start rather than "
+                "falling back to a plausible-looking value."
+            )
+            assert args_cli.c3_st_rot_tol_deg is None or args_cli.c3_st_rot_tol_deg > 0.0, (
+                f"--c3_st_rot_tol_deg must be > 0 or omitted (omitted disables the rotation gate; 0 "
+                f"would silently mean the same thing, which is not what an explicit 0 should mean); "
+                f"got {args_cli.c3_st_rot_tol_deg}."
+            )
     if args_cli.c4_terminate_on_grasp:
         success_func = SeatedTerminateOnGrasp if args_cli.c4_seating_gate else TerminateOnGraspSuccess
     elif args_cli.c3_st_spawn_tolerance:
@@ -3484,13 +3633,16 @@ def main() -> None:
         # _SpawnPoseToleranceAddon's own signature default (dexlift_mdp.GOAL_COMMAND_NAME). No
         # settle_* keys any more (bead dr-ai1.18: the addon reads goal_is_final off the command term
         # directly instead of recomputing a settle predicate, so there is nothing left to override).
-        # pos_tol_m / rot_tol_rad are the two exceptions -- pos_tol_m is asserted present above;
-        # rot_tol_deg -> rad conversion happens here, once, rather than inside the addon, so the
-        # addon's own unit is always radians regardless of caller.
+        # pos_tol_m / rot_tol_rad are None in measure-only mode (asserted mutually exclusive with
+        # --c3_st_tolerance_measure_only above -- args_cli.c3_st_pos_tol_mm IS None in that case, so
+        # guard the /1000.0 conversion rather than crashing on None / 1000.0); rot_tol_deg -> rad
+        # conversion happens here, once, rather than inside the addon, so the addon's own unit is
+        # always radians regardless of caller.
         env_cfg.c3_st_spawn_tolerance_config = {
-            "pos_tol_m": args_cli.c3_st_pos_tol_mm / 1000.0,
+            "pos_tol_m": args_cli.c3_st_pos_tol_mm / 1000.0 if args_cli.c3_st_pos_tol_mm is not None else None,
             "rot_tol_rad": math.radians(args_cli.c3_st_rot_tol_deg) if args_cli.c3_st_rot_tol_deg is not None else None,
             "command_name": args_cli.c3_st_command_name,
+            "measure_only": args_cli.c3_st_tolerance_measure_only,
         }
     print(
         f"[verify] c4_seating_gate enabled={args_cli.c4_seating_gate}  "
@@ -3522,9 +3674,20 @@ def main() -> None:
     # _DexliftToTrainingSceneRecorder's docstring for why this must live here rather than in a
     # post-processing pass (a killed run, this script's own documented usage, would skip a pass that
     # only runs after the loop exits; it cannot skip a rename that happens inside every flush).
-    env_cfg.recorders.record_pre_reset_states.class_type = _DexliftToTrainingSceneRecorder
+    # MEASURE-ONLY MODE (bead dr-sj6.24) swaps in _MeasureOnlyBankRecorder instead -- SAME rename/
+    # drop/passthrough behaviour, plus one extra in-file marker (initial_state.measure_only=True) so
+    # this bank can never be mistaken for a production one downstream. See that class's own
+    # docstring for why the marker lives inside the file, not only the filename below.
+    env_cfg.recorders.record_pre_reset_states.class_type = (
+        _MeasureOnlyBankRecorder if args_cli.c3_st_tolerance_measure_only else _DexliftToTrainingSceneRecorder
+    )
     env_cfg.recorders.dataset_export_dir_path = output_dir
-    env_cfg.recorders.dataset_filename = f"resets_{args_cli.reset_type}.pt"
+    # -- FILENAME MARKER (belt-and-suspenders alongside the in-file one above, team-lead's own
+    # fallback instruction: "if there is none, put it in the filename and say so"). A measure-only
+    # bank must not be glob-matched or copied alongside production ``resets_<reset_type>.pt`` files
+    # without visibly standing out.
+    _dataset_filename_stem = args_cli.reset_type + ("_MEASUREONLY" if args_cli.c3_st_tolerance_measure_only else "")
+    env_cfg.recorders.dataset_filename = f"resets_{_dataset_filename_stem}.pt"
     env_cfg.recorders.dataset_export_mode = DatasetExportMode.EXPORT_SUCCEEDED_ONLY
     env_cfg.recorders.dataset_file_handler_class_type = TorchDatasetFileHandler
 
@@ -3532,8 +3695,23 @@ def main() -> None:
     # root UNNOTICED, because the mismatch is only visible in a relative path -- print the fully
     # RESOLVED, ABSOLUTE path so a wrong --dataset_dir (or a script launched from the wrong CWD) is
     # obvious at startup instead of silently writing states the trainer will never find.
-    resolved_output_file = os.path.abspath(os.path.join(output_dir, f"resets_{args_cli.reset_type}.pt"))
+    resolved_output_file = os.path.abspath(os.path.join(output_dir, f"resets_{_dataset_filename_stem}.pt"))
     print(f"[generator] OUTPUT_PATH (resolved, absolute): {resolved_output_file}", flush=True)
+    if args_cli.c3_st_tolerance_measure_only:
+        # LOUD, UNCONDITIONAL BANNER (team-lead requirement) -- an all-accepted measure-only run
+        # looks identical, in exit code / log banner / state count, to a run whose gate happened to
+        # pass everything; this is the one line that cannot be mistaken for that.
+        print(
+            "\n"
+            "########################################################################\n"
+            "# *** MEASURE-ONLY MODE (bead dr-sj6.24) ***\n"
+            "# This bank is NOT a production S_t bank. held_with_probe ALONE decides\n"
+            "# acceptance -- the spawn-tolerance gate records displacement and accepts\n"
+            "# everything. See gate_breakdown()'s spawn_pos_dist_m/spawn_rot_dist_rad/\n"
+            "# spawn_axis_tilt_rad and initial_state.measure_only=True in the output file.\n"
+            "########################################################################\n",
+            flush=True,
+        )
 
     env_cfg.seed = None
 
