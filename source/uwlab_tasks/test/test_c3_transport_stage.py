@@ -213,8 +213,24 @@ def test_transport_goal_banner_names_pitch_range_in_radians():
 
 
 if __name__ == "__main__":
-    for name, fn in sorted(globals().items()):
-        if name.startswith("test_") and callable(fn):
-            fn()
-            print(f"[c3_transport] {name} OK", flush=True)
+    # Reports EVERY failure, then exits once at the end (bead dr-76w.23) -- identical in shape to
+    # test_c3_rung_stage.py's runner. The previous version called each case bare, so the first
+    # failure propagated out of the loop and every later case went unrun: the failure count was
+    # always 1 no matter how many cases were broken, and a second, unrelated break stayed invisible
+    # until the first was fixed. Demonstrated by breaking two cases at once -- the old runner
+    # reported 0 OK and never reached the second break; this one reports 18 OK and both failures.
+    # Underscore-prefixed loop variables so they cannot themselves match the ``test_`` prefix.
+    _failures = 0
+    for _name, _fn in sorted(globals().items()):
+        if _name.startswith("test_") and callable(_fn):
+            try:
+                _fn()
+            except Exception as _exc:  # noqa: BLE001 -- a runner, it must report every failure
+                _failures += 1
+                print(f"[c3_transport] {_name} FAILED: {type(_exc).__name__}: {_exc}", flush=True)
+            else:
+                print(f"[c3_transport] {_name} OK", flush=True)
+    if _failures:
+        print(f"[c3_transport] {_failures} test(s) FAILED", flush=True)
+        raise SystemExit(1)
     print("[c3_transport] all tests passed", flush=True)
