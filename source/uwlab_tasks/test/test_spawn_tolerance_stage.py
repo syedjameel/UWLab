@@ -14,10 +14,14 @@ PATH, not via ``import uwlab_tasks...`` (whose package ``__init__.py`` transitiv
 
 This test covers ONLY the pure math/validation half: tolerance-config validation (no default,
 raises loudly), the pos/rot distance formula, and the accept/reject predicate either side of a
-given tolerance. It cannot prove the Isaac-touching half
-(``spawn_tolerance.py``'s ``_SpawnPoseToleranceAddon``/``SpawnToleranceHeldWithProbe`` -- the
+given tolerance. It cannot prove the Isaac-touching half (GENERATION-side, per the layer split:
+``scripts_v2/tools/generate_reset_states_policy.py``'s ``_SpawnPoseToleranceAddon``/
+``SpawnToleranceHeldWithProbe``, living alongside that script's own ``_SeatingGateAddon`` -- the
 lazy spawn-pose capture off ``env.scene``, and its composition with ``held_with_probe``) actually
-wires correctly at runtime -- that needs Isaac Sim and is out of scope here.
+wires correctly at runtime -- that needs Isaac Sim and is out of scope here. ``dexlift/mdp/c3_rung.py``/
+``c3_rung_core.py`` (bead dr-ai1.4) are the separate ENV-side half (draws which half of C3 an
+episode is, sets the spawn/goal) -- they define no acceptance predicate and are not exercised or
+duplicated by anything in this file.
 """
 
 from __future__ import annotations

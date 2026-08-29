@@ -434,6 +434,18 @@ from uwlab_tasks.manager_based.manipulation.dexlift.mdp.held_check_core import (
 from uwlab_tasks.manager_based.manipulation.dexlift.mdp.rewards import (  # noqa: E402
     _sensor_force_magnitudes,  # reused, not reimplemented -- see rewards.py:40-76 / held_check.py:58
 )
+from uwlab_tasks.manager_based.manipulation.dexlift.mdp.spawn_tolerance_core import (  # noqa: E402
+    SpawnToleranceConfig,
+    pose_distance,
+    within_spawn_tolerance,
+)
+from uwlab_tasks.manager_based.manipulation.dexlift.mdp import c3_rung_core  # noqa: E402
+# ^ ENV-side module (bead dr-ai1.4/dr-ai1.18), imported here ONLY for its already-sourced settle
+# constants/validators (DEFAULT_ST_SETTLE_SPEED_MPS, DEFAULT_ST_SETTLE_ANG_SPEED_RAD_S,
+# validate_st_settle_min_steps, validate_st_settle_speed, validate_st_settle_ang_speed) that
+# _SpawnPoseToleranceAddon below reuses rather than restates --
+# see that class's own docstring. Nothing in THIS file re-derives or duplicates c3_rung_core's own
+# goal-generation logic.
 from uwlab_tasks.manager_based.manipulation.omnireset.mdp.recorders.recorders import (  # noqa: E402
     StableStateRecorder,
 )
@@ -1569,6 +1581,257 @@ class SeatedTerminateOnGrasp(TerminateOnGraspSuccess):
         # corrupt the base instance's current-step cache for anything else reading it.
         bd = super().gate_breakdown(env).copy()
         bd["seated"] = self._seating.last_seated.clone()
+        return bd
+
+
+class _SpawnPoseToleranceAddon:
+    """S_t's (bead dr-sj6.22) "is the leg still within tolerance of its OWN spawn pose" AND-term --
+    the S_t analogue of ``_SeatingGateAddon``, factored out the SAME way (a plain composed object,
+    not a mixin), for the SAME reason (attachable to either a probe-based or fast host without
+    those hosts' otherwise-unrelated ``__call__`` bodies cooperating through MRO).
+
+    ``V2_C3_DESIGN.md`` sec 5 / ``V2_ACCEPTANCE_CRITERIA.md`` sec 4: S_t is a horizontal peg with no
+    mating frame, so ``_SeatingGateAddon`` would reject ~100% of valid S_t states -- the exact trap
+    the retracted v1 ``stays_seated`` proposal fell into for S2'. This class is deliberately never
+    composed with it. ``dexlift/mdp/c3_rung.py``/``c3_rung_core.py`` (bead dr-ai1.4, env-side) draw
+    which half of C3 an episode is and set its GOAL accordingly; they define no acceptance predicate
+    for either half (S1's own docstring says so explicitly: "what makes a state S1 is the ACCEPTANCE
+    band applied downstream... not this displacement") -- this class is that downstream acceptance
+    predicate for S_t, the sibling of ``_SeatingGateAddon`` for S1.
+
+    THE MATH ITSELF lives in ``spawn_tolerance_core.py`` (pure torch, no Isaac, unit-tested in
+    ``test_spawn_tolerance_stage.py`` without a GPU) -- this class is only the Isaac-touching half:
+    resolving the object, capturing its live pose off ``env.scene``, and calling
+    :func:`pose_distance`/:func:`within_spawn_tolerance`. Checked against ``c3_rung_core.py``
+    (bead dr-ai1.4) before writing this: that module defines NO "distance from spawn pose" or
+    rotation-metric convention of its own (its only frame arithmetic is the tip/root ``cos(tilt)``
+    Z-conversion for banner/logging purposes, ``goal_tip_z_from_root_z``, which this class's
+    criterion does not need -- S_t's tolerance is a direct 3D pose delta from the leg's own spawn,
+    never projected through a tip/root Z band). There is therefore nothing to reuse or conflict with
+    for the specific quantity this class computes.
+
+    FAILS LOUDLY AT CONSTRUCTION, not inside a deferred callback -- same idiom as
+    ``_SeatingGateAddon``/``held_with_probe``.
+
+    TOLERANCES HAVE NO DEFAULT. ``pos_tol_m``/``rot_tol_rad`` are threaded straight into
+    :class:`~uwlab_tasks.manager_based.manipulation.dexlift.mdp.spawn_tolerance_core.SpawnToleranceConfig`,
+    whose own ``__post_init__`` raises if ``pos_tol_m`` is missing or non-positive, or if
+    ``rot_tol_rad`` is given but non-positive -- see that class's own docstring
+    ("TOLERANCES ARE OPEN, WITH NO DEFAULT"). Bead dr-sj6.24: these numbers are meant to be DERIVED
+    from the R4 validation run's own measured grasp-induced displacement distribution, which is
+    exactly what :attr:`last_pos_dist_m`/:attr:`last_rot_dist_rad` below (surfaced through
+    ``SpawnToleranceHeldWithProbe.gate_breakdown``) exist to produce. Guessing a plausible-looking
+    number here instead is exactly the failure R7 exists to prevent, and this campaign has already
+    shipped one invented constant (``RESET_SPEC_V2.md`` sec 6 item 0, the withdrawn ``stays_seated``
+    6.02%->43.19% pair).
+
+    "SPAWN POSE" MEANS THE SETTLED POSE, NOT THE POSE AT THE INSTANT OF RESET -- CORRECTED
+    2026-08-29, same day as the first version, after reading bead ``dr-ai1.18``
+    (``dexlift/mdp/c3_rung.py``/``c3_rung_core.py``, committed by the concurrent env-side session).
+    That bead found and fixed the IDENTICAL defect in S_t's GOAL command: pinning at the literal
+    reset-time pose pins it where the leg WAS, mid-air, in a randomized orientation -- settling is
+    precisely the process that carries it to its actual resting pose (F50/F51: 99.02% end up lying
+    flat), so a reset-time reference can be off by up to ~90 deg. This class's FIRST version (see
+    git history) captured on the first ``check()`` after reset, which is the SAME bug: "first call
+    after reset" is still before the leg has settled. Fixed the same way ``c3_rung.py`` fixed its
+    goal, and REUSING that fix's own predicate rather than restating a second one (team-lead
+    instruction: same convention, same frame, same rotation metric, import don't restate) --
+    :func:`c3_rung_core.st_should_repin`'s three conditions: step floor (``SETTLE_STEPS``, imported
+    from ``held_check_core``, never restated -- same F49b API-shape discipline), absolute object
+    LINEAR speed ceiling (``c3_rung_core.DEFAULT_ST_SETTLE_SPEED_MPS``, sourced from
+    ``--c2_max_resting_speed``'s own provenance), AND absolute object ANGULAR speed ceiling
+    (``c3_rung_core.DEFAULT_ST_SETTLE_ANG_SPEED_RAD_S``, a LATER, separate team-lead decision same
+    day, sourced from F50/F51's own settled pair -- "a leg pivoting on a corner... can have a
+    near-zero LINEAR speed while its orientation is still changing", the identical capture-the-wrong-
+    orientation failure reached by a narrower path; that constant's own docstring is explicit that
+    the two 0.05s are NOT a shared constant and must never be "unified"). The tensor expression in
+    :meth:`check` below is the SAME "tensor form of ``st_should_repin``" idiom ``c3_rung.py``'s own
+    ``_update_command`` uses -- a second, independently-written site using the identical three
+    conditions, not a second definition of them. **This class's own SECOND version omitted the
+    angular term** (written before the angular-term commit landed) and has been updated to match,
+    the same day, before ever being wired to a live run -- see git history for both corrections.
+
+    Practically: the reference pose this addon compares against is captured ONCE per episode, on
+    the first step at which the leg has both waited out the step floor and come to rest -- never at
+    the literal spawn/reset moment. An env whose reference pose has not yet been captured (still
+    settling) reads ``last_within_tolerance = False`` unconditionally (fails closed), exactly the
+    same discipline ``_SeatingGateAddon``'s construction-time assert uses for "refuse to measure
+    against nothing".
+    """
+
+    def __init__(
+        self,
+        env,
+        object_cfg: SceneEntityCfg,
+        pos_tol_m: float,
+        rot_tol_rad: float | None = None,
+        *,
+        settle_min_steps: int = SETTLE_STEPS,
+        settle_speed_mps: float = c3_rung_core.DEFAULT_ST_SETTLE_SPEED_MPS,
+        settle_ang_speed_rad_s: float = c3_rung_core.DEFAULT_ST_SETTLE_ANG_SPEED_RAD_S,
+    ) -> None:
+        # NB: no default for pos_tol_m/rot_tol_rad at THIS signature either -- but a caller passing
+        # an explicit ``None`` (e.g. an unset CLI flag threaded straight through) would not trip a
+        # bare missing-argument TypeError, so the REAL validation lives in
+        # SpawnToleranceConfig.__post_init__, invoked unconditionally right here.
+        self.cfg = SpawnToleranceConfig(pos_tol_m=pos_tol_m, rot_tol_rad=rot_tol_rad)
+
+        # settle_min_steps/settle_speed_mps/settle_ang_speed_rad_s are DIFFERENT from
+        # pos_tol_m/rot_tol_rad: they are not an OPEN acceptance criterion, they are the
+        # already-sourced "is this state genuinely at rest" plumbing constants this class's own
+        # docstring reuses from c3_rung_core -- so THESE get real defaults, validated with
+        # c3_rung_core's OWN validators rather than restated ones (same reuse discipline, applied
+        # to validation too). settle_speed_mps and settle_ang_speed_rad_s are DELIBERATELY NOT
+        # unified into one number even though both currently read 0.05 -- different units,
+        # different sources (see c3_rung_core.DEFAULT_ST_SETTLE_ANG_SPEED_RAD_S's own docstring).
+        c3_rung_core.validate_st_settle_min_steps(settle_min_steps)
+        c3_rung_core.validate_st_settle_speed(settle_speed_mps)
+        c3_rung_core.validate_st_settle_ang_speed(settle_ang_speed_rad_s)
+        self._settle_min_steps = int(settle_min_steps)
+        self._settle_speed_mps = float(settle_speed_mps)
+        self._settle_ang_speed_rad_s = float(settle_ang_speed_rad_s)
+
+        self.object_cfg = object_cfg
+        self.object_cfg.resolve(env.scene)
+        assert self.object_cfg.name in env.scene.rigid_objects, (
+            f"_SpawnPoseToleranceAddon: {self.object_cfg.name!r} did not resolve to a rigid object "
+            "in the scene. Refusing to construct a gate that would silently have nothing to "
+            "measure against."
+        )
+
+        n = env.num_envs
+        device = env.device
+        self._spawn_pos_w = torch.zeros(n, 3, device=device)
+        self._spawn_quat_w = torch.zeros(n, 4, device=device)
+        self._spawn_quat_w[:, 0] = 1.0  # identity until the settled capture in check() overwrites it
+        # False here means "has not yet captured its settled reference pose this episode" -- see
+        # this class's own docstring, "'SPAWN POSE' MEANS THE SETTLED POSE".
+        self._captured = torch.zeros(n, dtype=torch.bool, device=device)
+
+        self.last_pos_dist_m = torch.zeros(n, device=device)
+        self.last_rot_dist_rad = torch.zeros(n, device=device)
+        self.last_within_tolerance = torch.zeros(n, dtype=torch.bool, device=device)
+
+        rot_tol_str = "disabled" if self.cfg.rot_tol_rad is None else f"{math.degrees(self.cfg.rot_tol_rad):.2f}deg"
+        print(
+            f"[c3-st-spawn-tolerance-gate] ENABLED pos_tol={self.cfg.pos_tol_m * 1000.0:.2f}mm "
+            f"rot_tol={rot_tol_str}  settle_min_steps={self._settle_min_steps}"
+            f"  settle_speed_mps={self._settle_speed_mps:.3f}"
+            f"  settle_ang_speed_rad_s={self._settle_ang_speed_rad_s:.3f}  object={self.object_cfg.name}"
+            "  -- reference pose is the SETTLED pose (bead dr-ai1.18's own predicate, reused),"
+            " never the reset-time pose",
+            flush=True,
+        )
+
+    def reset(self, env_ids) -> None:
+        """Mark these envs as needing a fresh settled-pose capture. Does NOT read scene state here
+        -- see this class's own docstring."""
+        if env_ids is None:
+            env_ids = slice(None)
+        self._captured[env_ids] = False
+
+    def check(self, env) -> torch.Tensor:
+        obj = env.scene[self.object_cfg.name]
+        live_pos_w = obj.data.root_pos_w
+        live_quat_w = obj.data.root_quat_w
+
+        # -- Tensor form of c3_rung_core.st_should_repin -- SAME three conditions (step floor,
+        # absolute LINEAR speed ceiling, absolute ANGULAR speed ceiling), SAME semantics, as
+        # c3_rung.py's own _update_command uses to decide when S_t's GOAL may re-pin (bead
+        # dr-ai1.18): not yet captured AND past the step floor AND at rest, linearly AND angularly.
+        # NEITHER speed is held_check's relative co-move speed (a leg carried steadily by the hand
+        # would pass that and is not "at rest") -- both are absolute, world-frame. The angular term
+        # matters on its own: a leg pivoting on a corner can read near-zero LINEAR speed while its
+        # orientation is still changing, which a linear-only gate would miss (see this class's own
+        # docstring). See that docstring for why this predicate is reused rather than restated.
+        steps = env.episode_length_buf
+        lin_speed = torch.linalg.vector_norm(obj.data.root_lin_vel_w, dim=-1)
+        ang_speed = torch.linalg.vector_norm(obj.data.root_ang_vel_w, dim=-1)
+        ready_to_capture = (
+            (~self._captured)
+            & (steps > self._settle_min_steps)
+            & (lin_speed <= self._settle_speed_mps)
+            & (ang_speed <= self._settle_ang_speed_rad_s)
+        )
+        if ready_to_capture.any():
+            self._spawn_pos_w[ready_to_capture] = live_pos_w[ready_to_capture]
+            self._spawn_quat_w[ready_to_capture] = live_quat_w[ready_to_capture]
+            self._captured[ready_to_capture] = True
+
+        pos_dist_m, rot_dist_rad = pose_distance(self._spawn_pos_w, self._spawn_quat_w, live_pos_w, live_quat_w)
+        self.last_pos_dist_m = pos_dist_m
+        self.last_rot_dist_rad = rot_dist_rad
+
+        # An env that has never captured a settled reference pose this episode cannot be judged --
+        # fails closed rather than comparing against the identity-quat/zero-pos placeholder.
+        within = within_spawn_tolerance(pos_dist_m, rot_dist_rad, self.cfg) & self._captured
+        self.last_within_tolerance = within
+        return within
+
+
+class SpawnToleranceHeldWithProbe(dexlift_mdp.held_with_probe):
+    """S_t's acceptance criterion (bead dr-sj6.22): ``held_with_probe`` AND
+    ``_SpawnPoseToleranceAddon.check()`` -- the S_t analogue of ``SeatedHeldWithProbe``. See
+    ``_SpawnPoseToleranceAddon``'s own docstring for why S_t composes THIS addon and never
+    ``_SeatingGateAddon``.
+
+    CONFIGURATION COMES FROM ``env.cfg.c3_st_spawn_tolerance_config``, NOT ``cfg.params`` -- the
+    SAME reason and mechanism ``SeatedHeldWithProbe`` uses ``env.cfg.c4_seating_gate_config`` for
+    (see that class's own docstring, "CONFIGURATION COMES FROM"): ``TerminationManager.compute()``
+    re-passes ``cfg.params`` as ``**kwargs`` on every step, so a non-empty ``cfg.params`` would
+    force ``__call__`` to declare (and keep in sync with) every key forever.
+    """
+
+    def __init__(self, cfg, env):
+        super().__init__(cfg, env)
+        st_cfg = getattr(env.cfg, "c3_st_spawn_tolerance_config", None)
+        assert st_cfg is not None, (
+            "SpawnToleranceHeldWithProbe constructed but env.cfg.c3_st_spawn_tolerance_config is "
+            "missing -- the caller must set env_cfg.c3_st_spawn_tolerance_config BEFORE gym.make() "
+            "whenever this class is wired in as terminations.success, as a dict with an EXPLICIT "
+            "'pos_tol_m' key (and optionally 'rot_tol_rad') -- see this class's own docstring, "
+            "'CONFIGURATION COMES FROM', and _SpawnPoseToleranceAddon's own docstring for why there "
+            "is no default to silently fall back to."
+        )
+        # settle_min_steps/settle_speed_mps/settle_ang_speed_rad_s are OPTIONAL overrides of the
+        # already-sourced defaults (SETTLE_STEPS / c3_rung_core.DEFAULT_ST_SETTLE_SPEED_MPS /
+        # c3_rung_core.DEFAULT_ST_SETTLE_ANG_SPEED_RAD_S) -- omitted keys fall through to
+        # _SpawnPoseToleranceAddon's own signature defaults, unlike pos_tol_m/rot_tol_rad which have
+        # none. Built as a kwargs dict so an absent key truly means "use the addon's default", not
+        # "pass None and let SOMETHING ELSE decide".
+        settle_kwargs = {}
+        if st_cfg.get("settle_min_steps") is not None:
+            settle_kwargs["settle_min_steps"] = st_cfg["settle_min_steps"]
+        if st_cfg.get("settle_speed_mps") is not None:
+            settle_kwargs["settle_speed_mps"] = st_cfg["settle_speed_mps"]
+        if st_cfg.get("settle_ang_speed_rad_s") is not None:
+            settle_kwargs["settle_ang_speed_rad_s"] = st_cfg["settle_ang_speed_rad_s"]
+        self._spawn_tolerance = _SpawnPoseToleranceAddon(
+            env, self.object_cfg, st_cfg.get("pos_tol_m"), st_cfg.get("rot_tol_rad"), **settle_kwargs
+        )
+
+    def reset(self, env_ids=None) -> None:
+        super().reset(env_ids)
+        self._spawn_tolerance.reset(env_ids)
+
+    def __call__(self, env) -> torch.Tensor:
+        # SAME SIGNATURE AS THE BASE CLASS, deliberately -- see SeatedHeldWithProbe's own docstring
+        # on why (cfg.params must stay empty for the same reason there).
+        held = super().__call__(env)
+        within = self._spawn_tolerance.check(env)
+        return held & within
+
+    def gate_breakdown(self, env) -> dict[str, torch.Tensor]:
+        # .copy() (same discipline as SeatedHeldWithProbe/SeatedTerminateOnGrasp): mutating the base
+        # instance's own cached dict in place would corrupt it for anything else reading it.
+        # "spawn_tolerance" plus the raw displacement are appended so a caller can both filter on
+        # pass/fail AND collect the raw (pos_dist, rot_dist) distribution R4 needs to derive the
+        # tolerances themselves (bead dr-sj6.24) -- this is the "record the per-state displacement
+        # into the output" requirement this class exists to satisfy.
+        bd = super().gate_breakdown(env).copy()
+        bd["spawn_tolerance"] = self._spawn_tolerance.last_within_tolerance.clone()
+        bd["spawn_pos_dist_m"] = self._spawn_tolerance.last_pos_dist_m.clone()
+        bd["spawn_rot_dist_rad"] = self._spawn_tolerance.last_rot_dist_rad.clone()
         return bd
 
 

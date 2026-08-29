@@ -14,12 +14,21 @@ same section -- the exact trap the retracted v1 ``stays_seated`` proposal fell i
 Needs only ``math``/``dataclasses`` and plain ``torch`` (no Isaac Sim, no GPU, no env construction)
 -- same split, and same reason, as ``c1_hand_pose_core.py``/``held_check_core.py``/
 ``c3_transport_core.py`` next to this file: the ISAAC-TOUCHING half (the actual termination-term
-addon reading ``env.scene``) lives in ``spawn_tolerance.py``, which imports ``isaaclab`` at module
-scope and therefore needs a running Isaac Sim process just to import. This module has none of that
-dependency, so ``source/uwlab_tasks/test/test_spawn_tolerance_stage.py`` can load it with plain
-``python3`` -- see that test's own docstring for how (loaded by file path, not via
-``import uwlab_tasks...``, same technique ``test_c1_hand_pose_stage.py`` uses and for the same
-reason).
+addon reading ``env.scene``) is ``_SpawnPoseToleranceAddon``/``SpawnToleranceHeldWithProbe`` in
+``scripts_v2/tools/generate_reset_states_policy.py``, alongside that script's own
+``_SeatingGateAddon`` -- GENERATION-side, per the team-lead layer split with ``dexlift/mdp/c3_rung.py``
+(bead dr-ai1.4, ENV-side: draws which half of C3 an episode is, sets the spawn/goal, defines no
+acceptance predicate of its own). That script imports ``isaaclab`` at module scope and therefore
+needs a running Isaac Sim process just to import. This module has none of that dependency, so
+``source/uwlab_tasks/test/test_spawn_tolerance_stage.py`` can load it with plain ``python3`` -- see
+that test's own docstring for how (loaded by file path, not via ``import uwlab_tasks...``, same
+technique ``test_c1_hand_pose_stage.py`` uses and for the same reason).
+
+CHECKED AGAINST ``c3_rung_core.py`` BEFORE WRITING THIS MODULE'S CONVENTIONS: that module defines
+no "distance from spawn pose" or rotation-metric convention of its own to reuse or conflict with --
+its only frame arithmetic is the tip/root ``cos(tilt)`` Z-conversion for banner/logging
+(``goal_tip_z_from_root_z``), a different quantity from the direct 3D pose delta
+:func:`pose_distance` computes here.
 
 TOLERANCES ARE OPEN, WITH NO DEFAULT -- READ THIS BEFORE CHANGING :class:`SpawnToleranceConfig`.
 No source document states a numeric position or rotation tolerance for "within tolerance of own
@@ -164,9 +173,10 @@ def within_spawn_tolerance(
     ``env.command_manager.get_command(...)``), which this generator-time acceptance check
     deliberately does not depend on: S_t's spawn pose is captured directly off the object at reset,
     not read back through whatever goal-command wiring a given run happens to have active. See
-    ``spawn_tolerance.py``'s own module docstring, "WHY NOT env.command_manager", for the full
-    reasoning (this project's own F27 discipline: a value correct under one config's wiring must
-    not be silently consumed under a different one).
+    ``_SpawnPoseToleranceAddon``'s own docstring (``scripts_v2/tools/generate_reset_states_policy.py``),
+    "WHY CAPTURE ON THE FIRST check() AFTER RESET", for the full reasoning (this project's own F27
+    discipline: a value correct under one config's wiring must not be silently consumed under a
+    different one).
     """
     if cfg.rot_tol_rad:
         return (pos_dist_m < cfg.pos_tol_m) & (rot_dist_rad < cfg.rot_tol_rad)
