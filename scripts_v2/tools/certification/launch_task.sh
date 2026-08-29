@@ -36,17 +36,18 @@ export CUDA_VISIBLE_DEVICES="$GPU"
 export OMNI_KIT_ACCEPT_EULA=YES ACCEPT_EULA=Y
 export DEXLIFT_REF_RESET=1
 
-unset DEXLIFT_HULLFIX DEXLIFT_CONVEXHULL DEXLIFT_NO_SELFCOLL
+# DEXLIFT_HULLFIX / DEXLIFT_CONVEXHULL / DEXLIFT_NO_SELFCOLL removed -- read by no python
+# anywhere (bead dr-76w.18). COLLIDERS/SELFCOLL still select WANT_* and are still asserted.
 case "$COLLIDERS" in
-  hullfix)  export DEXLIFT_HULLFIX=1;   WANT_COLL=hullfix ;;
-  hullfix2) export DEXLIFT_HULLFIX=2;   WANT_COLL=hullfix2 ;;
-  hullfix3) export DEXLIFT_HULLFIX=3;   WANT_COLL=hullfix3 ;;
-  hull)     export DEXLIFT_CONVEXHULL=1; WANT_COLL=convexHull ;;
+  hullfix)  WANT_COLL=hullfix ;;
+  hullfix2) WANT_COLL=hullfix2 ;;
+  hullfix3) WANT_COLL=hullfix3 ;;
+  hull)     WANT_COLL=convexHull ;;
   *) echo "REFUSING: COLLIDERS=$COLLIDERS"; exit 1 ;;
 esac
 case "$SELFCOLL" in
   on)  WANT_SC=ON ;;
-  off) export DEXLIFT_NO_SELFCOLL=1; WANT_SC=OFF ;;
+  off) WANT_SC=OFF ;;
   *) echo "REFUSING: SELFCOLL=$SELFCOLL"; exit 1 ;;
 esac
 export DEXLIFT_REF_ACTUATORS=1

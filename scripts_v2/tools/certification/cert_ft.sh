@@ -32,7 +32,11 @@ run() {  # $1 tag  $2 checkpoint
     export TASK=DexLift-UR5eDelto-RelJointPos-TableLeg-Reorient-v0
     export COLLIDERS=hullfix3 SELFCOLL=on HAND=ref ARM=ours
     export GPU=1 NUM_ENVS=128 EPISODES=128 POS_TOL=0.03 TILT=0.3
-    export DEXLIFT_LEG_DECOMP=1
+    # DEXLIFT_LEG_DECOMP removed (bead dr-76w.18): read by no python anywhere, so it never
+    # selected a leg. The leg comes from TABLE_LEG_USD_PATH (shipping: SquareTableLeg200mmSdf)
+    # and is overridable only by DEXLIFT_TABLE_LEG_USD_PATH_OVERRIDE. run_certify.sh now
+    # asserts the resolved leg against LEG (default SquareTableLeg200mmSdf) and exits 1 on
+    # mismatch, so the choice is checked rather than merely requested.
     bash /home/dom_iva/run_certify.sh "$1" "$2"
   ) >> "$LOG" 2>&1
   echo "--- $1 rc above ---" >> "$LOG"

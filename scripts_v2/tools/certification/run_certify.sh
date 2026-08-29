@@ -20,16 +20,28 @@ export DEXLIFT_REF_RESET=1 DEXLIFT_REF_ACTUATORS=1
 # Pass DROP_Z explicitly to match the run being certified.
 [ -n "${TILT:-}" ] && export DEXLIFT_POSE_TILT="$TILT"
 [ -n "${DROP_Z:-}" ] && export DEXLIFT_DROP_Z="$DROP_Z"
-unset DEXLIFT_HULLFIX DEXLIFT_CONVEXHULL DEXLIFT_NO_SELFCOLL
-
+# DEXLIFT_HULLFIX / DEXLIFT_CONVEXHULL / DEXLIFT_NO_SELFCOLL WERE EXPORTED HERE AND ARE NOT ANY
+# MORE (bead dr-76w.18). They were read by no python anywhere -- colliders are hullfix3
+# unconditionally and SELF_COLLISIONS_ENABLED is hardcoded True. Exporting them made the recipe
+# read as if the plant were selectable, which is why a published model card still tells readers to
+# set them. COLLIDERS and SELFCOLL still SELECT the expected values below and are still asserted
+# against the banner, so asking for a plant the code cannot produce (COLLIDERS=hull, SELFCOLL=off)
+# still fails closed on the assertion -- it just no longer exports a variable nothing reads.
 case "${COLLIDERS:?set COLLIDERS}" in
-  hullfix)  export DEXLIFT_HULLFIX=1; WANT_COLL=hullfix ;;
-  hullfix2) export DEXLIFT_HULLFIX=2; WANT_COLL=hullfix2 ;;
-  hullfix3) export DEXLIFT_HULLFIX=3; WANT_COLL=hullfix3 ;;
-  hull)     export DEXLIFT_CONVEXHULL=1; WANT_COLL=convexHull ;;
+  hullfix)  WANT_COLL=hullfix ;;
+  hullfix2) WANT_COLL=hullfix2 ;;
+  hullfix3) WANT_COLL=hullfix3 ;;
+  hull)     WANT_COLL=convexHull ;;
   *) echo "REFUSING: COLLIDERS=$COLLIDERS"; exit 1 ;;
 esac
-WANT_SC=ON; [ "${SELFCOLL:?set SELFCOLL}" = off ] && { export DEXLIFT_NO_SELFCOLL=1; WANT_SC=OFF; }
+WANT_SC=ON; [ "${SELFCOLL:?set SELFCOLL}" = off ] && WANT_SC=OFF
+
+# THE LEG ASSET IS NOW ASSERTED TOO (bead dr-76w.18). It was not, and that hole was realised once
+# already: the certified 92.87% was measured on a convex hull rather than the decomposition
+# (dr-ai1.12). The hand axes fail closed via the PLANT assertion below; the leg had no check at
+# all, so a run could silently use whichever leg happened to be the default. Default is the
+# shipping leg; LEG=none disables the check for a task that spawns no table leg.
+LEG=${LEG:-SquareTableLeg200mmSdf}
 case "${HAND:-ref}" in ref) export DEXLIFT_REF_HAND_ACT=1; WANT_HAND=reference ;;
                        ours) export DEXLIFT_REF_HAND_ACT=0; WANT_HAND=identified ;;
                        *) echo "REFUSING: HAND=$HAND"; exit 1 ;; esac
@@ -77,4 +89,20 @@ for kv in $WANT; do
   esac
 done
 echo "plant: $GOT"
+
+# -- LEG ASSET ASSERTION, same fail-closed shape as the PLANT loop above. A MISSING banner is a
+# failure, not a pass: the whole defect this closes is a run that never said which leg it used.
+if [ "$LEG" != none ]; then
+  GOT_ASSETS=$(grep -aoE "\[dexlift\] ASSETS .*" "$LOG" | head -1)
+  [ -n "$GOT_ASSETS" ] || {
+    echo "ASSET MISMATCH: no '[dexlift] ASSETS' banner in $LOG -- cannot confirm which leg loaded."
+    echo "  (set LEG=none only for a task that spawns no table leg)"
+    exit 1
+  }
+  case " $GOT_ASSETS " in
+    *" leg=$LEG "*) ;;
+    *) echo "ASSET MISMATCH: wanted 'leg=$LEG', got: $GOT_ASSETS"; exit 1 ;;
+  esac
+  echo "assets: $GOT_ASSETS"
+fi
 grep -aE "RESULT|Traceback|Error|inference tensor" "$LOG" | tail -12

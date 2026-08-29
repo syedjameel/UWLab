@@ -4,7 +4,11 @@
 # record keeps only the two minima separately, which may occur at different steps. So re-score.
 # --pos_tol is ADDED to the ladder, so every rung stays comparable with the earlier runs.
 set -uo pipefail
-export DEXLIFT_LEG_DECOMP=1
+# DEXLIFT_LEG_DECOMP removed (bead dr-76w.18): read by no python anywhere, so it never
+# selected a leg. The leg comes from TABLE_LEG_USD_PATH (shipping: SquareTableLeg200mmSdf)
+# and is overridable only by DEXLIFT_TABLE_LEG_USD_PATH_OVERRIDE. run_certify.sh now
+# asserts the resolved leg against LEG (default SquareTableLeg200mmSdf) and exits 1 on
+# mismatch, so the choice is checked rather than merely requested.
 R=/home/dom_iva/UWLab_ur5edelto/logs/rl_games
 
 # decisive two first: the best pose checkpoint and the position-only deliverable

@@ -14,7 +14,7 @@ selects it any more:
 | self-collisions | **on** | with them off the policy learns grasps that pass finger 3 through finger 4 and is scored a success |
 | hand actuators | reference (effort 30 N·m, velocity 10000 rad/s) | ours cap at 3.0 rad/s against a 6 rad/s commanded closure, so the fingers cannot close at all |
 | arm actuators | **our identified UR5e** (150/28 N·m, armature, stiction, viscous) with `randomize_arm_sysid` live | this is the calibrated asset's whole point |
-| table leg collider | re-authored `convexDecomposition` | the shipped USD authors no `physics:approximation`, so PhysX substitutes a hull and fills the thread relief |
+| table leg collider | `SquareTableLeg200mmSdf` — `physics:approximation=sdf`, `sdfResolution=256` | shipping leg since 2026-08-23. The `convexDecomposition` variant is REJECTED: its hulls fill the helical thread grooves, so 56.15% of poses interpenetrated the collider PhysX actually uses. Printed unconditionally as `[dexlift] ASSETS leg=…` and asserted by `run_certify.sh` (bead dr-76w.18) |
 | envs / minibatch | 8192 / 73728 | updates per epoch = `mini_epochs × envs × horizon / minibatch` = 20, matching the certified reference |
 
 ## Stage 1 — position tracking, 16 primitive objects

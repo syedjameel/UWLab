@@ -83,12 +83,35 @@ TABLE_LEG_USD_PATH = os.environ.get(
 # resolve there because that override mechanism only looks up keys in the variants registry.
 # So an override set here does NOT propagate to training. Do not rely on it to change the
 # shipping asset; change the five literals.
+# -- ONE UNCONDITIONAL LINE NAMING THE RESOLVED LEG AND FIXTURE ASSETS (bead dr-76w.18, and
+# dr-76w.17 for the fixture half). Printed at import, not behind a debug flag, for the same reason
+# the ``[dexlift] PLANT`` line in dexlift_ur5e_delto_env_cfg.py is unconditional: a launcher must be
+# able to assert the run it ACTUALLY got rather than the run it asked for. run_certify.sh asserts
+# the ``leg=`` token against its own WANT_LEG and exits 1 on mismatch.
+#
+# THE VARIANT IS THE PARENT DIRECTORY, NOT THE FILENAME, AND THIS IS THE WHOLE POINT.
+# SquareTableLeg200mmSdf and SquareTableLeg200mmDecomp both contain a file named
+# ``square_table_leg4_200mm.usd`` -- verified against the literals in this tree, which is why the
+# ``leg=`` token below is ``os.path.basename(os.path.dirname(path))``. Following the PLANT line's
+# own ``pathlib.Path(usd_path).name`` convention here would print ``square_table_leg4_200mm.usd``
+# for BOTH variants: a banner that reads as provenance and discriminates nothing, which is the
+# exact failure this bead exists to close. The full path is printed alongside it so the token can
+# never be the only record.
+#
+# REPLACES a print that claimed "leg collider: convexDecomposition (re-authored)". That text was
+# written before the shipping leg changed to the SDF variant on 2026-08-23 and was never updated,
+# so an unconditional banner was announcing the WRONG collider on every run. Nothing asserted on
+# it (bare-substring search for "leg collider" / "dexlift] leg" across every tracked file in this
+# repo: three hits, all prose, no consumer), so replacing it breaks nothing.
+_LEG_VARIANT = os.path.basename(os.path.dirname(TABLE_LEG_USD_PATH))
+_FIXTURE_VARIANT = os.path.basename(os.path.dirname(mdp.DEXLIFT_ONELEGFIXTURE_USD_PATH))
 print(
-    "[dexlift] leg collider: convexDecomposition (re-authored). The SHIPPED asset has no"
-    " physics:approximation, so PhysX silently falls back to convexHull and fills the thread"
-    " relief; this variant authors the approximation the converter's own config.yaml requested."
-    " NOTE the reference's USD is md5-identical to the shipped one, so the certified 92.87%"
-    " run also used the hull -- a number measured here is NOT strictly comparable to it.",
+    "[dexlift] ASSETS"
+    f" leg={_LEG_VARIANT}"
+    f" leg_override={'set' if 'DEXLIFT_TABLE_LEG_USD_PATH_OVERRIDE' in os.environ else 'unset'}"
+    f" fixture={_FIXTURE_VARIANT}"
+    f" leg_usd={TABLE_LEG_USD_PATH}"
+    f" fixture_usd={mdp.DEXLIFT_ONELEGFIXTURE_USD_PATH}",
     flush=True,
 )
 """The certified table-leg USD, copied byte-identical out of the reference repository.

@@ -4,7 +4,11 @@
 # their warm start, i.e. past the reward-change transient that made an earlier
 # certification read WORSE than the policy actually was.
 set -uo pipefail
-export DEXLIFT_LEG_DECOMP=1
+# DEXLIFT_LEG_DECOMP removed (bead dr-76w.18): read by no python anywhere, so it never
+# selected a leg. The leg comes from TABLE_LEG_USD_PATH (shipping: SquareTableLeg200mmSdf)
+# and is overridable only by DEXLIFT_TABLE_LEG_USD_PATH_OVERRIDE. run_certify.sh now
+# asserts the resolved leg against LEG (default SquareTableLeg200mmSdf) and exits 1 on
+# mismatch, so the choice is checked rather than merely requested.
 
 R=/home/dom_iva/UWLab_ur5edelto/logs/rl_games/dexlift_ur5e_delto_reljointpos_tableleg_reorient
 
