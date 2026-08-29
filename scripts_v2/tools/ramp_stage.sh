@@ -249,5 +249,7 @@ grep -aE "Traceback|Error|ncclUnhandled|inference tensor" "$LOG" | tail -12
 
 echo "[ramp] stage $STAGE done. BEFORE ADVANCING (sec 2.2):"
 echo "[ramp]   (a) certify: run r0_control.sh cert against this stage's last checkpoint; need pass@30mm >= 0.85*P"
-echo "[ramp]   (b) plateau: GateProxy/passive_three_atend_frac/transport risen < 0.02 over the last 100 iters"
+echo "[ramp]   (b) plateau: GateProxy/passive_two_atend_frac/transport risen < 0.02 over the last 100 iters"
+echo "[ramp]   NOTE: passive_two is a RETENTION monitor, not an advance gate -- v1 already read 0.7730"
+echo "[ramp]         against its 0.50 floor. See V2_REPOSE_RECIPE.md sec 4."
 echo "[ramp]   A2 abort if pass@30mm < 0.70*P. A1 abort on classic-kind success -5pts/25iters while reward flat or rising."

@@ -195,7 +195,8 @@ if [ "$STAGE" = proxy ] || [ "$STAGE" = both ]; then
   grep -aE "RESULT|REFUSING|Traceback|Error|inference tensor" "$LOG" | tail -12
   [ "$FAILED" = 0 ] || { echo "[r0] BANNER ASSERTIONS FAILED -- do not record this number."; exit 1; }
   [ "$RC" = 0 ] || { echo "[r0] measure_gate_proxy exited $RC -- do not record this number."; exit 1; }
-  echo "[r0] O6 baseline is in $OUT -- record passive_three rate in V2_REPOSE_RECIPE.md sec 4.2"
+  echo "[r0] O6 baseline is in $OUT -- record the passive_two rate in V2_REPOSE_RECIPE.md sec 4.2"
+  echo "[r0]   NOTE: two chain gates, not three -- co_move left the held chain 2026-08-29 (18b8ed4)."
 fi
 
 echo "[r0] done. Both numbers are baselines: neither may be quoted as a yield (RESET_SPEC_V2.md R7)."

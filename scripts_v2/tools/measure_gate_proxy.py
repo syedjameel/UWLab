@@ -247,7 +247,7 @@ def main() -> None:
             print(
                 f"[gate-proxy] step {step + 1}/{args.steps}"
                 f" episodes={counters.get('episodes', 0):.0f}"
-                f" passive_three={counters.get(gate_proxy_core.PASSIVE_ALL_NAME, 0):.0f}",
+                f" {gate_proxy_core.PASSIVE_ALL_NAME}={counters.get(gate_proxy_core.PASSIVE_ALL_NAME, 0):.0f}",
                 flush=True,
             )
 
@@ -312,7 +312,7 @@ def main() -> None:
     rate = summary["rates"].get(gate_proxy_core.PASSIVE_ALL_NAME, {})
     print(
         f"[gate-proxy] RESULT episodes={episodes:.0f}"
-        f" passive_three_rate={rate.get('rate', float('nan')):.4f}"
+        f" {gate_proxy_core.PASSIVE_ALL_NAME}_rate={rate.get('rate', float('nan')):.4f}"
         f" (hard floor 0.50 -> {'CLEARS' if rate.get('clears_hard_floor') else 'BELOW'};"
         f" working target 0.71) -> {args.out}",
         flush=True,

@@ -96,7 +96,11 @@ class GateProxyLogger(ManagerTermBase):
 
         n = env.num_envs
         device = env.device
-        names = (*gate_proxy_core.PASSIVE_GATE_NAMES, gate_proxy_core.PASSIVE_ALL_NAME)
+        names = (
+            *gate_proxy_core.PASSIVE_GATE_NAMES,
+            *gate_proxy_core.DIAGNOSTIC_GATE_NAMES,
+            gate_proxy_core.PASSIVE_ALL_NAME,
+        )
         # `_atend` holds the MOST RECENT step's value and is overwritten every step; at
         # `reset(env_ids)` time it therefore still holds the terminal step's value for exactly the
         # episodes ending now. Same technique, and the same ordering argument, as
@@ -179,8 +183,13 @@ class GateProxyLogger(ManagerTermBase):
         step = {
             "settled": settled,
             "opposed_contact": opposed_contact,
+            # DIAGNOSTIC, gates nothing since 2026-08-29 -- still computed and published, because
+            # it is now free evidence about a gate that was removed. See gate_proxy_core's
+            # "WHAT DROPPING co_move DID" section.
             "co_move": co_move,
-            gate_proxy_core.PASSIVE_ALL_NAME: settled & opposed_contact & co_move,
+            # TWO gates, not three. The AND must track held_check_core's live chain, and the test
+            # `test_held_decision_matches_the_live_chain` fails if it stops doing so.
+            gate_proxy_core.PASSIVE_ALL_NAME: settled & opposed_contact,
         }
         for name, value in step.items():
             # In-place, so these persist across the inference-mode boundary the way
@@ -273,9 +282,14 @@ def gate_proxy_banner(kind_labels: list[str], success_split: bool) -> str:
     banner is what a reader checks a run's staging AGAINST (RESET_SPEC_V2.md sec 1a trap 3). Every
     number below is interpolated from :data:`GATE_PROXY_DEFAULTS`, which reads held_check_core.
     """
+    chain = ",".join(gate_proxy_core.PASSIVE_GATE_NAMES)
+    diag = ",".join(gate_proxy_core.DIAGNOSTIC_GATE_NAMES)
     return (
-        "[dexreset] GATE PROXY staged: publishing GateProxy/{settled,opposed_contact,co_move,"
-        "passive_three}_{atend,ever}_frac plus priority-ordered reach and first-fail counts, split"
+        f"[dexreset] GATE PROXY staged: chain gates ({chain}) AND-ed as"
+        f" {gate_proxy_core.PASSIVE_ALL_NAME}; ({diag}) published as DIAGNOSTIC ONLY, gating"
+        " nothing (dropped from the held chain 2026-08-29). Publishing"
+        f" GateProxy/<gate>_{{atend,ever}}_frac plus priority-ordered reach and first-fail counts"
+        f" (no first_fail row for {diag} -- it rejects nothing), split"
         f" by episode kind {sorted(kind_labels)}. Thresholds are held_check_core's own, imported"
         f" not restated: settled > {GATE_PROXY_DEFAULTS['settle_steps']} steps, relative speed <"
         f" {GATE_PROXY_DEFAULTS['comove_speed_thresh']} m/s, |obj vz| <"

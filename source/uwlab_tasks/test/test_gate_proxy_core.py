@@ -55,6 +55,7 @@ _held = _load_by_path("held_check_core", _MDP / "held_check_core.py")
 
 PASSIVE_GATE_NAMES = _core.PASSIVE_GATE_NAMES
 PASSIVE_ALL_NAME = _core.PASSIVE_ALL_NAME
+DIAGNOSTIC_GATE_NAMES = _core.DIAGNOSTIC_GATE_NAMES
 evaluate_priority_chain = _core.evaluate_priority_chain
 build_log_entries = _core.build_log_entries
 passive_gates = _held.passive_gates
@@ -128,41 +129,69 @@ def test_opposed_contact_needs_both_a_thumb_and_a_non_thumb():
     assert opposed.tolist() == [True, False, False, False]
 
 
-def test_held_decision_uses_the_same_passive_gates_this_module_reports():
-    """THE F27 GUARANTEE, checked rather than asserted in a comment.
-
-    The proxy's whole claim is that it computes the SAME three gates the generator's ``held``
-    predicate computes. If ``held_decision`` ever stopped routing through ``passive_gates`` -- or
-    routed through it with different thresholds -- the proxy would keep publishing a number that
-    predicts nothing. So: wherever the passive three are False, ``held_decision`` must be False, no
-    matter how perfect the probe evidence is.
-    """
-    n = 16
-    torch.manual_seed(0)
+def _held_and_gates(n=16, seed=0):
+    """Random inputs, a PERFECT probe, and both the chain gates and `held` evaluated on them."""
+    torch.manual_seed(seed)
     steps = torch.randint(0, 120, (n,)).float()
     thumb = torch.rand(n) > 0.4
     tip = torch.rand(n) > 0.4
     rel = torch.rand(n) * 0.1
     vz = (torch.rand(n) - 0.5) * 0.3
-
     settled, opposed, co_move = passive_gates(
         steps_since_reset=steps, thumb_loaded=thumb, tip_loaded=tip, relative_speed=rel, obj_vz=vz
     )
-    perfect_disp = torch.ones(n, 3) * 0.02
+    perfect = torch.ones(n, 3) * 0.02
     held = held_decision(
-        steps_since_reset=steps,
-        thumb_loaded=thumb,
-        tip_loaded=tip,
-        relative_speed=rel,
-        obj_vz=vz,
-        probe_ready=torch.ones(n, dtype=torch.bool),
-        obj_disp_probe=perfect_disp,
-        gripper_disp_probe=perfect_disp,
+        steps_since_reset=steps, thumb_loaded=thumb, tip_loaded=tip, relative_speed=rel, obj_vz=vz,
+        probe_ready=torch.ones(n, dtype=torch.bool), obj_disp_probe=perfect, gripper_disp_probe=perfect,
     )
-    passive_all = settled & opposed & co_move
-    # With the probe made perfect, held is EXACTLY the passive three.
-    assert torch.equal(held, passive_all)
-    assert not bool((held & ~passive_all).any())
+    return held, settled, opposed, co_move
+
+
+def test_held_is_always_a_subset_of_the_chain_gates_this_module_publishes():
+    """THE INVARIANT THAT JUSTIFIES THE METRIC, and it holds under BOTH chains.
+
+    ``passive_two`` is published as an UPPER BOUND on gate-chain pass rate. That claim is exactly
+    ``held => (settled & opposed_contact)``, i.e. accepted states are a subset of the ones this
+    module counts. Both the old chain (which also ANDed co_move) and the new one
+    (``settled & opposed_contact & (probe_ready & tracks)``) include these two, so this test is
+    chain-independent on purpose: it must not start failing merely because c3-impl lands the chain
+    change, and it must start failing if either of these two gates ever leaves the chain.
+    """
+    held, settled, opposed, _ = _held_and_gates()
+    assert not bool((held & ~(settled & opposed)).any()), "held escaped the chain gates -- the upper-bound claim is void"
+
+
+def test_held_decision_matches_the_live_chain():
+    """Detect WHICH chain is live and assert the exact equality for it.
+
+    Passes before and after c3-impl's change, and reports which side it saw. With a perfect probe,
+    `held` reduces to the AND of the chain's probe-free gates -- three under the old chain, two
+    under the new one. Anything else means the chain gained or lost a gate nobody told this module
+    about, which is the drift that would leave the proxy predicting a conjunction the generator
+    does not require.
+    """
+    held, settled, opposed, co_move = _held_and_gates()
+    two, three = settled & opposed, settled & opposed & co_move
+    if torch.equal(held, two):
+        live = "NEW (co_move dropped)"
+    elif torch.equal(held, three):
+        live = "OLD (co_move in chain)"
+    else:
+        raise AssertionError("held matches neither the two-gate nor the three-gate composition")
+    # Whichever is live, this module's PASSIVE_ALL_NAME must name the same arity.
+    expected_n = 2 if live.startswith("NEW") else 3
+    assert len(PASSIVE_GATE_NAMES) == expected_n, (
+        f"live chain is {live} ({expected_n} probe-free gates) but PASSIVE_GATE_NAMES has"
+        f" {len(PASSIVE_GATE_NAMES)}: {PASSIVE_GATE_NAMES}. The proxy would predict a conjunction"
+        " the generator does not require."
+    )
+    print(f"      (live chain: {live})", flush=True)
+
+
+def _unused_old_exact_equality_docstring():
+    """Superseded by the two tests above.
+    """
 
 
 # ---------------------------------------------------------------------------------------------
@@ -172,7 +201,8 @@ def test_held_decision_uses_the_same_passive_gates_this_module_reports():
 
 def test_first_fail_masks_and_pass_partition_ran_exactly():
     """The invariant that makes the histogram readable: every episode that RAN lands in exactly one
-    of {first_fail_settled, first_fail_opposed_contact, first_fail_co_move, passive_three}."""
+    of {first_fail_settled, first_fail_opposed_contact, passive_two}. co_move is NOT a bucket --
+    it stopped gating on 2026-08-29 and must never be added back into this sum."""
     torch.manual_seed(1)
     n = 200
     ran = torch.rand(n) > 0.1
@@ -185,7 +215,6 @@ def test_first_fail_masks_and_pass_partition_ran_exactly():
     buckets = (
         chain["first_fail_settled"].int()
         + chain["first_fail_opposed_contact"].int()
-        + chain["first_fail_co_move"].int()
         + chain[PASSIVE_ALL_NAME].int()
     )
     assert torch.equal(buckets, ran.int()), "each ran episode must fall in exactly one bucket"
@@ -199,7 +228,7 @@ def test_priority_order_attributes_to_the_earliest_failing_gate():
         settled=_b(True), opposed_contact=_b(False), co_move=_b(False), ran=_b(True)
     )
     assert chain["first_fail_opposed_contact"].tolist() == [True]
-    assert chain["first_fail_co_move"].tolist() == [False]
+    assert "first_fail_co_move" not in chain, "co_move gates nothing; a first-fail row would be false"
     assert chain["reached_co_move"].tolist() == [False]
 
 
@@ -207,7 +236,7 @@ def test_reach_counts_make_a_zero_interpretable_f29():
     """F29's stated remedy: "a priority-ordered failure counter must also report how many episodes
     reached each gate, or its zeros are uninterpretable" -- the defect that produced ``seated: 0``.
 
-    Two populations with an IDENTICAL zero in ``first_fail_co_move`` and opposite meanings.
+    Two populations with an IDENTICAL zero in ``first_fail_opposed_contact``, opposite meanings.
     """
     nothing_got_there = evaluate_priority_chain(
         settled=_b(False, False), opposed_contact=_b(True, True), co_move=_b(True, True), ran=_b(True, True)
@@ -215,11 +244,11 @@ def test_reach_counts_make_a_zero_interpretable_f29():
     everything_passed = evaluate_priority_chain(
         settled=_b(True, True), opposed_contact=_b(True, True), co_move=_b(True, True), ran=_b(True, True)
     )
-    assert int(nothing_got_there["first_fail_co_move"].sum()) == 0
-    assert int(everything_passed["first_fail_co_move"].sum()) == 0
+    assert int(nothing_got_there["first_fail_opposed_contact"].sum()) == 0
+    assert int(everything_passed["first_fail_opposed_contact"].sum()) == 0
     # The zeros are identical; the reach counts are what tell them apart.
-    assert int(nothing_got_there["reached_co_move"].sum()) == 0
-    assert int(everything_passed["reached_co_move"].sum()) == 2
+    assert int(nothing_got_there["reached_opposed_contact"].sum()) == 0
+    assert int(everything_passed["reached_opposed_contact"].sum()) == 2
 
 
 def test_episodes_that_did_not_run_are_excluded_everywhere():
@@ -232,35 +261,84 @@ def test_episodes_that_did_not_run_are_excluded_everywhere():
         assert int(mask.sum()) == 0, key
 
 
-def test_f28_histogram_reproduces_its_own_reported_rate():
-    """The recipe's decomposition, replayed through this code (V2_REPOSE_RECIPE.md sec 4.2).
+def test_f28_histogram_under_the_two_gate_chain():
+    """The recount after co_move left the chain (2026-08-29), and what it costs the metric.
 
-    F28/F30's S1 gated run: 141 attempts, first-failing gate settled 8 / opposed_contact 24 /
-    co_move 66, leaving 43 that clear the passive three, of which 13 were finally accepted.
-    43/141 = 0.3050 and 13/43 = 0.3023, and 0.3050 * 0.3023 = 0.0922 = the reported 9.22%.
+    F28/F30's S1 gated run, first-failing gate in priority order: settled 8, opposed_contact 24,
+    co_move 66, probe_ready 28, probe_gripper_moved 2, probe_tracks 0, accepted 13, of 141.
+
+    OLD chain: the probe-free term was 141-8-24-66 = 43, i.e. 0.3050 -- below the 0.50 hard floor,
+    so the metric could PROVE the v1 checkpoint could not meet R2, free, every iteration.
+
+    NEW chain: co_move no longer gates, so the probe-free term is 141-8-24 = 109 = 0.7730. Still a
+    valid upper bound, but it is ALREADY ABOVE 0.50, so it can no longer separate a doomed run from
+    a promising one. This test pins both numbers so the change cannot be quietly undone.
     """
-    n, n_settled_fail, n_opposed_fail, n_comove_fail = 141, 8, 24, 66
+    n, n_settled_fail, n_opposed_fail = 141, 8, 24
     settled = torch.ones(n, dtype=torch.bool)
     opposed = torch.ones(n, dtype=torch.bool)
     co_move = torch.ones(n, dtype=torch.bool)
     settled[:n_settled_fail] = False
     opposed[n_settled_fail : n_settled_fail + n_opposed_fail] = False
     start = n_settled_fail + n_opposed_fail
-    co_move[start : start + n_comove_fail] = False
+    co_move[start : start + 66] = False
 
     chain = evaluate_priority_chain(
         settled=settled, opposed_contact=opposed, co_move=co_move, ran=torch.ones(n, dtype=torch.bool)
     )
     assert int(chain["first_fail_settled"].sum()) == 8
     assert int(chain["first_fail_opposed_contact"].sum()) == 24
-    assert int(chain["first_fail_co_move"].sum()) == 66
     passive_pass = int(chain[PASSIVE_ALL_NAME].sum())
-    assert passive_pass == 43
-    assert abs(passive_pass / n - 0.3050) < 5e-4
-    assert abs((passive_pass / n) * (13 / passive_pass) - 0.0922) < 5e-4
-    # And the hard bound the recipe leans on: 0.305 is far below 0.50, so this checkpoint provably
-    # could not have met R2 -- readable WITHOUT running a generation pass, which is the point.
-    assert passive_pass / n < 0.50
+    assert passive_pass == 109, "the two-gate probe-free term is 141-8-24"
+    assert abs(passive_pass / n - 0.7730) < 5e-4
+
+    # 2.53x the old denominator -- every threshold derived from it moves.
+    assert abs((passive_pass / n) / (43 / n) - 2.53) < 0.01
+
+    # THE CONSEQUENCE, pinned: the hard floor no longer discriminates. Under the old chain the v1
+    # checkpoint provably failed it (0.3050 < 0.50); under the new one it passes (0.7730 > 0.50)
+    # while its ACTUAL yield was 9.22%. A metric that reads "pass" on a checkpoint measured at
+    # 9.22% cannot be an advance gate.
+    assert 43 / n < 0.50 < passive_pass / n
+
+    # And co_move is now a diagnostic with a stated denominator, not a rejector.
+    assert "first_fail_co_move" not in chain
+    assert int(chain["reached_co_move"].sum()) == 109
+    assert int(chain["co_move_given_passive_two"].sum()) == 43, "43 of the 109 also satisfied co_move"
+
+
+def test_the_histogram_cannot_bound_the_new_yield_because_it_short_circuits():
+    """Why no tighter number than [0.0922, 0.5745] can be read off F28 -- stated as a test so the
+    range is not later replaced by a point estimate that looks better.
+
+    The 66 episodes attributed to co_move NEVER REACHED the probe gates: the chain short-circuits
+    at the first failure. So the histogram contains no evidence about how they would fare there.
+    Every accepted state is still one of the 109, but which ones is unknown.
+    """
+    # gripper_moved was KEPT in the chain (18b8ed4), so the 2 episodes that failed it are still
+    # rejected -- only co_move left. Read off held_check_core, not from the change description.
+    n, accepted_observed, co_move_failures = 141, 13, 66
+    lower = accepted_observed / n                              # all 66 fail the probe stage
+    upper = (accepted_observed + co_move_failures) / n         # all 66 pass
+    assert abs(lower - 0.0922) < 5e-4
+    assert abs(upper - 0.5603) < 5e-4
+    # The independence estimate sits between them and is NOT a measurement: co_move and tracks both
+    # ask whether the object moves with the hand -- one by velocity, one by displacement -- so they
+    # are the last pair one should assume independent.
+    independence = 109 * (accepted_observed / 43) / n
+    assert lower < independence < upper
+    assert abs(independence - 0.2337) < 5e-4
+
+
+def test_the_required_improvement_moved_into_the_unobservable_term():
+    """R2 needs > 0.50. With the probe-free term at its v1 level, the probe stage must do the rest
+    -- and the probe stage is exactly what training cannot measure."""
+    passive_two_v1, accepted, reach = 109 / 141, 13, 109
+    probe_stage_v1 = accepted / reach
+    assert abs(passive_two_v1 * probe_stage_v1 - 0.0922) < 5e-4, "decomposition must still reproduce 9.22%"
+    needed = 0.50 / passive_two_v1
+    assert abs(needed - 0.6468) < 5e-4
+    assert abs(needed / probe_stage_v1 - 5.4) < 0.05, "a 5.4x improvement in the unobservable term"
 
 
 # ---------------------------------------------------------------------------------------------
@@ -269,7 +347,7 @@ def test_f28_histogram_reproduces_its_own_reported_rate():
 
 
 def _entries(atend_vals, ever_vals, ran, kind=None, kind_names=None, cumulative=None):
-    names = (*PASSIVE_GATE_NAMES, PASSIVE_ALL_NAME)
+    names = (*PASSIVE_GATE_NAMES, *DIAGNOSTIC_GATE_NAMES, PASSIVE_ALL_NAME)
     return build_log_entries(
         atend=dict(zip(names, atend_vals)),
         ever=dict(zip(names, ever_vals)),
@@ -289,8 +367,8 @@ def test_atend_and_ever_are_reported_separately_and_ever_reads_higher():
     log = _entries(atend, ever, ran=_b(True, True))
     assert log["GateProxy/settled_atend_frac"] == 0.0
     assert log["GateProxy/settled_ever_frac"] == 1.0
-    assert log["GateProxy/passive_three_atend_frac"] == 0.0
-    assert log["GateProxy/passive_three_ever_frac"] == 0.5
+    assert log["GateProxy/passive_two_atend_frac"] == 0.0
+    assert log["GateProxy/passive_two_ever_frac"] == 0.5
 
 
 def test_no_series_is_published_when_no_episode_ran():
@@ -303,7 +381,7 @@ def test_fractions_use_the_ran_denominator_not_the_tensor_length():
     atend = [_b(True, False), _b(True, False), _b(True, False), _b(True, False)]
     log = _entries(atend, atend, ran=_b(True, False))
     # 1 of 1 episodes that ran, not 1 of 2 slots.
-    assert log["GateProxy/passive_three_atend_frac"] == 1.0
+    assert log["GateProxy/passive_two_atend_frac"] == 1.0
 
 
 def test_per_kind_split_reports_each_branch_separately():
@@ -312,9 +390,9 @@ def test_per_kind_split_reports_each_branch_separately():
     kind = torch.tensor([0, 0, 3, 3])
     atend = [_b(True, True, True, True)] * 3 + [_b(False, False, True, True)]
     log = _entries(atend, atend, ran=_b(True, True, True, True), kind=kind, kind_names=KIND_NAMES)
-    assert log["GateProxy/passive_three_atend_frac"] == 0.5
-    assert log["GateProxy/passive_three_atend_frac/classic"] == 0.0
-    assert log["GateProxy/passive_three_atend_frac/transport"] == 1.0
+    assert log["GateProxy/passive_two_atend_frac"] == 0.5
+    assert log["GateProxy/passive_two_atend_frac/classic"] == 0.0
+    assert log["GateProxy/passive_two_atend_frac/transport"] == 1.0
     assert log["GateProxy/episodes/classic"] == 2.0
     assert log["GateProxy/episodes/transport"] == 2.0
 
@@ -326,8 +404,8 @@ def test_a_branch_with_no_episodes_publishes_a_zero_count_and_no_rate():
     ones = [_b(True, True)] * 4
     log = _entries(ones, ones, ran=_b(True, True), kind=kind, kind_names=KIND_NAMES)
     assert log["GateProxy/episodes/transport"] == 0.0
-    assert "GateProxy/passive_three_atend_frac/transport" not in log
-    assert log["GateProxy/passive_three_atend_frac/classic"] == 1.0
+    assert "GateProxy/passive_two_atend_frac/transport" not in log
+    assert log["GateProxy/passive_two_atend_frac/classic"] == 1.0
 
 
 def test_kind_without_kind_names_raises_rather_than_inventing_labels():
@@ -339,7 +417,7 @@ def test_kind_without_kind_names_raises_rather_than_inventing_labels():
 
 
 def test_a_missing_gate_key_raises_rather_than_publishing_a_partial_table():
-    names = (*PASSIVE_GATE_NAMES, PASSIVE_ALL_NAME)
+    names = (*PASSIVE_GATE_NAMES, *DIAGNOSTIC_GATE_NAMES, PASSIVE_ALL_NAME)
     full = {name: _b(True) for name in names}
     partial = {name: _b(True) for name in names if name != "co_move"}
     exc = _raises(
@@ -377,7 +455,7 @@ def test_per_kind_counts_are_summable_across_batches():
     b = counts(_b(True, False), _b(True, True), _b(True, True), _b(True, True), torch.tensor([3, 0]))
     total = {k: a.get(k, 0) + b.get(k, 0) for k in set(a) | set(b)}
     assert total["episodes/transport"] == 3
-    assert total["passive_three/transport"] == 2
+    assert total["passive_two/transport"] == 2
     assert total["first_fail_opposed_contact/transport"] == 1
     assert total["episodes/classic"] == 1
     assert total["first_fail_settled/classic"] == 1
@@ -470,8 +548,8 @@ def test_negative_control_dropping_the_ran_mask_is_detected():
 
     _with_mutated_source(
         _MDP / "gate_proxy_core.py",
-        "    passed_all = reached_co_move & co_move",
-        "    passed_all = settled & opposed_contact & co_move",
+        "    passed_all = reached_opposed & opposed_contact",
+        "    passed_all = settled & opposed_contact",
         check,
     )
     chain = evaluate_priority_chain(
@@ -481,30 +559,26 @@ def test_negative_control_dropping_the_ran_mask_is_detected():
 
 
 def test_negative_control_priority_order_collapse_is_detected():
-    """If ``first_fail_*`` stopped being priority-ordered, an episode failing two gates would be
-    counted twice and the partition invariant would break."""
+    """If ``first_fail_*`` stopped being priority-ordered, an episode that never RAN would still be
+    attributed a failure and the partition invariant would break."""
 
     def check(mutated):
         chain = mutated.evaluate_priority_chain(
-            settled=_b(True), opposed_contact=_b(False), co_move=_b(False), ran=_b(True)
+            settled=_b(True), opposed_contact=_b(False), co_move=_b(False), ran=_b(False)
         )
-        counted = (
-            int(chain["first_fail_opposed_contact"].sum())
-            + int(chain["first_fail_co_move"].sum())
-            + int(chain[PASSIVE_ALL_NAME].sum())
-        )
-        assert counted == 2, "mutation did not take effect -- expected the double-count"
+        counted = int(chain["first_fail_opposed_contact"].sum()) + int(chain[PASSIVE_ALL_NAME].sum())
+        assert counted == 1, "mutation did not take effect -- expected the spurious attribution"
 
     _with_mutated_source(
         _MDP / "gate_proxy_core.py",
-        '        "first_fail_co_move": reached_co_move & ~co_move,',
-        '        "first_fail_co_move": ran & ~co_move,',
+        '        "first_fail_opposed_contact": reached_opposed & ~opposed_contact,',
+        '        "first_fail_opposed_contact": ~opposed_contact,',
         check,
     )
     chain = evaluate_priority_chain(
-        settled=_b(True), opposed_contact=_b(False), co_move=_b(False), ran=_b(True)
+        settled=_b(True), opposed_contact=_b(False), co_move=_b(False), ran=_b(False)
     )
-    assert int(chain["first_fail_co_move"].sum()) == 0
+    assert int(chain["first_fail_opposed_contact"].sum()) == 0
 
 
 # ---------------------------------------------------------------------------------------------

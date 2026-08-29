@@ -25,16 +25,56 @@ proxy instead: the three gates of the chain that can be evaluated WITHOUT the pr
 
 === WHY ONLY THREE OF THE SIX GATES, STATED SO THE NUMBER IS NEVER OVER-READ ===
 
-The chain is ``settled -> opposed_contact -> co_move -> probe_ready -> probe_gripper_moved ->
-probe_tracks``. The last three need a probe, and the probe is an action bias the generator injects
-on top of the policy's own actions (``held_check_core.PROBE_ARM_ACTION_BIAS`` = 0.15). Injecting
-that during training would perturb the thing being trained, so it is deliberately not done.
+The chain is ``settled -> opposed_contact -> (probe_ready & gripper_moved & tracks)``
+(``held_check_core.held_decision``, commit 18b8ed4). **Only `co_move` was dropped;
+`gripper_moved` was KEPT** -- read off the code, not from the change description. The probe gates need a
+probe, and the probe is an action bias the generator injects on top of the policy's own actions
+(``held_check_core.PROBE_ARM_ACTION_BIAS`` = 0.15). Injecting that during training would perturb
+the thing being trained, so it is deliberately not done.
+
+=== WHAT DROPPING co_move DID TO THIS METRIC, AND IT IS NOT A RECOUNT ===
+
+`co_move` left the chain on 2026-08-29 (user instruction). Recomputed against F28's own histogram,
+the probe-free term goes from ``(141-8-24-66)/141 = 43/141 = 0.3050`` to
+``(141-8-24)/141 = 109/141 = 0.7730`` -- a 2.53x change in the denominator, and with it the
+metric's usefulness:
+
+* **The hard necessary bound is now already met.** ``passive_two > 0.50`` is still a true
+  necessary condition for R2, but v1 ALREADY reads 0.7730, so it no longer separates a doomed run
+  from a promising one. Under the old chain it did: 0.3050 against a 0.50 floor was a provable
+  failure, visible every iteration and free.
+* **All the required improvement moved into the term training cannot see.** v1's probe-stage
+  conditional is ``13/109 = 0.1193`` (and ``0.7730 x 0.1193 = 0.0922`` reproduces the reported
+  9.22%). Holding the probe-free term at its v1 level, R2 needs the probe stage above
+  ``0.50/0.7730 = 0.6468`` -- a **5.4x improvement in a quantity no training-time metric can
+  observe.**
+
+So this module still publishes a valid upper bound, and it is still worth logging every iteration
+as a RETENTION monitor -- a fall in ``passive_two`` is still real evidence of harm. It is no longer
+a useful ADVANCE gate. See ``V2_REPOSE_RECIPE.md`` sec 4 for what replaces it.
+
+**And F28's histogram cannot bound the new yield tightly, because it short-circuits.** The 66
+episodes attributed to `co_move` never reached the probe gates, so nothing is known about how they
+would fare there. From that histogram alone the new yield lies in ``[0.0922, 0.5603]`` -- 13/141 if
+every one of them fails the probe stage, 79/141 if every one passes. Applying the observed
+probe-stage rate to all 109 gives 0.2337, but that assumes independence between `co_move` and
+`tracks`, which is exactly what should not be assumed: both ask whether the object moves with the
+hand, one by velocity and one by displacement.
+
+**A prediction that follows from that mechanism, and that the retained `co_move` series tests for
+free.** The stated reason for dropping `co_move` is that a leg constrained in a bore produces
+relative velocity when the palm moves, so `co_move` rejects genuinely-held states. But a
+bore-constrained leg also cannot follow the probe jog -- ``obj_disp`` stays near zero while
+``gripper_disp`` does not -- so `tracks` should reject it by the same physics. If so, dropping
+`co_move` moves those episodes one gate further down and they fail anyway. Recorded as a
+hypothesis with its mechanism, not a claim: it is exactly what
+``co_move_given_passive_two`` measured against the realised accept rate will settle.
 
 **Every number this module produces is therefore a STRICT UPPER BOUND on gate-chain pass rate and
 must be reported as one. It is not a yield and may never be quoted as one** (``RESET_SPEC_V2.md``
 R7). What it is good for is exact, and worth stating positively:
 
-* accepted states are a SUBSET of passive-three-passing states, so ``passive_three > 0.50`` is a
+* accepted states are a SUBSET of passive-two-passing states, so ``passive_two > 0.50`` is a
   HARD NECESSARY condition for R2 -- assumption-free, and cheap enough to check every iteration.
   A run that does not clear 0.50 here cannot clear R2, and no generation pass is needed to know it.
 * on F28's own histogram the decomposition is exact: passive-three 43/141 = 0.305, probe-stage
@@ -71,13 +111,23 @@ from __future__ import annotations
 
 import torch
 
-# The three probe-free gates, in the PRIORITY ORDER the generator's rejection histogram reports
-# them (V2_POSE_FINDINGS.md F28/F30). Order is load-bearing: `first_fail_*` is defined by it.
-PASSIVE_GATE_NAMES: tuple[str, str, str] = ("settled", "opposed_contact", "co_move")
+# THE CHAIN GATES that are probe-free, in the PRIORITY ORDER the generator's rejection histogram
+# reports them (V2_POSE_FINDINGS.md F28/F30). Order is load-bearing: `first_fail_*` is defined by it.
+#
+# TWO, NOT THREE, SINCE 2026-08-29. `co_move` was DROPPED from the held chain by user instruction;
+# the chain is now ``settled & opposed_contact & (probe_ready & tracks)``. This tuple therefore
+# lists the probe-free gates that STILL GATE ACCEPTANCE, which is what the proxy has to predict.
+PASSIVE_GATE_NAMES: tuple[str, str] = ("settled", "opposed_contact")
 
-# The AND of all three. Named separately because it, not any individual gate, is what the recipe's
-# 0.50 hard floor and 0.71 working target are stated against (V2_REPOSE_RECIPE.md sec 4.2).
-PASSIVE_ALL_NAME = "passive_three"
+# Computed and published, gates NOTHING. Kept because it is now free diagnostic information about a
+# gate we removed: if `co_move` turns out to correlate strongly with `tracks`, dropping it bought
+# little, and that is a finding. See this module's "WHAT DROPPING co_move DID" section.
+DIAGNOSTIC_GATE_NAMES: tuple[str, ...] = ("co_move",)
+
+# The AND of the chain gates. RENAMED from `passive_three` when co_move left the chain -- a series
+# named for three gates while it means two is the F27 defect class in the metric's own name, and
+# no run has consumed the old name yet, so the rename is free.
+PASSIVE_ALL_NAME = "passive_two"
 
 DEFAULT_LOG_PREFIX = "GateProxy/"
 
@@ -104,28 +154,39 @@ def evaluate_priority_chain(
 
         * ``reached_<gate>`` -- the episode got as far as this gate in priority order, i.e. every
           EARLIER gate passed. ``reached_settled`` is just ``ran``. This is F29's remedy: without
-          it, a zero in ``first_fail_co_move`` cannot be told apart from "nothing ever reached
-          co_move".
+          it, a zero in ``first_fail_<gate>`` cannot be told apart from "nothing ever reached that
+          gate".
         * ``first_fail_<gate>`` -- this gate is the FIRST one the episode failed. Exactly the
           quantity F28's table counts, so a training-time table can be read against it directly.
-        * ``passive_three`` -- all three passed.
+          **Only the two CHAIN gates have one**; see below.
+        * ``passive_two`` -- both chain gates passed.
+        * ``co_move_given_passive_two`` -- co_move among the episodes that cleared the chain gates.
+          A DIAGNOSTIC, not a gate (2026-08-29): its denominator is ``reached_co_move`` ==
+          ``passive_two``, and there is deliberately no ``first_fail_co_move``, because failing
+          co_move no longer rejects anything.
 
-        The ``first_fail_*`` masks and ``passive_three`` partition ``ran`` exactly; that invariant
-        is asserted in the tests rather than assumed.
+        The ``first_fail_*`` masks and ``passive_two`` partition ``ran`` exactly; that invariant is
+        asserted in the tests rather than assumed. ``co_move_given_passive_two`` is NOT part of
+        that partition and must never be added to it.
     """
     reached_settled = ran
     reached_opposed = ran & settled
-    reached_co_move = reached_opposed & opposed_contact
-    passed_all = reached_co_move & co_move
+    passed_all = reached_opposed & opposed_contact
     return {
         "reached_settled": reached_settled,
         "reached_opposed_contact": reached_opposed,
-        "reached_co_move": reached_co_move,
         f"reached_{PASSIVE_ALL_NAME}": ran,
         "first_fail_settled": reached_settled & ~settled,
         "first_fail_opposed_contact": reached_opposed & ~opposed_contact,
-        "first_fail_co_move": reached_co_move & ~co_move,
         PASSIVE_ALL_NAME: passed_all,
+        # -- co_move: DIAGNOSTIC ONLY, gates nothing (2026-08-29). It is reported on the episodes
+        # that reach the end of the chain-gate prefix, so `co_move_given_passive_two` is a rate
+        # with a stated denominator rather than a bare count. `first_fail_co_move` is deliberately
+        # ABSENT: an episode failing co_move is no longer rejected, so calling it a "first failure"
+        # would be false, and leaving the key in place with a changed meaning is exactly how a
+        # series keeps its name and loses its definition.
+        "reached_co_move": passed_all,
+        "co_move_given_passive_two": passed_all & co_move,
     }
 
 
@@ -144,7 +205,7 @@ def per_kind_counts(
     (``V2_REPOSE_RECIPE.md`` O6, the denominator of every improvement claim in that document) --
     needs counts it can add up over a whole rollout and divide once at the end.
 
-    Returns ``{"episodes/<branch>": n, "passive_three/<branch>": n, ...}`` plus the same two keys
+    Returns ``{"episodes/<branch>": n, "passive_two/<branch>": n, ...}`` plus the same two keys
     for each priority-chain row, so the training-time table can be reconstructed per branch.
     Empty when the mixture is not wired.
     """
@@ -198,7 +259,7 @@ def build_log_entries(
             "kind_names is required whenever kind is given -- the kind integers are defined by"
             " episode_mixture.EPISODE_KIND_*, and this module must not restate them (F27)."
         )
-    required = (*PASSIVE_GATE_NAMES, PASSIVE_ALL_NAME)
+    required = (*PASSIVE_GATE_NAMES, *DIAGNOSTIC_GATE_NAMES, PASSIVE_ALL_NAME)
     for name in required:
         for source, label in ((atend, "atend"), (ever, "ever")):
             if name not in source:
