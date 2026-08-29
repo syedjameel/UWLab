@@ -104,9 +104,16 @@ if [ "$SMOKE_EXIT" -ne 0 ]; then
   exit "$SMOKE_EXIT"
 fi
 
-# -- Analysis is Isaac-free (numpy + stdlib only) -- run it with plain python3, not the Isaac venv,
-# so a future re-run of just this half needs no GPU and no Isaac boot.
-python3 scripts_v2/tools/analyze_c3_rung_smoke.py \
+# -- Analysis is Isaac-free (numpy + stdlib only, no AppLauncher, no GPU) -- it does NOT need the
+# Isaac venv to run. It DOES need an interpreter with numpy on it, though, and checked directly on
+# the box: the system `python3` (/usr/bin/python3, 3.12.3) has no numpy installed at all --
+# ModuleNotFoundError before a single line of analysis runs. venv_uwlab is the only interpreter
+# confirmed to have numpy here, so default to reusing PYTHON_BIN (it just never launches Isaac from
+# it -- analyze_c3_rung_smoke.py has no AppLauncher import). Override ANALYSIS_PYTHON_BIN if a
+# lighter numpy-only venv shows up later; don't switch back to bare `python3` without re-checking
+# what's actually installed on whatever box runs this.
+ANALYSIS_PYTHON_BIN="${ANALYSIS_PYTHON_BIN:-$PYTHON_BIN}"
+"$ANALYSIS_PYTHON_BIN" scripts_v2/tools/analyze_c3_rung_smoke.py \
   --npz "$NPZ" --log "$LOG" \
   --expected_s1_fraction "$S1_FRACTION" --expected_pose_tilt "$POSE_TILT" \
   | tee "$ANALYSIS_LOG"
