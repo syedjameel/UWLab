@@ -27,10 +27,34 @@ _CORE_PATH = (
     Path(__file__).resolve().parents[1]
     / "uwlab_tasks/manager_based/manipulation/dexlift/mdp/c3_transport_core.py"
 )
-_spec = importlib.util.spec_from_file_location("c3_transport_core", _CORE_PATH)
-_c3_transport_core = importlib.util.module_from_spec(_spec)
-sys.modules["c3_transport_core"] = _c3_transport_core
-_spec.loader.exec_module(_c3_transport_core)
+
+
+def _load_by_path(name: str, path: Path):
+    """Load an Isaac-free module by FILE PATH, COMPILING THE SOURCE TEXT (bead dr-76w.22).
+
+    NOT ``spec_from_file_location(...).loader.exec_module(...)``, which this file used to use:
+    that consults and writes ``__pycache__``, and CPython's staleness check compares the source
+    mtime at ONE-SECOND granularity against the ``.pyc`` header. An edit / run / restore cycle
+    completed inside one second therefore leaves a ``.pyc`` that looks valid for the restored
+    source, and the next run silently executes the MUTATED bytecode -- reporting failures for code
+    that is correct on disk, or worse, passes for code that is not.
+
+    That is not hypothetical: it happened while writing ``test_c3_rung_stage.py``'s negative
+    controls, where it produced four phantom failures against correct restored source. Reproduced
+    deterministically side by side (same mtime, same size): the old loader returned the mutated
+    value while the file on disk held the original; this one returned the original.
+
+    Compiling the text every time costs microseconds, never reads a ``.pyc`` and never writes one.
+    """
+    spec = importlib.util.spec_from_loader(name, loader=None, origin=str(path))
+    module = importlib.util.module_from_spec(spec)
+    module.__file__ = str(path)
+    sys.modules[name] = module
+    exec(compile(path.read_text(), str(path), "exec"), module.__dict__)  # noqa: S102
+    return module
+
+
+_c3_transport_core = _load_by_path("c3_transport_core", _CORE_PATH)
 
 ROOT_ABOVE_TIP_M = _c3_transport_core.ROOT_ABOVE_TIP_M
 tip_z_from_root_z = _c3_transport_core.tip_z_from_root_z
@@ -39,6 +63,24 @@ transport_goal_ranges = _c3_transport_core.transport_goal_ranges
 validate_transport_goal_z = _c3_transport_core.validate_transport_goal_z
 validate_episode_mixture_fractions = _c3_transport_core.validate_episode_mixture_fractions
 transport_goal_banner = _c3_transport_core.transport_goal_banner
+
+
+def _raises(exc_type, fn, *args, **kwargs):
+    """``pytest.raises`` without pytest (bead dr-76w.22).
+
+    This file used to ``import pytest`` inside five cases. The local plain ``python3`` has no
+    pytest, so the ``__main__`` runner below ABORTED at the first such case -- executing 2 of 20
+    tests and exiting non-zero on a ModuleNotFoundError, which reads as an environment problem
+    rather than as 18 unrun tests. With this helper the suite runs end-to-end under bare
+    ``python3`` AND still collects normally under pytest, so both interpreters execute all 20.
+
+    Returns the exception so a caller can assert on its message.
+    """
+    try:
+        fn(*args, **kwargs)
+    except exc_type as exc:
+        return exc
+    raise AssertionError(f"expected {exc_type.__name__} from {getattr(fn, '__name__', fn)}(...)")
 
 
 def test_root_above_tip_offset_matches_f43_measurement():
@@ -58,10 +100,7 @@ def test_tip_z_from_root_z_requires_an_explicit_tilt():
     # No default: a caller must state the pose it is converting for, so this cannot be silently
     # reused in a near-horizontal context the way the pre-F49 scalar-only version was (team-lead
     # review: "the next reader cannot lift it into a near-horizontal context").
-    import pytest
-
-    with pytest.raises(TypeError):
-        tip_z_from_root_z(0.13)
+    _raises(TypeError, tip_z_from_root_z, 0.13)
 
 
 def test_tip_z_from_root_z_scales_the_offset_by_cos_tilt():
@@ -74,11 +113,8 @@ def test_tip_z_from_root_z_scales_the_offset_by_cos_tilt():
 
 
 def test_tip_z_from_root_z_rejects_tilt_outside_zero_to_pi():
-    import pytest
-
     for bad in (-0.01, math.pi + 0.01):
-        with pytest.raises(ValueError):
-            tip_z_from_root_z(0.13, tilt_rad=bad)
+        _raises(ValueError, tip_z_from_root_z, 0.13, tilt_rad=bad)
 
 
 def test_root_z_from_tip_z_is_the_inverse_at_a_range_of_tilts():
@@ -89,10 +125,7 @@ def test_root_z_from_tip_z_is_the_inverse_at_a_range_of_tilts():
 
 
 def test_root_z_from_tip_z_requires_an_explicit_tilt():
-    import pytest
-
-    with pytest.raises(TypeError):
-        root_z_from_tip_z(0.024)
+    _raises(TypeError, root_z_from_tip_z, 0.024)
 
 
 def test_transport_goal_ranges_centres_pitch_on_tip_down():
@@ -112,11 +145,8 @@ def test_transport_goal_ranges_yaw_is_pinned_to_zero():
 
 
 def test_transport_goal_ranges_rejects_tilt_outside_zero_to_half_pi():
-    import pytest
-
     for bad in (-0.01, math.pi / 2 + 0.01, math.pi):
-        with pytest.raises(ValueError):
-            transport_goal_ranges(bad)
+        _raises(ValueError, transport_goal_ranges, bad)
 
 
 def test_transport_goal_ranges_accepts_tilt_at_the_boundaries():
@@ -129,12 +159,8 @@ def test_validate_transport_goal_z_accepts_lo_less_than_hi():
 
 
 def test_validate_transport_goal_z_rejects_lo_ge_hi():
-    import pytest
-
-    with pytest.raises(ValueError):
-        validate_transport_goal_z(0.27, 0.13)
-    with pytest.raises(ValueError):
-        validate_transport_goal_z(0.20, 0.20)
+    _raises(ValueError, validate_transport_goal_z, 0.27, 0.13)
+    _raises(ValueError, validate_transport_goal_z, 0.20, 0.20)
 
 
 def test_validate_episode_mixture_fractions_accepts_the_shipped_default():
