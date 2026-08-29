@@ -23,6 +23,46 @@ Per RESET_SPEC_V2.md R5: every reported number states DEXLIFT_POSE_TILT and the 
 staging, READ BACK from the live [dexlift] banner (re-printed to this script's own log), never
 assumed from the env vars this script exports. Measurement only; no sampling range, reward, or
 env config is changed.
+
+--------------------------------------------------------------------------------------------
+PORTED INTO THIS REPO 2026-08-29 (bead dr-ai1.1 / dr-ai1.2, docs/V2_DEFECT_CLOSURE.md)
+--------------------------------------------------------------------------------------------
+SOURCE, byte-identical: ``DL_H100:~/github.com/orel/UWLab_v2/scripts_v2/tools/`` at sha256
+``90f73d98fef2ea6279cabab505b9637b7cbd9ce32a807f09e579bed5b38a0cf8`` (232 lines). That copy is
+committed here UNMODIFIED as its own commit, so ``git show`` proves the delta below is the whole
+difference -- a reader does not have to trust this paragraph.
+
+THE DELTA IS FOUR OPTIONAL ARGUMENTS -- one per mixture fraction -- each writing its field on
+``env_cfg`` after ``parse_env_cfg`` and before ``gym.make``. Nothing else changed: not the staging,
+not the frames, not the tilt definition, not the branch split, not the reported statistics. All
+four default to ``None`` meaning "leave the config alone", so an invocation without any of them
+reproduces F43's staging exactly.
+
+WHY FOUR AND NOT ONE, since one was what was asked for. The four fractions must sum to 1.0 with
+``classic_goal_prob > 0`` (the mixture's own validator, which rejects at construction). The
+defaults are 0.50 / 0.25 / 0.25 / 0.0. So ``--transport_goal_prob 0.40`` ALONE makes the sum 1.40
+and the run dies before measuring anything: a transport-only flag can express the 0.0 control and
+NOTHING ELSE, which is exactly half of what this port exists to enable. The three siblings are the
+same shape, the same default, and carry no logic -- deliberately NO renormalisation, so the caller
+states all four and the validator remains the single authority on whether they are legal.
+
+WHY IT WAS NEEDED. This script calls ``parse_args()`` (not ``parse_known_args()``) and builds its
+config with ``parse_env_cfg`` directly -- there is NO hydra path -- while ``transport_goal_prob``
+is a dataclass field rather than an env var. So the fourth mixture branch's fraction could not be
+set on the command line at all, and the AFTER distribution could not be measured with the SAME
+instrument that produced the BEFORE numbers. Measuring it with a different script would forfeit
+the like-for-like comparison that is the entire point of the exercise.
+
+WHAT THIS SCRIPT'S OWN OUTPUT IS COMPARED AGAINST. ``V2_POSE_FINDINGS.md`` F43, whose artifact
+``measure_v2_pose_distribution_out.npz`` hashes to
+``39ff1680ee26c44cec8f6381834c14a8422cf7a5b784becaefec1b5d0e87f0be`` -- verified present and
+matching on DL_H100, so F43's baseline is backed by a real artifact.
+
+RUN THE ``--transport_goal_prob 0.0`` CONTROL FIRST, AND DO NOT SKIP IT. It looks like it measures
+nothing new. It is the only thing that settles blocker B1 in ``docs/V2_DEFECT_CLOSURE.md``: two
+runs of this instrument already disagree on the CLASSIC branch's goal tip z under nominally the
+same staging, and the transport branch does not touch the classic branch. Until that is resolved,
+no before/after claim built on this script is like-for-like.
 """
 import argparse
 import hashlib
@@ -36,6 +76,26 @@ parser.add_argument("--task", type=str, required=True)
 parser.add_argument("--num_envs", type=int, default=1024)
 parser.add_argument("--rounds", type=int, default=2, help="env.reset() calls; total samples = num_envs*rounds")
 parser.add_argument("--out", type=str, required=True)
+parser.add_argument(
+    "--transport_goal_prob",
+    type=float,
+    default=None,
+    help=(
+        "Override env_cfg.transport_goal_prob (the fourth mixture branch, EPISODE_KIND_TRANSPORT)."
+        " Omit to leave the config's own value untouched -- which is what reproduces F43's staging"
+        " exactly. Pass 0.0 for the explicit B1 control. The remaining three fractions are NOT"
+        " renormalised here: the mixture's own validator requires the four to sum to 1.0 and"
+        " classic_goal_prob > 0, so an override that breaks the sum fails loudly at construction"
+        " rather than silently measuring a distribution nobody configured."
+    ),
+)
+# The other three, for the reason spelled out in the header: raising transport_goal_prob ALONE
+# breaks the sum (defaults are 0.50/0.25/0.25/0.0) and the validator rejects it at construction, so
+# a transport-only flag can express the 0.0 control and NOTHING ELSE. Same shape, same default,
+# no renormalisation -- the caller states all four and the validator checks them.
+parser.add_argument("--classic_goal_prob", type=float, default=None, help="see --transport_goal_prob")
+parser.add_argument("--low_goal_prob", type=float, default=None, help="see --transport_goal_prob")
+parser.add_argument("--partial_assembly_prob", type=float, default=None, help="see --transport_goal_prob")
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
 args_cli.headless = True
@@ -77,6 +137,23 @@ print(f"[T2] tip-root offset (root above tip, tip-down) = {TIP_ROOT_OFFSET_M:.6f
 
 device = args_cli.device
 env_cfg = parse_env_cfg(args_cli.task, device=device, num_envs=args_cli.num_envs, use_fabric=True)
+# Written HERE, between parse_env_cfg and gym.make, because the mixture reads its fractions at
+# manager-construction time (episode_mixture.py) -- i.e. inside gym.make. Setting them later has no
+# effect; setting them earlier has nothing to set them on. Every resolved value is printed, whether
+# overridden or not, so the run's own log states the staging of every number it produced
+# (RESET_SPEC_V2.md R5: a reported number states its staging, read back rather than assumed).
+for _field in ("transport_goal_prob", "classic_goal_prob", "low_goal_prob", "partial_assembly_prob"):
+    _override = getattr(args_cli, _field)
+    _before = getattr(env_cfg, _field, "ABSENT")
+    if _override is not None:
+        print(f"[T2] {_field} OVERRIDE: {_before} -> {_override}", flush=True)
+        setattr(env_cfg, _field, _override)
+    else:
+        print(f"[T2] {_field}: config default ({_before}), not overridden", flush=True)
+_resolved = [getattr(env_cfg, f, None) for f in
+             ("transport_goal_prob", "classic_goal_prob", "low_goal_prob", "partial_assembly_prob")]
+print(f"[T2] mixture fractions resolved: {_resolved} sum={sum(x for x in _resolved if x is not None):.6f}"
+      " -- the mixture's own validator is the authority; this line only reports it", flush=True)
 env = gym.make(args_cli.task, cfg=env_cfg)
 unwrapped = env.unwrapped
 
