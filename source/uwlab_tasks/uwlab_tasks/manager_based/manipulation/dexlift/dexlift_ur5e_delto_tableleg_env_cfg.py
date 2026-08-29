@@ -39,6 +39,16 @@ from isaaclab_tasks.manager_based.manipulation.dexsuite import dexsuite_env_cfg 
 from uwlab_assets import UWLAB_LOCAL_ASSETS_DIR, assert_omnireset_leg_literals_agree
 
 from . import mdp
+
+# Imported DIRECTLY, departing from ``_apply_c1_hand_pose_stage``'s precedent of re-typing its
+# core module's env parsing inline (see that function's own note explaining the duplication). The
+# departure is deliberate and is the safer half of the trade: this file would otherwise carry a
+# SECOND copy of the DEXRESET_C3_* parsing and bounds, and the unit test
+# (``test/test_c3_rung_stage.py``) would then prove a copy that no run actually executes -- the
+# exact "a constant established in one place and consumed in another, with nothing checking they
+# agree" failure this campaign has recorded repeatedly (V2_POSE_FINDINGS.md F27's family). Importing
+# the Isaac-free core costs nothing here: this module already imports isaaclab at module scope.
+from .mdp import c3_rung_core
 from .dexlift_ur10e_delto_env_cfg import TIP_NAMES, THUMB_TIP_NAMES
 from .dexlift_ur5e_delto_env_cfg import Ur5eDeltoEventCfg, Ur5eDeltoRelJointPosMixinCfg
 from .dexlift_ur5e_delto_osc_env_cfg import Ur5eDeltoOscEventCfg, Ur5eDeltoOscMixinCfg
@@ -969,6 +979,137 @@ def _apply_episode_mixture(env_cfg) -> None:
     )
 
 
+def _apply_c3_rung_stage(env_cfg, legacy_toggle_active: bool) -> bool:
+    """C3 RUNG stage -- **C3 = 50% S1 + 50% S_t** (``RESET_SPEC_V2.md`` sec 1 C3, bead ``dr-ai1.4``).
+
+    **OFF unless ``DEXRESET_C3_RUNG=1``.** Returns whether it fired. With the variable unset the
+    default path is byte-identical to what it was before this function existed -- nothing below runs,
+    no term is replaced, no banner is printed. Same opt-in idiom as ``DEXRESET_C1_HAND`` /
+    ``DEXLIFT_PARTIAL_ASSEMBLY`` / ``DEXLIFT_EPISODE_MIXTURE``.
+
+    See ``mdp/c3_rung_core.py``'s module docstring for the design argument in full (what S1 and S_t
+    each are, why S_t's peg is HORIZONTAL and needs no spawn change, why this is a whole-run stage
+    rather than episode-mixture fractions, and the F49 frame rule) and ``mdp/c3_rung.py`` for the
+    two terms this installs. In one paragraph:
+
+    * **S1** -- partial-assembly spawn (leg pre-inserted, hence tip-down), goal displaced a shallow
+      ``DEXRESET_C3_S1_GOAL_DELTA_MM`` deeper along the bore's own axis, orientation unchanged.
+    * **S_t** -- the ORDINARY table spawn, **unchanged**, goal pinned at the leg's own pose with
+      ZERO delta in position and orientation.
+
+    REFUSES RATHER THAN LOSES A RACE. Both the legacy whole-run toggles and the episode mixture
+    replace ``events.reset_object`` and ``commands.object_pose`` -- the same two slots this stage
+    needs. Whoever ran last would silently win, and the run would train or generate under a staging
+    its own launch script does not describe. That is Trap 3 in ``RESET_SPEC_V2.md`` sec 1a ("an env
+    toggle can silently override a hydra override ... more than one v1 conclusion turned out to
+    concern a variable that never took effect"), and it is the single most repeated defect in this
+    campaign's record. So a conflicting combination raises here, at config time, before Isaac starts,
+    naming both variables -- it is not resolved by precedence and not warned about and continued.
+
+    THE Y6 MID-EPISODE RESAMPLE GUARD IS NOT OPTIONAL HERE. ``CommandManager.compute()`` resamples
+    whenever ``time_left <= 0``, independent of episode reset, and the ``_PLAY``/generation classes'
+    ``resampling_time_range=(2.0, 3.0)`` against ``episode_length_s=4.0`` fires a second resample
+    mid-episode. For a goal derived from the leg's own live pose that rebases the target onto
+    wherever the leg has been carried to -- which for S_t means rewarding the policy for holding the
+    leg ANYWHERE, i.e. the rung's entire content. Forced past ``episode_length_s`` below, and
+    RE-ASSERTED at manager-construction time in ``C3RungGoalPoseCommand.__init__`` because
+    ``generate_reset_states_policy.py``'s ``--episode_length_s`` override lands after this runs and
+    would go stale against a number fixed only here. Same defect, same fix, same two-place structure
+    as the ``goal_below_spawn`` branch of ``_apply_partial_assembly_and_goal_toggles``.
+    """
+    staging = c3_rung_core.parse_c3_rung_env(os.environ)
+    if staging is None:
+        return False
+
+    if legacy_toggle_active:
+        raise ValueError(
+            "DEXRESET_C3_RUNG=1 conflicts with a legacy whole-run toggle"
+            f" (DEXLIFT_PARTIAL_ASSEMBLY={os.environ.get('DEXLIFT_PARTIAL_ASSEMBLY')!r},"
+            f" DEXLIFT_GOAL_AT_SPAWN={os.environ.get('DEXLIFT_GOAL_AT_SPAWN')!r},"
+            f" DEXLIFT_GOAL_BELOW_SPAWN_MM={os.environ.get('DEXLIFT_GOAL_BELOW_SPAWN_MM')!r}). Both"
+            " replace events.reset_object and commands.object_pose, so one would silently overwrite"
+            " the other and the run would not be staged as its launcher describes. Unset one."
+            " NOTE the legacy pair is not redundant with this stage: DEXLIFT_PARTIAL_ASSEMBLY=1 plus"
+            " DEXLIFT_GOAL_BELOW_SPAWN_MM=5 is a pure-S1 run and DEXLIFT_GOAL_AT_SPAWN=1 alone is a"
+            " pure-S_t run -- what they cannot do, and what this stage exists for, is draw BETWEEN"
+            " the two halves within one run."
+        )
+    if os.environ.get("DEXLIFT_EPISODE_MIXTURE") == "1":
+        raise ValueError(
+            "DEXRESET_C3_RUNG=1 conflicts with DEXLIFT_EPISODE_MIXTURE=1. Both replace"
+            " events.reset_object and commands.object_pose. They are also not interchangeable:"
+            " assert_episode_mixture_is_sane REQUIRES classic_goal_prob > 0 (guarding a measured"
+            " collapse -- 55% of the skill gone in 50 epochs, 89% by 300, pass@30mm 0.0000 -- when"
+            " the objective stops containing the transport task), so the mixture structurally cannot"
+            " express C3 = 50% S1 + 50% S_t, which leaves the classic fraction at zero. That guard is"
+            " not weakened; this stage is the separate, deterministic path instead. Unset one."
+        )
+
+    # The fixture is required by the S1 half (the leg is composed against it) and is what the S_t
+    # half parks out of the way, so it is added unconditionally -- exactly as
+    # _apply_episode_mixture and the legacy partial-assembly toggle both do.
+    env_cfg.scene.receptive_object = mdp.make_dexlift_receptive_object_cfg()
+
+    # -- S_t's spawn is WHATEVER reset_object already carried (narrowed x, staged drop height and
+    # tilt included), captured here and passed straight through. This is the "S_t needs NO spawn
+    # change" requirement expressed in code: nothing in this function narrows, recentres or
+    # reorients it, and DEXRESET_ST_SPAWN_TIPDOWN is not read anywhere in this stage.
+    base_pose_range = dict(env_cfg.events.reset_object.params["pose_range"])
+    base_velocity_range = dict(
+        env_cfg.events.reset_object.params.get("velocity_range", {"x": [0.0, 0.0], "y": [0.0, 0.0], "z": [0.0, 0.0]})
+    )
+    # Same override, same reason, as _apply_episode_mixture's: the class default (Hugging Face) path
+    # 404s for this pair, and not every consumer of this cfg goes through hydra_task_config, so a
+    # plain env var is the only way some of them can point at a local copy.
+    _dataset_dir = os.environ.get(
+        "DEXLIFT_EPISODE_MIXTURE_DATASET_DIR",
+        os.environ.get("DEXLIFT_PARTIAL_ASSEMBLY_DATASET_DIR", mdp.DEXLIFT_PARTIAL_ASSEMBLY_DATASET_DIR),
+    )
+    env_cfg.events.reset_object = EventTerm(
+        func=mdp.C3RungResetObject,
+        mode="reset",
+        params={
+            "dataset_dir": _dataset_dir,
+            "insertive_object_cfg": SceneEntityCfg("object"),
+            "receptive_object_cfg": SceneEntityCfg("receptive_object"),
+            "fixture_pose_range": mdp.RECEPTIVE_POSE_RANGE,
+            "pose_range": base_pose_range,
+            "velocity_range": base_velocity_range,
+            "s1_fraction": staging.s1_fraction,
+            # No extra jitter on top of the stored partial-assembly relative pose, matching
+            # SpawnPartialAssembly's own default.
+            "pose_range_b": {},
+        },
+    )
+
+    env_cfg.commands.object_pose = mdp.upgrade_to_c3_rung(
+        env_cfg.commands.object_pose, s1_goal_delta_m=staging.s1_goal_delta_m
+    )
+
+    # -- Y6, see this function's docstring. Read episode_length_s off the cfg rather than hardcoding
+    # it; C3RungGoalPoseCommand.__init__ re-asserts the same relation after any later override.
+    _episode_length_s = float(env_cfg.episode_length_s)
+    _min_resample_s = _episode_length_s + 1.0
+    env_cfg.commands.object_pose.resampling_time_range = (_min_resample_s, _min_resample_s + 1.0)
+    assert env_cfg.commands.object_pose.resampling_time_range[0] > _episode_length_s, (
+        f"resampling_time_range {env_cfg.commands.object_pose.resampling_time_range} does not clear"
+        f" episode_length_s={_episode_length_s}s"
+    )
+
+    # R5: the run must STATE its staging. The banner text is built (and asserted on) in
+    # c3_rung_core, so what a log shows and what a test checks cannot drift apart.
+    print(c3_rung_core.c3_rung_banner(staging), flush=True)
+    print(
+        f"[dexreset] C3 RUNG wiring: reset_object -> C3RungResetObject (dataset_dir={_dataset_dir}),"
+        " commands.object_pose -> C3RungGoalPoseCommand, resampling_time_range="
+        f"{tuple(env_cfg.commands.object_pose.resampling_time_range)} vs"
+        f" episode_length_s={_episode_length_s}s (exactly one resample per episode -- a second one"
+        " would rebase the goal onto the carried leg and destroy S_t).",
+        flush=True,
+    )
+    return True
+
+
 @configclass
 class DexLiftUR5eDeltoRelJointPosTableLegReorientEnvCfg(
     Ur5eDeltoTableLegRelJointPosMixinCfg, dexsuite.DexsuiteReorientEnvCfg
@@ -1037,6 +1178,13 @@ class DexLiftUR5eDeltoRelJointPosTableLegReorientEnvCfg(
         # docstring. Called after the toggles above so commands.object_pose is already
         # GoalAtSpawnPoseCommand by the time this function's precondition assert runs.
         _apply_c4_seating_training(self)
+        # C3 RUNG stage (bead dr-ai1.4): 50% S1 + 50% S_t, off unless DEXRESET_C3_RUNG=1. Called
+        # BEFORE the episode-mixture branch below and given legacy_toggle_active, because it
+        # REFUSES (raises) rather than silently losing or winning a race for events.reset_object /
+        # commands.object_pose -- see _apply_c3_rung_stage's docstring. Written out in both Reorient
+        # classes for the same reason every other line in this block is: they are NOT in an
+        # inheritance relationship with each other (bead UWLab-qiao.9/J).
+        _apply_c3_rung_stage(self, legacy_toggle_active)
         episode_mixture_requested = os.environ.get("DEXLIFT_EPISODE_MIXTURE") == "1"
         if episode_mixture_requested and not legacy_toggle_active:
             _apply_episode_mixture(self)
@@ -1092,6 +1240,13 @@ class DexLiftUR5eDeltoRelJointPosTableLegReorientEnvCfg_PLAY(
         # docstring. Called after the toggles above so commands.object_pose is already
         # GoalAtSpawnPoseCommand by the time this function's precondition assert runs.
         _apply_c4_seating_training(self)
+        # C3 RUNG stage (bead dr-ai1.4): 50% S1 + 50% S_t, off unless DEXRESET_C3_RUNG=1. Called
+        # BEFORE the episode-mixture branch below and given legacy_toggle_active, because it
+        # REFUSES (raises) rather than silently losing or winning a race for events.reset_object /
+        # commands.object_pose -- see _apply_c3_rung_stage's docstring. Written out in both Reorient
+        # classes for the same reason every other line in this block is: they are NOT in an
+        # inheritance relationship with each other (bead UWLab-qiao.9/J).
+        _apply_c3_rung_stage(self, legacy_toggle_active)
         episode_mixture_requested = os.environ.get("DEXLIFT_EPISODE_MIXTURE") == "1"
         if episode_mixture_requested and not legacy_toggle_active:
             _apply_episode_mixture(self)

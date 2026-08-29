@@ -86,3 +86,12 @@ from .terminations import *  # noqa: F401, F403
 # star-imported here; callers that want it use it directly, same convention as
 # ``held_check_core``/``held_check`` next to it.
 from .c1_hand_pose import *  # noqa: F401, F403
+
+# C3 RUNG stage -- 50% S1 + 50% S_t (RESET_SPEC_V2.md sec 1 C3, bead dr-ai1.4). Off by default;
+# wired only by ``dexlift_ur5e_delto_tableleg_env_cfg._apply_c3_rung_stage`` when
+# ``DEXRESET_C3_RUNG=1``. Imported after ``episode_mixture`` and ``partial_assembly``: it reuses
+# ``PARKED_FIXTURE_POSE_RANGE`` from the former and ``live_bore_deep_axis`` from the latter, and
+# ``C3RungGoalPoseCommandCfg`` extends ``TaskStateVisPoseCommandCfg``. Shadows nothing -- every
+# exported name is new. ``c3_rung_core`` (the Isaac-free half, unit-tested standalone) is
+# deliberately NOT star-imported here, same convention as ``c1_hand_pose_core`` above.
+from .c3_rung import *  # noqa: F401, F403
