@@ -303,6 +303,50 @@ class C3RungGoalPoseCommand(TaskStateVisPoseCommand):
             " --episode_length_s override applied after parse_env_cfg can outrun it."
         )
 
+    @property
+    def goal_is_final(self) -> torch.Tensor:
+        """Per-env bool: is this env's commanded goal FINAL, i.e. will it not change again this
+        episode? ``(num_envs,)``, on this term's device. THE PUBLIC READ FOR EVERY OTHER LAYER --
+        do not reach into ``_st_awaiting_repin``, and do not recompute
+        ``c3_rung_core.st_should_repin``'s conditions to derive this.
+
+        WHY THIS IS PUBLIC (team-lead decision 2026-08-29). The latch behind it grew three consumers
+        in one day -- this command's own ``_update_command``, the generation-side acceptance addon,
+        and the GPU smoke's phase 2 -- and two of them were either reaching into a private field or
+        evaluating a SECOND COPY of the settle conditions. Two layers independently computing "is it
+        settled yet" is the exact shape that produced the pre-settle capture bug twice today, in two
+        different agents' code, from one spec. This is the same fix as importing
+        ``held_check_core.SETTLE_STEPS`` instead of restating 60, one level up: the CONDITION becomes
+        single-source, not just its constants.
+
+        A DERIVED VIEW, NOT A SECOND BUFFER. It is exactly ``~self._st_awaiting_repin`` -- there is
+        one piece of state and this is its negation, computed on read, so the two cannot drift. It
+        is a property with no setter: callers cannot write it, and the returned tensor is freshly
+        derived, so mutating it cannot corrupt the latch.
+
+        SEMANTICS PER RUNG HALF -- READ THIS BEFORE USING IT AS AN ACCEPTANCE GATE, because a caller
+        who gets it backwards silently rejects or accepts an ENTIRE rung:
+
+        * **S_t** -- ``False`` from reset until the deferred re-pin fires, then ``True`` for the rest
+          of the episode. While ``False`` the commanded goal is the PROVISIONAL mid-air spawn pose
+          and must NOT be trusted: accepting against it scores gravity as policy error.
+        * **S1** -- ``True`` from the moment the episode is armed, and never ``False``. S1 is never
+          re-pinned because its goal is already correct at reset (the leg spawns pre-inserted, and
+          the goal is that pose displaced along the bore axis), so there is nothing to wait for.
+          **Do not read S1's ``True`` as "the re-pin has happened" -- read the whole flag as "the
+          goal is trustworthy", which is why it is named for the settled state rather than for the
+          re-pin event.** Conversely, never read ``False`` as "this env is S1".
+
+        BEFORE THE FIRST RESET the buffer is all-``False``-awaiting, so this reads ``True`` for every
+        env. That window is not meaningful -- no goal has been sampled yet -- and no consumer should
+        read a command before the first reset anyway. The value is meaningful from the first reset
+        onward.
+
+        The kind itself is NOT available through this flag by design; a caller that needs to know
+        which half an env drew should read the kind buffer rather than inferring it from timing.
+        """
+        return ~self._st_awaiting_repin
+
     def _resample_command(self, env_ids: Sequence[int]):
         env_ids_t = env_ids if torch.is_tensor(env_ids) else torch.as_tensor(env_ids, device=self.device)
         if env_ids_t.numel() == 0:

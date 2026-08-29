@@ -785,6 +785,135 @@ def test_the_numeric_model_matches_the_mixture_on_a_tilted_bore_axis():
         assert s1_goal_position(spawn, axis, delta) == expected
 
 
+# ---------------------------------------------------------------------------------------------
+# 8. THE PUBLIC goal_is_final ACCESSOR (team-lead decision, bead dr-ai1.18 follow-on)
+# ---------------------------------------------------------------------------------------------
+#
+# C3RungGoalPoseCommand.goal_is_final is the ONE public read of "has this env's S_t goal been
+# re-pinned yet / is its commanded goal trustworthy". It exists because the private latch grew three
+# consumers in a day and two of them were reaching into it or recomputing st_should_repin's
+# conditions -- two layers computing one condition, the shape that caused the pre-settle capture bug
+# twice. These tests bind the accessor to the single latch so the two can never disagree.
+#
+# STRUCTURAL, via `ast`, for the same reason section 7 is: c3_rung.py imports isaaclab and torch,
+# neither of which is importable in this environment, so the property cannot be executed here. What
+# CAN be proved without a GPU is that it is derived from the one buffer rather than duplicating it.
+
+_C3_RUNG_SRC = (_MDP_DIR / "c3_rung.py").read_text()
+_LATCH = "_st_awaiting_repin"
+
+
+def _command_class():
+    import ast
+
+    for node in ast.walk(ast.parse(_C3_RUNG_SRC)):
+        if isinstance(node, ast.ClassDef) and node.name == "C3RungGoalPoseCommand":
+            return node
+    raise AssertionError("C3RungGoalPoseCommand not found")
+
+
+def _method(name):
+    import ast
+
+    for item in _command_class().body:
+        if isinstance(item, ast.FunctionDef) and item.name == name:
+            return item
+    raise AssertionError(f"{name} not found on C3RungGoalPoseCommand")
+
+
+def test_goal_is_final_is_exactly_the_negation_of_the_single_latch():
+    # THE ONE THAT MATTERS: the accessor is a derived view, not a second buffer, so it cannot drift
+    # from the latch. If someone reimplements it -- caches it, recomputes the settle conditions,
+    # or adds a parallel bool -- the unparsed body stops being this exact expression and this fails.
+    import ast
+
+    fn = _method("goal_is_final")
+    body = [st for st in fn.body if not (isinstance(st, ast.Expr) and isinstance(st.value, ast.Constant))]
+    assert len(body) == 1, f"goal_is_final should be a one-liner over the latch; got {len(body)} statements"
+    assert ast.unparse(body[0]) == f"return ~self.{_LATCH}", ast.unparse(body[0])
+
+
+def test_goal_is_final_is_a_read_only_property():
+    import ast
+
+    fn = _method("goal_is_final")
+    decorators = [ast.unparse(d) for d in fn.decorator_list]
+    assert decorators == ["property"], decorators
+    # No setter: nothing anywhere may define goal_is_final.setter, and nothing may assign to it.
+    assert "goal_is_final.setter" not in _C3_RUNG_SRC
+    for node in ast.walk(ast.parse(_C3_RUNG_SRC)):
+        if isinstance(node, ast.Assign):
+            for tgt in node.targets:
+                assert "goal_is_final" not in ast.unparse(tgt), f"goal_is_final assigned: {ast.unparse(node)}"
+
+
+def test_there_is_exactly_one_latch_buffer():
+    # A second stored bool tensor tracking the same thing is the failure mode this whole change
+    # removes. The latch must be allocated exactly once, in __init__.
+    import ast
+
+    allocations = [
+        ast.unparse(n)
+        for n in ast.walk(_method("__init__"))
+        if isinstance(n, ast.Assign) and any(_LATCH in ast.unparse(t) for t in n.targets)
+    ]
+    assert len(allocations) == 1, allocations
+    assert "torch.zeros" in allocations[0], allocations[0]
+
+
+def test_the_latch_is_written_only_in_the_three_documented_methods():
+    # Arming/disarming lives in _resample_command, clearing in _update_command, allocation in
+    # __init__. A write appearing anywhere else can desync the accessor from reality without any
+    # of the above tests noticing, so pin the set of writers rather than a bare count.
+    import ast
+
+    writers = set()
+    for item in _command_class().body:
+        if not isinstance(item, ast.FunctionDef):
+            continue
+        for n in ast.walk(item):
+            if isinstance(n, (ast.Assign, ast.AugAssign)):
+                targets = n.targets if isinstance(n, ast.Assign) else [n.target]
+                if any(_LATCH in ast.unparse(t) for t in targets):
+                    writers.add(item.name)
+    assert writers == {"__init__", "_resample_command", "_update_command"}, writers
+
+
+def test_the_accessor_docstring_pins_the_s1_semantics():
+    # The lead's explicit requirement: a caller who gets S1 backwards silently rejects or accepts an
+    # entire rung, so the S1 rule must be stated where the caller reads it, not only in a message.
+    import ast
+
+    # Whitespace-normalised: the docstring is wrapped, so "never re-pinned" spans a line break in
+    # the source. Checking the raw text would fail on reflow rather than on meaning.
+    doc = " ".join((ast.get_docstring(_method("goal_is_final")) or "").split())
+    assert "S1" in doc and "S_t" in doc
+    assert "never re-pinned" in doc, "the docstring must say S1 is never re-pinned"
+    assert "trustworthy" in doc, "the docstring must state what the flag actually means"
+    # Both directions of the misreading the lead warned about are named explicitly.
+    assert 'Do not read S1\'s ``True`` as "the re-pin has happened"' in doc
+    assert 'never read ``False`` as "this env is S1"' in doc
+
+
+def test_the_command_does_not_recompute_the_settle_conditions_anywhere_else():
+    # st_should_repin's three conditions are expressed ONCE in the tensor mask inside
+    # _update_command. If a second place in this class starts comparing against the settle
+    # thresholds, that is the duplication this change exists to prevent.
+    import ast
+
+    uses = 0
+    for item in _command_class().body:
+        if isinstance(item, ast.FunctionDef):
+            for n in ast.walk(item):
+                # ctx=Load only -- the __init__ assignment TARGET is an Attribute in Store
+                # context and is not a read of the value.
+                if isinstance(n, ast.Attribute) and n.attr == "_st_settle_speed_mps" and isinstance(n.ctx, ast.Load):
+                    uses += 1
+    # One in __init__ (passed to validate_st_settle_speed) and one in _update_command (the mask).
+    # Anything more is a second place deciding "is it settled yet".
+    assert uses == 2, f"_st_settle_speed_mps READ {uses} times; expected 2 (init validate + mask)"
+
+
 if __name__ == "__main__":
     _failures = 0
     for _name, _fn in sorted(globals().items()):
