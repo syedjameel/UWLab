@@ -104,6 +104,21 @@ if [ "$SMOKE_EXIT" -ne 0 ]; then
   exit "$SMOKE_EXIT"
 fi
 
+# -- Do not trust $SMOKE_EXIT alone. 2026-08-29, DL_H100: smoke_c3_rung_isaac.py's own refusal
+# guard raised SystemExit (a real, intentional refusal, message printed to the log) but the process
+# that reached this line still reported exit 0 -- something downstream of the raised exception,
+# most likely Isaac/Kit's own teardown, overrode the interpreter's exit code during shutdown. That
+# is now worked around at the source (smoke_c3_rung_isaac.py's _refuse() calls os._exit(1)
+# directly, bypassing whatever swallowed it), but this check stays as a second, independent signal
+# so a similar swallow anywhere else in the chain cannot repeat the same failure: the smoke's only
+# real job is to produce this npz, so if it is not there, nothing downstream can be trusted
+# regardless of what $SMOKE_EXIT claims.
+if [ ! -s "$NPZ" ]; then
+  echo "REFUSING to analyze: no npz was produced at $NPZ (smoke reported exit $SMOKE_EXIT, but the"
+  echo "file is missing or empty). Do not trust a 0 exit code alone -- see $LOG."
+  exit 1
+fi
+
 # -- Analysis is Isaac-free (numpy + stdlib only, no AppLauncher, no GPU) -- it does NOT need the
 # Isaac venv to run. It DOES need an interpreter with numpy on it, though, and checked directly on
 # the box: the system `python3` (/usr/bin/python3, 3.12.3) has no numpy installed at all --

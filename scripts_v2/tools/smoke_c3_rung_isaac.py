@@ -134,11 +134,37 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import inspect
 import json
 import math
 import os
+import sys
 
 from isaaclab.app import AppLauncher
+
+
+def _refuse(message: str) -> None:
+    """Print a REFUSING message and terminate with a non-zero OS-level exit code, unconditionally.
+
+    NOT `raise SystemExit(message)`. On DL_H100 (2026-08-29, HEAD 686e7c1) a raised SystemExit here
+    reached the launcher's `$?` as 0 -- the launcher then proceeded straight to analysis, which died
+    on a missing npz. That is a refusal reporting success: the exact silent-pass shape this campaign
+    has spent the night hunting, this time inside the guard meant to prevent it.
+
+    A `raise SystemExit` unwinds the Python stack via a normal exception -- it never reaches this
+    file's own `env.close()` / `simulation_app.close()` at the bottom, since those are further down
+    the same top-level script and get skipped entirely. The leading suspect is something registered
+    by AppLauncher/Kit itself (an atexit hook or similar, outside this file, run during interpreter
+    shutdown regardless of how the exception unwound) overriding the process's final exit code --
+    this codebase already treats Kit's teardown as unreliable enough to need a workaround elsewhere
+    (root cause of the overridden code not fully pinned down without reproducing on the box).
+    `os._exit()` sidesteps the question entirely: it terminates at the OS level immediately, so
+    nothing downstream -- atexit handling included -- gets a chance to touch the exit code.
+    """
+    print(message, file=sys.stderr, flush=True)
+    sys.stdout.flush()
+    os._exit(1)
+
 
 # ==================================== ARGS ====================================
 parser = argparse.ArgumentParser()
@@ -196,14 +222,14 @@ args_cli.headless = True
 # Set here, unconditionally, BEFORE AppLauncher/parse_env_cfg -- see module docstring.
 _st_spawn_tipdown = os.environ.get("DEXRESET_ST_SPAWN_TIPDOWN")
 if _st_spawn_tipdown == "1":
-    raise SystemExit(
+    _refuse(
         "[smoke_c3_rung] REFUSING: DEXRESET_ST_SPAWN_TIPDOWN=1 is set. It is surplus for C3 (F51,"
         " c3_rung_core.py's module docstring: 'S_t therefore requires NO spawn change') and must"
         " stay OFF -- unset it. Continuing would measure a different (tip-down-spawned) S_t than"
         " the one C3 actually ships."
     )
 if os.environ.get("DEXLIFT_EPISODE_MIXTURE") == "1" or os.environ.get("DEXLIFT_PARTIAL_ASSEMBLY") == "1":
-    raise SystemExit(
+    _refuse(
         "[smoke_c3_rung] REFUSING: DEXLIFT_EPISODE_MIXTURE=1 or DEXLIFT_PARTIAL_ASSEMBLY=1 is set."
         " _apply_c3_rung_stage raises on this combination (both replace events.reset_object /"
         " commands.object_pose). Unset it -- this script wants DEXRESET_C3_RUNG alone."
@@ -284,19 +310,48 @@ unwrapped = env.unwrapped
 # that DEXRESET_C3_RUNG=1 silently did what it claims. This is exactly Trap 3
 # (RESET_SPEC_V2.md sec 1a: "an env toggle can silently override a hydra override ... more than one
 # v1 conclusion turned out to concern a variable that never took effect") turned into a hard gate.
+#
+# The command term and the event term are NOT checked the same way, because they are not populated
+# the same way. CommandManager._prepare_terms unconditionally constructs an INSTANCE of every term's
+# class (isaaclab/managers/command_manager.py: `term = term_cfg.class_type(term_cfg, self._env)`),
+# so cmd_term is always a real instance and isinstance() against it is meaningful. EventManager only
+# does that eager construction for mode="prestartup" terms (event_manager.py `_prepare_terms`);
+# "reset_object" runs in mode="reset", where the class is called FRESH on every reset
+# (`term_cfg.func(env, env_ids, **params)`, never `term_cfg.func = term_cfg.func(...)`), so
+# term_cfg.func stays the raw CLASS forever -- type(term_cfg.func) is always its metaclass
+# ("ABCMeta", inherited from ManagerTermBase), never the class's own name, WHETHER OR NOT staging
+# worked. An earlier version of this check read type(...).__name__ on that class and refused every
+# run unconditionally -- a false refusal (2026-08-29, DL_H100 HEAD 686e7c1) that would have blocked
+# every future run identically, not just an un-staged one. Fixed to compare identity/membership
+# instead, which is correct whether the term is (as expected here, "reset" mode) still a bare class
+# or (if IsaacLab's behaviour ever changes) already an instance -- either way this still refuses on
+# a genuinely un-staged run, since an un-staged run's func/type would be some OTHER class entirely.
 cmd_term = unwrapped.command_manager.get_term("object_pose")
-reset_object_term_type = type(unwrapped.event_manager.get_term_cfg("reset_object").func).__name__
-cmd_term_type = type(cmd_term).__name__
-if cmd_term_type != "C3RungGoalPoseCommand" or reset_object_term_type != "C3RungResetObject":
-    raise SystemExit(
+reset_object_func = unwrapped.event_manager.get_term_cfg("reset_object").func
+cmd_term_ok = isinstance(cmd_term, c3_rung.C3RungGoalPoseCommand)
+if inspect.isclass(reset_object_func):
+    reset_object_ok = reset_object_func is c3_rung.C3RungResetObject
+    reset_object_seen = reset_object_func.__name__
+else:
+    reset_object_ok = isinstance(reset_object_func, c3_rung.C3RungResetObject)
+    reset_object_seen = type(reset_object_func).__name__
+
+if not cmd_term_ok or not reset_object_ok:
+    # Name only the term(s) that actually failed -- printing both regardless of which one was wrong
+    # reads as if both failed, which cost a minute of investigating a term that was fine.
+    failures = []
+    if not cmd_term_ok:
+        failures.append(f"commands.object_pose is {type(cmd_term).__name__} (expected C3RungGoalPoseCommand)")
+    if not reset_object_ok:
+        failures.append(f"events.reset_object is {reset_object_seen} (expected C3RungResetObject)")
+    _refuse(
         "[smoke_c3_rung] REFUSING: DEXRESET_C3_RUNG=1 did not install the C3 terms -- "
-        f"commands.object_pose is {cmd_term_type} (expected C3RungGoalPoseCommand),"
-        f" events.reset_object is {reset_object_term_type} (expected C3RungResetObject). Staging"
-        " silently failed; nothing below would be measuring what this script claims to measure."
+        + "; ".join(failures)
+        + ". Staging silently failed; nothing below would be measuring what this script claims to measure."
     )
 print(
-    f"[smoke_c3_rung] staging verified: events.reset_object={reset_object_term_type},"
-    f" commands.object_pose={cmd_term_type}",
+    f"[smoke_c3_rung] staging verified: events.reset_object={reset_object_seen},"
+    f" commands.object_pose={type(cmd_term).__name__}",
     flush=True,
 )
 
@@ -466,7 +521,7 @@ else:
     usable_steps = int(episode_length_s / step_dt)
     _HEADROOM_STEPS = 20
     if usable_steps < total_window + _HEADROOM_STEPS:
-        raise SystemExit(
+        _refuse(
             f"[smoke_c3_rung] REFUSING (--mode settle): episode_length_s={episode_length_s}s /"
             f" step_dt={step_dt}s = {usable_steps} usable control steps, which does not clear the"
             f" settle window ({total_window} = SETTLE_STEPS {SETTLE_STEPS} + settle_margin"
