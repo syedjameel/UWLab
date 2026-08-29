@@ -38,6 +38,7 @@ here. In particular this file does NOT prove that the runtime tensor draw agrees
 
 from __future__ import annotations
 
+import ast
 import importlib.util
 import math
 import sys
@@ -632,13 +633,17 @@ def test_the_min_steps_argument_is_required_so_the_number_lives_in_one_place():
     # parameter default carrying it, because only those can drift into use.
     import ast
 
-    tree = ast.parse(src)
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Constant) and node.value == 60 and not isinstance(node.value, bool):
-            raise AssertionError(
-                f"c3_rung_core.py restates held_check's 60 as an executable literal at line {node.lineno};"
-                " it must be passed in from held_check_core.SETTLE_STEPS instead"
-            )
+    # BOTH modules of the stage. c3_rung.py is where SETTLE_STEPS is actually imported and used,
+    # so it is at least as likely a place for the number to be restated, and the earlier version of
+    # this test did not look at it at all -- a SCOPE gap rather than a node-type one.
+    for module_name in ("c3_rung_core.py", "c3_rung.py"):
+        tree = ast.parse((_MDP_DIR / module_name).read_text())
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Constant) and node.value == 60 and not isinstance(node.value, bool):
+                raise AssertionError(
+                    f"{module_name} restates held_check's 60 as an executable literal at line"
+                    f" {node.lineno}; it must be passed in from held_check_core.SETTLE_STEPS instead"
+                )
 
 
 def test_the_settle_knobs_are_parameterised_not_hardcoded():
@@ -698,8 +703,34 @@ _C3_RUNG_PATH = _MDP_DIR / "c3_rung.py"
 _DELTA_TOKENS = ("self._partial_delta_m", "delta_m")
 
 
-def _normalised_statements(path, class_name: str, method_name: str) -> list[str]:
-    """Unparse one method's body to normalised source lines, with the delta operand canonicalised."""
+# Node types the walker below must see. The original pair -- (Assign, If) -- had the AnnAssign
+# blind spot twice over, and worse: a statement ADDED to either method in a type the walker did not
+# collect was invisible to every assertion in this section, because they all test MEMBERSHIP. The
+# routes that actually matter in torch code are AugAssign (`goal_pos_w += ...`, the natural way to
+# bolt on an extra offset), AnnAssign (the annotated style this file already uses 18 times), and
+# bare Expr -- an in-place tensor op such as `goal_pos_w.clamp_(...)` is an expression statement,
+# not an assignment, and it would silently change the goal. Return/For/While/With are collected for
+# the same reason: cheap, and each one is a way to change what runs.
+_COMPARED_STATEMENTS = (
+    ast.Assign,
+    ast.AugAssign,
+    ast.AnnAssign,
+    ast.Expr,
+    ast.Return,
+    ast.If,
+    ast.For,
+    ast.While,
+    ast.With,
+)
+
+
+def _normalised_statements(path, class_name: str, method_name: str) -> list[tuple[str, str]]:
+    """Unparse one method's body to (node-kind, normalised source), delta operand canonicalised.
+
+    The node KIND travels with the text so that rewriting a statement into a different form -- the
+    same arithmetic as an AugAssign, say -- is a difference this guard reports rather than one it
+    launders into an identical string.
+    """
     import ast
 
     tree = ast.parse(path.read_text())
@@ -709,17 +740,60 @@ def _normalised_statements(path, class_name: str, method_name: str) -> list[str]
                 if isinstance(item, ast.FunctionDef) and item.name == method_name:
                     out = []
                     for stmt in ast.walk(item):
-                        if isinstance(stmt, (ast.Assign, ast.If)):
+                        # Docstrings are Expr-of-Constant; they are prose, not behaviour.
+                        if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant):
+                            continue
+                        if isinstance(stmt, _COMPARED_STATEMENTS):
                             text = ast.unparse(stmt.test if isinstance(stmt, ast.If) else stmt)
                             for token in _DELTA_TOKENS:
                                 text = text.replace(token, "DELTA")
-                            out.append(text)
+                            out.append((type(stmt).__name__, text))
                     return out
     raise AssertionError(f"{class_name}.{method_name} not found in {path}")
 
 
-_OURS = _normalised_statements(_C3_RUNG_PATH, "C3RungGoalPoseCommand", "_pin_goal_at_object_pose")
-_THEIRS = _normalised_statements(_MIXTURE_PATH, "MixtureGoalPoseCommand", "_resample_goal_at_spawn")
+_OURS_TAGGED = _normalised_statements(_C3_RUNG_PATH, "C3RungGoalPoseCommand", "_pin_goal_at_object_pose")
+_THEIRS_TAGGED = _normalised_statements(_MIXTURE_PATH, "MixtureGoalPoseCommand", "_resample_goal_at_spawn")
+# Text-only views, for the per-statement membership tests below.
+_OURS = [text for _kind, text in _OURS_TAGGED]
+_THEIRS = [text for _kind, text in _THEIRS_TAGGED]
+
+
+def _canonical(stmt_src: str) -> str:
+    """Round-trip an EXPECTED statement through THIS interpreter's own ``ast.unparse``.
+
+    ``ast.unparse`` is not stable across CPython versions. On 3.10 a tuple target unparses as
+    ``(pos_b, quat_b) = ...``; on 3.12 it is ``pos_b, quat_b = ...``. Comparing a hand-written
+    string against unparsed source therefore encodes the version of whoever wrote the string --
+    and it did: this suite passed on 3.12 and failed on 3.10 on exactly that statement, for a
+    difference in PARENTHESES with no bearing on the goal expression it exists to guard.
+
+    Sending both sides through the same unparser removes the interpreter from the comparison
+    without weakening it: the expected source still has to parse to the same tree.
+    """
+    return ast.unparse(ast.parse(stmt_src).body[0])
+
+
+def _assert_in_both(stmt_src: str) -> None:
+    """Assert one statement is present in BOTH normalised bodies, interpreter-independently."""
+    want = _canonical(stmt_src)
+    assert want in _OURS, (want, _OURS)
+    assert want in _THEIRS, (want, _THEIRS)
+
+
+def test_neither_method_contains_a_statement_the_other_does_not():
+    """THE ONE THE MEMBERSHIP TESTS CANNOT DO. Every other test in this section asks "is this
+    statement present in both". None of them can see a statement ADDED to one side -- an extra
+    clamp, an extra offset, a second displacement -- which is precisely the drift this guard exists
+    to catch, and which a negative control confirmed passed all 73 tests silently. Compare the two
+    normalised bodies as ORDERED SEQUENCES: same statements, same kinds, same traversal order.
+    """
+    assert _OURS_TAGGED == _THEIRS_TAGGED, (
+        "the two goal expressions have diverged:\n"
+        f"  only in c3_rung:        {[s for s in _OURS_TAGGED if s not in _THEIRS_TAGGED]}\n"
+        f"  only in episode_mixture: {[s for s in _THEIRS_TAGGED if s not in _OURS_TAGGED]}\n"
+        f"  ours={_OURS_TAGGED}\n  theirs={_THEIRS_TAGGED}"
+    )
 
 
 def test_both_read_the_objects_pose_the_same_way():
@@ -727,50 +801,40 @@ def test_both_read_the_objects_pose_the_same_way():
         "object_pos_w = self.object.data.root_pos_w[env_ids]",
         "object_quat_w = self.object.data.root_quat_w[env_ids]",
     ):
-        assert stmt in _OURS, (stmt, _OURS)
-        assert stmt in _THEIRS, (stmt, _THEIRS)
+        _assert_in_both(stmt)
 
 
 def test_both_guard_the_displacement_on_a_nonzero_delta():
-    assert "DELTA != 0.0" in _OURS, _OURS
-    assert "DELTA != 0.0" in _THEIRS, _THEIRS
+    _assert_in_both("DELTA != 0.0")
 
 
 def test_both_take_the_bore_axis_from_the_same_shared_helper():
     # Same function, same arguments -- so the two cannot disagree about which way "deeper" points,
     # and both inherit live_bore_deep_axis's runtime axis guard.
-    stmt = "axis_world = live_bore_deep_axis(self._fixture, self._fixture_local_deep_axis, env_ids)"
-    assert stmt in _OURS, _OURS
-    assert stmt in _THEIRS, _THEIRS
+    _assert_in_both("axis_world = live_bore_deep_axis(self._fixture, self._fixture_local_deep_axis, env_ids)")
 
 
 def test_both_displace_the_goal_with_the_identical_expression():
     # THE ONE THAT MATTERS. One expression, both signs, no branch on the sign.
-    stmt = "goal_pos_w = object_pos_w + DELTA * axis_world"
-    assert stmt in _OURS, _OURS
-    assert stmt in _THEIRS, _THEIRS
+    _assert_in_both("goal_pos_w = object_pos_w + DELTA * axis_world")
 
 
 def test_both_start_from_the_undisplaced_pose():
-    assert "goal_pos_w = object_pos_w" in _OURS
-    assert "goal_pos_w = object_pos_w" in _THEIRS
+    _assert_in_both("goal_pos_w = object_pos_w")
 
 
 def test_both_convert_to_the_robot_root_frame_identically():
     # Including that the goal QUATERNION is the object's own in both -- neither half of either
     # mechanism commands a reorientation.
-    stmt = (
+    _assert_in_both(
         "pos_b, quat_b = subtract_frame_transforms(self.robot.data.root_pos_w[env_ids],"
         " self.robot.data.root_quat_w[env_ids], goal_pos_w, object_quat_w)"
     )
-    assert stmt in _OURS, _OURS
-    assert stmt in _THEIRS, _THEIRS
 
 
 def test_both_write_the_same_command_slots():
     for stmt in ("self.pose_command_b[env_ids, 0:3] = pos_b", "self.pose_command_b[env_ids, 3:7] = quat_b"):
-        assert stmt in _OURS, (stmt, _OURS)
-        assert stmt in _THEIRS, (stmt, _THEIRS)
+        _assert_in_both(stmt)
 
 
 def test_the_numeric_model_matches_the_mixture_on_a_tilted_bore_axis():
@@ -803,6 +867,21 @@ _C3_RUNG_SRC = (_MDP_DIR / "c3_rung.py").read_text()
 _LATCH = "_st_awaiting_repin"
 
 
+def _assignment_targets(node) -> list:
+    """Targets of ANY assignment form, or [] for a non-assignment node.
+
+    One place, because getting this wrong is how the original writer-set tests missed
+    ``ast.AnnAssign`` entirely: an annotated write has ``.target`` (singular) rather than
+    ``.targets``, so a walker filtering on ``ast.Assign`` alone never sees it -- and this file
+    uses the annotated style 18 times, so it is the LIKELY spelling, not an exotic one.
+    """
+    if isinstance(node, ast.Assign):
+        return node.targets
+    if isinstance(node, (ast.AugAssign, ast.AnnAssign)):
+        return [node.target]
+    return []
+
+
 def _command_class():
     import ast
 
@@ -830,7 +909,9 @@ def test_goal_is_final_is_exactly_the_negation_of_the_single_latch():
     fn = _method("goal_is_final")
     body = [st for st in fn.body if not (isinstance(st, ast.Expr) and isinstance(st.value, ast.Constant))]
     assert len(body) == 1, f"goal_is_final should be a one-liner over the latch; got {len(body)} statements"
-    assert ast.unparse(body[0]) == f"return ~self.{_LATCH}", ast.unparse(body[0])
+    # Through _canonical for the same reason section 7 is: an exact-unparse comparison against a
+    # hand-written string is only as portable as the interpreter that wrote the string.
+    assert ast.unparse(body[0]) == _canonical(f"return ~self.{_LATCH}"), ast.unparse(body[0])
 
 
 def test_goal_is_final_is_a_read_only_property():
@@ -841,24 +922,38 @@ def test_goal_is_final_is_a_read_only_property():
     assert decorators == ["property"], decorators
     # No setter: nothing anywhere may define goal_is_final.setter, and nothing may assign to it.
     assert "goal_is_final.setter" not in _C3_RUNG_SRC
+    # Every assignment form, because the route that matters here is the annotated one. A CLASS-LEVEL
+    # `goal_is_final: bool = False` silently SHADOWS the property -- unlike `self.goal_is_final = x`,
+    # which raises AttributeError at runtime and so cannot survive to production. A negative control
+    # confirmed the ast.Assign-only version did not see it.
     for node in ast.walk(ast.parse(_C3_RUNG_SRC)):
-        if isinstance(node, ast.Assign):
-            for tgt in node.targets:
-                assert "goal_is_final" not in ast.unparse(tgt), f"goal_is_final assigned: {ast.unparse(node)}"
+        for tgt in _assignment_targets(node):
+            assert "goal_is_final" not in ast.unparse(tgt), f"goal_is_final assigned: {ast.unparse(node)}"
 
 
 def test_there_is_exactly_one_latch_buffer():
     # A second stored bool tensor tracking the same thing is the failure mode this whole change
     # removes. The latch must be allocated exactly once, in __init__.
-    import ast
-
-    allocations = [
-        ast.unparse(n)
-        for n in ast.walk(_method("__init__"))
-        if isinstance(n, ast.Assign) and any(_LATCH in ast.unparse(t) for t in n.targets)
-    ]
+    #
+    # Scanned CLASS-WIDE, not just __init__, and over every assignment form. The earlier version
+    # walked ast.Assign inside __init__ only, and a negative control confirmed BOTH holes: a second
+    # allocation written as `self._st_awaiting_repin: torch.Tensor = torch.zeros(...)` passed all 73
+    # tests, and a reallocation in another method was outside the search entirely.
+    #
+    # A BARE attribute target allocates the buffer. A Subscript target -- the three legitimate
+    # element writes, `self._st_awaiting_repin[ids] = ...` -- mutates the existing one and is not an
+    # allocation; that distinction is what lets this assert a hard count of 1.
+    allocations = []
+    for item in _command_class().body:
+        if not isinstance(item, ast.FunctionDef):
+            continue
+        for n in ast.walk(item):
+            for tgt in _assignment_targets(n):
+                if isinstance(tgt, ast.Attribute) and tgt.attr == _LATCH:
+                    allocations.append((item.name, ast.unparse(n)))
     assert len(allocations) == 1, allocations
-    assert "torch.zeros" in allocations[0], allocations[0]
+    assert allocations[0][0] == "__init__", f"the latch is allocated outside __init__: {allocations}"
+    assert "torch.zeros" in allocations[0][1], allocations
 
 
 def test_the_latch_is_written_only_in_the_three_documented_methods():
@@ -872,12 +967,10 @@ def test_the_latch_is_written_only_in_the_three_documented_methods():
         if not isinstance(item, ast.FunctionDef):
             continue
         for n in ast.walk(item):
-            # AnnAssign included deliberately: `self.x: float = ...` is NOT ast.Assign, and
-            # missing it would let an annotated write escape this test silently.
-            if isinstance(n, (ast.Assign, ast.AugAssign, ast.AnnAssign)):
-                targets = n.targets if isinstance(n, ast.Assign) else [n.target]
-                if any(_LATCH in ast.unparse(t) for t in targets):
-                    writers.add(item.name)
+            # _assignment_targets covers Assign, AugAssign AND AnnAssign in one place -- see its
+            # docstring for why the annotated form is the one that got missed.
+            if any(_LATCH in ast.unparse(t) for t in _assignment_targets(n)):
+                writers.add(item.name)
     assert writers == {"__init__", "_resample_command", "_update_command"}, writers
 
 
@@ -897,25 +990,49 @@ def test_the_accessor_docstring_pins_the_s1_semantics():
     assert 'never read ``False`` as "this env is S1"' in doc
 
 
-def test_the_command_does_not_recompute_the_settle_conditions_anywhere_else():
-    # st_should_repin's three conditions are expressed ONCE in the tensor mask inside
-    # _update_command. If a second place in this class starts comparing against the settle
-    # thresholds, that is the duplication this change exists to prevent.
-    import ast
+def _reader_methods(attr_name: str) -> set[str]:
+    """Methods of the command class that READ ``attr_name``.
 
+    ctx=Load only -- the __init__ assignment TARGET is an Attribute in Store context and is not a
+    read of the value.
+    """
     readers = set()
     for item in _command_class().body:
         if isinstance(item, ast.FunctionDef):
             for n in ast.walk(item):
-                # ctx=Load only -- the __init__ assignment TARGET is an Attribute in Store
-                # context and is not a read of the value.
-                if isinstance(n, ast.Attribute) and n.attr == "_st_settle_speed_mps" and isinstance(n.ctx, ast.Load):
+                if isinstance(n, ast.Attribute) and n.attr == attr_name and isinstance(n.ctx, ast.Load):
                     readers.add(item.name)
-    # __init__ passes it to validate_st_settle_speed; _update_command builds the mask;
-    # st_settle_thresholds reports it. A bare COUNT was the wrong instrument here -- it cannot
-    # distinguish a new accessor from a new recomputation. Pinning the method set can: a read
-    # appearing in any OTHER method is a second place deciding "is it settled yet" and fails.
-    assert readers == {"__init__", "_update_command", "st_settle_thresholds"}, readers
+    return readers
+
+
+def test_the_command_does_not_recompute_the_settle_conditions_anywhere_else():
+    # st_should_repin's three conditions are expressed ONCE in the tensor mask inside
+    # _update_command. If a second place in this class starts comparing against the settle
+    # thresholds, that is the duplication this change exists to prevent.
+    #
+    # ALL THREE thresholds, not just the linear one. The earlier version tracked
+    # _st_settle_speed_mps alone, so a second settle test written against the ANGULAR threshold or
+    # the step floor was invisible -- and the angular term is the one added last, so it is the
+    # likeliest to sprout a second consumer. A negative control confirmed a helper reading only
+    # _st_settle_ang_speed_rad_s passed all 73 tests.
+    #
+    # __init__ passes each to its validator; _update_command builds the mask; st_settle_thresholds
+    # reports them. A bare COUNT was the wrong instrument here -- it cannot distinguish a new
+    # accessor from a new recomputation. Pinning the method set can: a read appearing in any OTHER
+    # method is a second place deciding "is it settled yet" and fails.
+    expected = {"__init__", "_update_command", "st_settle_thresholds"}
+    for attr in ("_st_settle_speed_mps", "_st_settle_ang_speed_rad_s", "_st_settle_min_steps"):
+        assert _reader_methods(attr) == expected, (attr, _reader_methods(attr))
+
+
+def test_the_unresolved_cfg_thresholds_are_read_only_in_init():
+    # The OTHER way to reach the same numbers, which the private-field scan above cannot see:
+    # cfg.st_settle_min_steps may be None, meaning "use held_check_core.SETTLE_STEPS". Reading the
+    # cfg outside __init__ is how a second place ends up deciding the step floor -- the exact defect
+    # st_settle_thresholds was introduced to remove.
+    for attr in ("st_settle_speed_mps", "st_settle_ang_speed_rad_s", "st_settle_min_steps"):
+        readers = _reader_methods(attr)
+        assert readers <= {"__init__"}, f"cfg.{attr} read outside __init__: {sorted(readers)}"
 
 
 def test_st_settle_thresholds_returns_the_resolved_values_not_the_cfg():
@@ -929,7 +1046,7 @@ def test_st_settle_thresholds_returns_the_resolved_values_not_the_cfg():
     body = [st for st in fn.body if not (isinstance(st, ast.Expr) and isinstance(st.value, ast.Constant))]
     assert len(body) == 1, ast.unparse(fn)
     got = ast.unparse(body[0])
-    assert got == (
+    assert got == _canonical(
         "return (self._st_settle_speed_mps, self._st_settle_ang_speed_rad_s, self._st_settle_min_steps)"
     ), got
     assert "self.cfg" not in got, "must return the RESOLVED fields, never the cfg's unresolved ones"
@@ -952,10 +1069,8 @@ def test_the_settle_thresholds_are_written_only_in_init():
         if not isinstance(item, ast.FunctionDef):
             continue
         for n in ast.walk(item):
-            if isinstance(n, (ast.Assign, ast.AugAssign, ast.AnnAssign)):
-                targets = n.targets if isinstance(n, ast.Assign) else [n.target]
-                if any("_st_settle_" in ast.unparse(t) for t in targets):
-                    writers.add(item.name)
+            if any("_st_settle_" in ast.unparse(t) for t in _assignment_targets(n)):
+                writers.add(item.name)
     assert writers == {"__init__"}, writers
 
 

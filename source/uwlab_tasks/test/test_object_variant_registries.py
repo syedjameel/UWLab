@@ -194,3 +194,25 @@ def test_grasp_sampling_covers_every_insertive_object():
         "grasp_dataset (and everything downstream of it) has no dataset to read. Add the missing "
         "grasp_sampling_cfg.py entry -- see this file's module docstring (RULE C)."
     )
+
+
+if __name__ == "__main__":
+    # This file had NO runner. It is pytest-collectible, but pytest is not installed in either
+    # interpreter used to run this suite locally, so `python3 test_object_variant_registries.py`
+    # printed nothing and exited 0 -- indistinguishable from a pass. Three real assertions were
+    # simply never executed here. Same report-every-failure shape as the other v2 suites (bead
+    # dr-76w.23): one failing registry must not hide the state of the other three.
+    _failures = 0
+    for _name, _fn in sorted(globals().items()):
+        if _name.startswith("test_") and callable(_fn):
+            try:
+                _fn()
+            except Exception as _exc:  # noqa: BLE001 -- a runner, it must report every failure
+                _failures += 1
+                print(f"[object_variants] {_name} FAILED: {type(_exc).__name__}: {_exc}", flush=True)
+            else:
+                print(f"[object_variants] {_name} OK", flush=True)
+    if _failures:
+        print(f"[object_variants] {_failures} test(s) FAILED", flush=True)
+        raise SystemExit(1)
+    print("[object_variants] all tests passed", flush=True)
