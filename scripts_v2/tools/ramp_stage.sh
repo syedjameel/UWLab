@@ -66,7 +66,14 @@ REPO_DIR=${REPO_DIR:-$HOME/UWLab_ur5edelto}
 PYTHON_BIN=${PYTHON_BIN:-$HOME/UWLab/env_uwlab/bin/python}
 OUT_DIR=${OUT_DIR:-$HOME/dexreset_v2/ramp_$STAGE}
 TASK=${TASK:-DexLift-UR5eDelto-RelJointPos-TableLeg-Reorient-v0}
-CKPT=${CKPT:?set CKPT to the previous stage's checkpoint (R1 starts from ep_3600)}
+# NO APOSTROPHE IN THIS MESSAGE, and this is not style. A `'` inside ${VAR:?message} opens a
+# single-quoted string that bash swallows up to the NEXT apostrophe anywhere in the file. When the
+# count happens to balance, `bash -n` PASSES on a file whose middle has been eaten -- which is what
+# happened here: the check() definition and every REFUSING guard below silently became string
+# content, and a run with a nonexistent REPO_DIR sailed past all of them. Caught only because a
+# later edit flipped the parity into a real syntax error. See test_launcher_scripts.sh, which
+# exercises the guards instead of trusting `bash -n`.
+CKPT=${CKPT:?set CKPT to the previous stage checkpoint -- R1 starts from ep_3600}
 NUM_ENVS=${NUM_ENVS:-32768}
 ITERS=${ITERS:-200}
 
@@ -139,10 +146,28 @@ echo "[ramp] GPU=$CUDA_VISIBLE_DEVICES -- confirm BOTH are free with nvidia-smi 
 # `ncclUnhandledCudaError` raised from inside the trainer's own parameter broadcast -- i.e. after
 # startup, in trainer-specific code, which is exactly the part that differs between the two.
 #
-# DEFAULT IS 1 GPU. Run the sec 9 pre-flight smoke at NPROC=2 and confirm two ranks log iterations
-# before committing a 40-hour campaign to it. The throughput figures in V2_REPOSE_RECIPE.md sec 6
-# assume 2 GPUs; at NPROC=1 the wall-clock roughly doubles and the plan must be re-costed.
+# DEFAULT IS 1 GPU. Confirm two ranks log iterations before committing a multi-day campaign to it.
+#
+# AND THE 1-GPU CASE IS NOT THE SAME RUN, SLOWER (V2_REPOSE_RECIPE.md sec 6.2). Measured
+# 48-54 GB/rank at 16384 envs per rank (UWLAB_STATE.md:114), so ONE 80 GB H100 holds 16384 envs,
+# not 32768 -- launching the 2-GPU env count on one card OOMs partway through scene build. Halving
+# the envs also halves the optimiser updates per iteration (16384*36/73728 = 8 minibatches x 5 = 40,
+# against 80), so the stage caps have to be translated by UPDATE BUDGET, not by wall clock: a
+# 200-iteration cap at 32768 envs is 16000 updates, which is 400 iterations at 16384. That is
+# sec 2.3's own point -- iterations is the wrong unit -- applied to the fallback.
 NPROC=${NPROC:-1}
+SINGLE_GPU_MAX_ENVS=16384
+if [ "$NPROC" -le 1 ] && [ "$NUM_ENVS" -gt "$SINGLE_GPU_MAX_ENVS" ]; then
+  echo "REFUSING: NPROC=$NPROC with NUM_ENVS=$NUM_ENVS."
+  echo "  Measured 48-54 GB/rank at 16384 envs/rank; $NUM_ENVS envs on one 80 GB card does not fit."
+  echo "  Set NUM_ENVS=$SINGLE_GPU_MAX_ENVS -- and RE-DERIVE the stage cap rather than reusing it:"
+  echo "    at 16384 envs, $(( SINGLE_GPU_MAX_ENVS * HORIZON / MINIBATCH * 5 )) updates/iteration,"
+  echo "    so this stage's ITERS should be $(( ITERS * 2 )) to hold the same update budget"
+  echo "    ($(( ITERS * NUM_ENVS * HORIZON / MINIBATCH * 5 )) updates). See V2_REPOSE_RECIPE.md sec 6.2."
+  echo "  Refusing rather than silently halving either number: which one to change is a plan"
+  echo "  decision, and guessing it would make the run incomparable to the other stages."
+  exit 1
+fi
 if [ "$NPROC" -gt 1 ]; then
   echo "[ramp] WARNING: NPROC=$NPROC. rl_games multi-GPU is UNVERIFIED on this box (F19 verified"
   echo "[ramp]          rsl_rl, not rl_games). Confirm two ranks log iterations in the smoke first."
