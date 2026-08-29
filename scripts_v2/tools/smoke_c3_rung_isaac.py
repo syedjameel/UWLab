@@ -94,8 +94,10 @@ its mid-air spawn pose, in a randomized orientation up to ~90 deg from where the
 to rest, which inverts the rung. ``--mode settle`` therefore, per round: resets, then steps with
 ZERO actions (``torch.zeros(num_envs, action_manager.total_action_dim)`` -- this measures the settle
 PHYSICS and the re-pin STATE MACHINE, never a policy) for ``held_check_core.SETTLE_STEPS +
---settle_margin`` env-steps, watching ``cmd_term._st_awaiting_repin`` for the True->False edge on
-every step. Per env this records: the goal at step 0 (the provisional pin), the goal at the end of
+--settle_margin`` env-steps, watching the PUBLIC ``cmd_term.goal_is_final`` accessor (bead
+``dr-ai1.18``, commit ``f1f3818`` -- ``~self._st_awaiting_repin``, a fresh derived tensor each read,
+never the private field directly) for its FALSE->TRUE edge on every step. Per env this records: the
+goal at step 0 (the provisional pin), the goal at the end of
 the window, the leg's pose at the end, the EXACT internal step index
 (``unwrapped.episode_length_buf`` at the moment of the edge, not this script's own loop counter --
 the same quantity ``C3RungGoalPoseCommand._update_command``'s own predicate reads, so there is no
@@ -155,8 +157,8 @@ parser.add_argument(
     default="reset",
     help="'reset' (default, bead dr-ai1.4): measure at reset only, never calls env.step() -- proves"
     " the per-env S1/S_t draw and dispatch. 'settle' (bead dr-ai1.20): also steps with zero actions"
-    " past SETTLE_STEPS to exercise the deferred S_t goal re-pin (_st_awaiting_repin /"
-    " _update_command, commits 9b51f56/4217ed8) -- see the module docstring's PHASE 2 section.",
+    " past SETTLE_STEPS to exercise the deferred S_t goal re-pin (goal_is_final / _update_command,"
+    " commits 9b51f56/4217ed8/f1f3818) -- see the module docstring's PHASE 2 section.",
 )
 parser.add_argument(
     "--settle_margin",
@@ -429,7 +431,7 @@ if args_cli.mode == "reset":
 
 else:
     # ==================================== PHASE 2: SETTLE (bead dr-ai1.20) ====================
-    # Exercises the deferred S_t re-pin (_st_awaiting_repin, _update_command) -- see the module
+    # Exercises the deferred S_t re-pin (goal_is_final, _update_command) -- see the module
     # docstring's PHASE 2 section for why --mode reset cannot exercise this at all.
     SETTLE_STEPS = held_check_core.SETTLE_STEPS  # imported, never restated (60 today)
     total_window = SETTLE_STEPS + args_cli.settle_margin
@@ -498,10 +500,16 @@ else:
             cmd_term.pose_command_b[:, 3:7].detach().clone(),
         )
 
-        # -- The latch this whole phase exists to watch. Read directly off the live command-term
-        # instance, same idiom as c3_rung._get_c3_kind_buffer: the ground truth is the buffer the
-        # code itself reads, not a re-derivation.
-        awaiting = cmd_term._st_awaiting_repin.detach().clone()  # noqa: SLF001
+        # -- The latch this whole phase exists to watch, read through the PUBLIC accessor
+        # (C3RungGoalPoseCommand.goal_is_final, bead dr-ai1.18, commit f1f3818) rather than the
+        # private ``_st_awaiting_repin`` field this smoke used to reach into. goal_is_final is the
+        # INVERSE of that field (`~self._st_awaiting_repin`, a fresh derived tensor each read, not a
+        # view -- holding a reference across steps is exactly the stale snapshot edge-detection
+        # wants), so the edge flips direction: the re-pin fires on goal_is_final's FALSE->TRUE
+        # transition, not awaiting's True->False one. Baseline taken HERE, after env.reset() -- doing
+        # it any earlier would read the pre-first-reset all-clear state (goal_is_final all True) and
+        # misreport every env as already repinned.
+        goal_final_prev = cmd_term.goal_is_final.clone()
         repin_step = torch.full((args_cli.num_envs,), -1, dtype=torch.long, device=device)
         repin_speed = torch.full((args_cli.num_envs,), -1.0, device=device)
         repin_ang_speed = torch.full((args_cli.num_envs,), -1.0, device=device)
@@ -517,8 +525,12 @@ else:
             contaminated |= cur_episode_len < prev_episode_len
             prev_episode_len = cur_episode_len
 
-            cur_awaiting = cmd_term._st_awaiting_repin.detach().clone()  # noqa: SLF001
-            just_fired = awaiting & (~cur_awaiting) & (repin_step < 0)
+            cur_goal_final = cmd_term.goal_is_final.clone()
+            # FALSE->TRUE on goal_is_final == True->False on the old _st_awaiting_repin -- the same
+            # event, opposite-named field. S1 envs read True from arming onward (their goal is
+            # already final at reset, never re-pinned) so this edge never fires for them by
+            # construction -- no separate kind check needed here to avoid a false positive.
+            just_fired = (~goal_final_prev) & cur_goal_final & (repin_step < 0)
             if bool(just_fired.any()):
                 # The EXACT step count the predicate itself used (self._env.episode_length_buf at
                 # the instant _update_command fired), not this loop's own counter -- no off-by-one
@@ -530,7 +542,7 @@ else:
                 ang_speed = torch.linalg.vector_norm(obj.data.root_ang_vel_w, dim=-1)
                 repin_speed[just_fired] = speed[just_fired]
                 repin_ang_speed[just_fired] = ang_speed[just_fired]
-            awaiting = cur_awaiting
+            goal_final_prev = cur_goal_final
 
         goal_pos_final, goal_quat_final = combine_frame_transforms(
             robot.data.root_pos_w.detach().clone(),
