@@ -1074,6 +1074,80 @@ def test_the_settle_thresholds_are_written_only_in_init():
     assert writers == {"__init__"}, writers
 
 
+
+# ---------------------------------------------------------------------------------------------
+# 9. THE TWO ISAACLAB CALL SHAPES (P0, 2026-08-29 -- died on the GPU ~92 s in)
+# ---------------------------------------------------------------------------------------------
+#
+# EventManager instantiates a class event term ONLY for mode="prestartup" (event_manager.py:375).
+# Every other class term is instantiated by ManagerBase._process_term_cfg_at_play, which runs only
+# once the sim is PLAYING. A harness that constructs the env and calls env.reset() without stepping
+# -- smoke_c3_rung_isaac.py, by design -- leaves term_cfg.func as the CLASS, and EventManager.apply
+# calls it as func(env, env_ids, **term_cfg.params) (event_manager.py:247). C3RungResetObject.__init__
+# then received `dataset_dir` and raised TypeError on the box.
+
+
+def _reset_class():
+    for node in ast.walk(ast.parse(_C3_RUNG_SRC)):
+        if isinstance(node, ast.ClassDef) and node.name == "C3RungResetObject":
+            return node
+    raise AssertionError("C3RungResetObject not found")
+
+
+def _method_of(cls_node, name):
+    for item in cls_node.body:
+        if isinstance(item, ast.FunctionDef) and item.name == name:
+            return item
+    raise AssertionError(f"{name} not found on {cls_node.name}")
+
+
+def test_reset_term_init_absorbs_the_replaced_terms_params():
+    """THE ONE THAT FAILED ON THE GPU. In the functional shape the whole params dict of the term
+    this one replaced arrives at __init__, so __init__ must absorb it rather than reject the first
+    unexpected key.
+    """
+    fn = _method_of(_reset_class(), "__init__")
+    assert fn.args.kwarg is not None, (
+        "C3RungResetObject.__init__ takes no **params. IsaacLab calls a mode='reset' class term as"
+        " func(env, env_ids, **term_cfg.params) whenever the sim has not played, so every param of"
+        " the replaced term lands here -- dataset_dir first, which is what raised TypeError."
+    )
+
+
+def test_reset_term_call_has_no_kwargs_catch_all():
+    """The other half, and it is why the fix went on __init__ and not on __call__. IsaacLab's
+    static check compares set(__call__ args) against set(term_cfg.params) and counts `kwargs` as an
+    argument WITHOUT a default, so a catch-all there fails at env construction instead -- trading a
+    runtime error for an earlier one. See test_gate_proxy_core.py's own param-contract test.
+    """
+    fn = _method_of(_reset_class(), "__call__")
+    assert fn.args.kwarg is None, "**kwargs on __call__ breaks IsaacLab's param-contract check"
+    assert fn.args.vararg is None, "*args on __call__ breaks the same check"
+
+
+def test_reset_term_dispatches_on_the_cfg_type_not_on_arity():
+    """The two shapes differ by the TYPE of the first argument, not by how many arguments arrive --
+    both pass two positionals. Dispatching on arity would silently pick the wrong branch.
+    """
+    src = ast.unparse(_method_of(_reset_class(), "__init__"))
+    assert "isinstance(cfg, EventTermCfg)" in src, src[:400]
+
+
+def test_the_reset_term_is_built_once_per_env_not_once_per_reset():
+    """The functional shape is called on EVERY reset. Setting up per call would re-download
+    partial_assemblies.pt every reset; the instance must be cached per env.
+    """
+    cls = _reset_class()
+    src = ast.unparse(_method_of(cls, "__init__"))
+    assert "_instances" in src, "no per-env instance cache in __init__"
+    # The cache must be a CLASS-level dict, not a module global rebuilt on import order.
+    declared = [
+        n
+        for n in cls.body
+        if any("_instances" in ast.unparse(t) for t in _assignment_targets(n))
+    ]
+    assert declared, "C3RungResetObject._instances must be declared on the CLASS, not as a module global"
+
 if __name__ == "__main__":
     _failures = 0
     for _name, _fn in sorted(globals().items()):

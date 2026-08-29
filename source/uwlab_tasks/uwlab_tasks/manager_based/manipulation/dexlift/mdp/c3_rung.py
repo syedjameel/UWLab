@@ -140,8 +140,60 @@ class C3RungResetObject(ManagerTermBase):
     term inherits the fix rather than rediscovering it.
     """
 
-    def __init__(self, cfg: EventTermCfg, env: ManagerBasedEnv):
-        super().__init__(cfg, env)
+    # -- ONE INSTANCE PER ENV, keyed by id(env). See __init__ for why this exists at all.
+    _instances: dict[int, "C3RungResetObject"] = {}
+
+    def __init__(self, cfg, env, **params):
+        """Two call shapes, because IsaacLab has two and only tells you which at runtime.
+
+        ISAACLAB DOES NOT INSTANTIATE A CLASS EVENT TERM IN mode="reset". ``EventManager._prepare_terms``
+        instantiates a class term ONLY when ``mode == "prestartup"`` (event_manager.py:375-377).
+        Every other class term is instantiated by ``ManagerBase._process_term_cfg_at_play``, which
+        runs from ``_resolve_common_term_cfg`` only ``if self._env.sim.is_playing()``, and otherwise
+        from the sim's PLAY CALLBACK. A harness that constructs the env and calls ``env.reset()``
+        without the sim having played -- which is exactly what ``smoke_c3_rung_isaac.py`` does, by
+        design, since it never steps -- therefore leaves ``term_cfg.func`` as the CLASS, and
+        ``EventManager.apply`` calls it as ``func(env, env_ids, **term_cfg.params)``
+        (event_manager.py:247). That lands on ``__init__`` with the replaced term's whole params
+        dict, and the first unexpected keyword -- ``dataset_dir`` -- raises TypeError ~92 s into a
+        GPU job.
+
+        So both shapes are handled here rather than assumed away:
+
+        * ``(cfg: EventTermCfg, env)`` -- the ManagerTermBase path. Sets this instance up.
+        * ``(env, env_ids, **params)`` -- the functional path. Looks up (or builds ONCE) the cached
+          instance for this env and delegates the reset to it.
+
+        THE CACHE IS WHY THIS IS NOT JUST A WIDER SIGNATURE. The functional path is called on EVERY
+        reset. Setting up per call would re-download ``partial_assemblies.pt`` every reset. The
+        instance is built once per env and reused, so the dataset dependency is paid once, exactly
+        as it would be on the ManagerTermBase path.
+
+        ``dataset_dir`` is USED, not swallowed: it is what the S1 branch composes from, and it
+        reaches the composer through the cached instance's own cfg.
+
+        NO ``**kwargs`` ON ``__call__``. IsaacLab's static check compares ``set(__call__ args)``
+        against ``set(term_cfg.params)`` and counts ``kwargs`` as an argument without a default, so
+        a catch-all there trades this runtime error for a construction-time one. ``__call__``'s
+        signature stays explicit; only ``__init__`` -- which that check does not inspect -- absorbs
+        the params dict.
+        """
+        if isinstance(cfg, EventTermCfg):
+            self._setup(cfg, env)
+            type(self)._instances[id(env)] = self
+            return
+        # Functional path: `cfg` is the env, `env` is env_ids.
+        real_env, env_ids = cfg, env
+        instance = type(self)._instances.get(id(real_env))
+        if instance is None:
+            term_cfg = real_env.event_manager.get_term_cfg("reset_object")
+            instance = type(self).__new__(type(self))
+            instance._setup(term_cfg, real_env)
+            type(self)._instances[id(real_env)] = instance
+        instance(real_env, env_ids, **params)
+
+    def _setup(self, cfg: EventTermCfg, env: ManagerBasedEnv):
+        ManagerTermBase.__init__(self, cfg, env)
         self.receptive_object_cfg: SceneEntityCfg = cfg.params["receptive_object_cfg"]
         self.receptive_object = env.scene[self.receptive_object_cfg.name]
         self.insertive_object_cfg: SceneEntityCfg = cfg.params["insertive_object_cfg"]
