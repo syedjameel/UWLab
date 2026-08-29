@@ -397,8 +397,12 @@ parser.add_argument(
 # (never combined with it: S_t has no mating frame, see _SpawnPoseToleranceAddon's own docstring).
 # Requires DEXRESET_C3_RUNG=1 already staged in the environment (this script does not set it -- same
 # convention as DEXLIFT_PARTIAL_ASSEMBLY for the C4 flags above) and --reset_type
-# ObjectPartiallyAssembledEEGrasped, because C3RungGoalPoseCommand needs the SAME receptive_object/
-# fixture already in the scene the C4 flags require -- both asserted in main(), before Isaac starts.
+# ObjectRestingEEGrasped (team-lead decision, 2026-08-29 -- NOT ObjectPartiallyAssembledEEGrasped:
+# that is the reset_type --c4_seating_gate couples to, and S_t must never be seating-gated or share
+# a bank identity with S1/C4). DEXLIFT_PARTIAL_ASSEMBLY=1 must STILL be exported for this run --
+# C3RungGoalPoseCommand needs 'receptive_object' in the scene for S_t too (it parks the fixture on
+# every S_t env, c3_rung.py's own module docstring) -- --reset_type and the scene's actual contents
+# are independent knobs here; see the carve-out on the bidirectional partial-assembly guard in main().
 parser.add_argument(
     "--c3_st_spawn_tolerance", action="store_true",
     help=(
@@ -407,13 +411,17 @@ parser.add_argument(
         "reference pose once C3RungGoalPoseCommand's own deferred re-pin fires (V2_C3_DESIGN.md "
         "sec 7); this gate never captures a reference pose of its own (team-lead correction -- see "
         "_SpawnPoseToleranceAddon's own docstring for the F27 defect that caused). Requires "
-        "DEXRESET_C3_RUNG=1 already set in the environment and --reset_type "
-        "ObjectPartiallyAssembledEEGrasped -- both asserted below, before gym.make(). Mutually "
-        "exclusive with --c4_seating_gate/--c4_terminate_on_grasp/--c4_rewind_deepest (different "
-        "success_func families; S_t is never seating-gated). Requires --c3_st_pos_tol_mm "
-        "explicitly -- there is no default and the run refuses to start without one "
-        "(V2_ACCEPTANCE_CRITERIA.md sec 4: this number is OPEN, not yet sourced -- bead dr-sj6.24 "
-        "derives it from THIS flag's own R4 validation run, not from a guess)."
+        "DEXRESET_C3_RUNG=1 already set in the environment, DEXLIFT_PARTIAL_ASSEMBLY=1 already set "
+        "(the scene needs 'receptive_object' even for S_t -- it gets parked, not used as a mating "
+        "frame), and --reset_type ObjectRestingEEGrasped (team-lead decision -- --reset_type is a "
+        "naming/output-path selector here, decoupled from what the scene actually contains; NOT "
+        "ObjectPartiallyAssembledEEGrasped, which --c4_seating_gate couples to and S_t must stay "
+        "clear of) -- all asserted below, before gym.make(). Mutually exclusive with "
+        "--c4_seating_gate/--c4_terminate_on_grasp/--c4_rewind_deepest (different success_func "
+        "families; S_t is never seating-gated). Requires --c3_st_pos_tol_mm explicitly -- there is "
+        "no default and the run refuses to start without one (V2_ACCEPTANCE_CRITERIA.md sec 4: this "
+        "number is OPEN, not yet sourced -- bead dr-sj6.24 derives it from THIS flag's own R4 "
+        "validation run, not from a guess)."
     ),
 )
 parser.add_argument(
@@ -438,24 +446,6 @@ parser.add_argument(
         "choice (see that section) but is a SEPARATE decision from this tolerance NUMBER and has "
         "not been made; do not assume this flag is scoring axis-tilt."
     ),
-)
-parser.add_argument(
-    "--c3_st_settle_min_steps", type=int, default=None,
-    help="Override the step floor _SpawnPoseToleranceAddon uses to decide the commanded goal is "
-    "trustworthy (past the pre-settle window). Default None -> held_check_core.SETTLE_STEPS, the "
-    "SAME constant C3RungGoalPoseCommand's own re-pin uses -- only override if you know why.",
-)
-parser.add_argument(
-    "--c3_st_settle_speed_mps", type=float, default=None,
-    help="Override the absolute-linear-speed settle ceiling used for the same trust gate. Default "
-    "None -> c3_rung_core.DEFAULT_ST_SETTLE_SPEED_MPS (0.05, matches --c2_max_resting_speed).",
-)
-parser.add_argument(
-    "--c3_st_settle_ang_speed_rad_s", type=float, default=None,
-    help="Override the absolute-angular-speed settle ceiling used for the same trust gate. Default "
-    "None -> c3_rung_core.DEFAULT_ST_SETTLE_ANG_SPEED_RAD_S (0.05, F50/F51's own settled pair -- "
-    "NOT the same 0.05 as the linear ceiling; see that constant's own docstring for why they must "
-    "never be unified).",
 )
 parser.add_argument(
     "--c3_st_command_name", type=str, default=None,
@@ -512,13 +502,11 @@ from uwlab_tasks.manager_based.manipulation.dexlift.mdp.spawn_tolerance_core imp
     pose_distance,
     within_spawn_tolerance,
 )
-from uwlab_tasks.manager_based.manipulation.dexlift.mdp import c3_rung_core  # noqa: E402
-# ^ ENV-side module (bead dr-ai1.4/dr-ai1.18), imported here ONLY for its already-sourced settle
-# constants/validators (DEFAULT_ST_SETTLE_SPEED_MPS, DEFAULT_ST_SETTLE_ANG_SPEED_RAD_S,
-# validate_st_settle_min_steps, validate_st_settle_speed, validate_st_settle_ang_speed) that
-# _SpawnPoseToleranceAddon below reuses rather than restates --
-# see that class's own docstring. Nothing in THIS file re-derives or duplicates c3_rung_core's own
-# goal-generation logic.
+# NOTE: this file no longer imports c3_rung_core (bead dr-ai1.18, commit f1f3818). It previously
+# pulled DEFAULT_ST_SETTLE_SPEED_MPS/DEFAULT_ST_SETTLE_ANG_SPEED_RAD_S/validate_st_settle_* to
+# recompute the S_t settle predicate as a local trust latch; that whole duplication is gone now that
+# _SpawnPoseToleranceAddon reads C3RungGoalPoseCommand.goal_is_final directly -- see that class's
+# own docstring. Nothing in THIS file re-derives or duplicates c3_rung.py's goal-generation logic.
 from uwlab_tasks.manager_based.manipulation.omnireset.mdp.recorders.recorders import (  # noqa: E402
     StableStateRecorder,
 )
@@ -1711,26 +1699,20 @@ class _SpawnPoseToleranceAddon:
     ``C3RungGoalPoseCommand`` under (``env_cfg.commands.object_pose = mdp.upgrade_to_c3_rung(...)``)
     -- imported, not restated, so a rename on the env side cannot silently desync this addon.
 
-    PRE-SETTLE WINDOW, READ THIS BEFORE TRUSTING ``pose_command_w`` ON ANY GIVEN STEP.
-    ``V2_C3_DESIGN.md`` sec 7's own "Two accepted consequences": S_t's goal is PROVISIONALLY pinned
-    at the leg's mid-air reset-time pose and REPLACED once, on the first step
-    ``c3_rung_core.st_should_repin`` fires (step floor + absolute linear speed + absolute angular
-    speed, all past their ceilings). Before that fires, ``pose_command_w`` is the WRONG reference
-    (mid-air, up to ~90 deg off) -- evaluating acceptance against it would be exactly the bug this
-    correction removes, one layer further out. **No public accessor for "has this env's goal been
-    repinned yet" was found** (``C3RungGoalPoseCommand``'s own latch, ``_st_awaiting_repin``, is
-    private, and this class deliberately does not reach into it -- see the implementing session's
-    own report for the open question of whether c3-impl should expose a public one instead). Absent
-    that, this class gates acceptance on an INDEPENDENTLY-EVALUATED copy of the SAME public
-    predicate ``c3_rung_core.st_should_repin`` -- not a second REFERENCE POSE (there is none left to
-    duplicate), only a second READING of "has this env been at rest, past the step floor, at any
-    point since its last reset" -- latched, exactly mirroring ``_st_awaiting_repin``'s own semantics.
-    This is a narrower duplication than the one just removed (a boolean latch, not a pose), built
-    from the SAME imported constants/validators (``SETTLE_STEPS``,
-    ``c3_rung_core.DEFAULT_ST_SETTLE_SPEED_MPS``, ``c3_rung_core.DEFAULT_ST_SETTLE_ANG_SPEED_RAD_S``,
-    never restated), and is flagged explicitly rather than shipped silently.
+    PRE-SETTLE WINDOW -- RESOLVED (bead dr-ai1.18, commit f1f3818, 2026-08-29). The prior version of
+    this docstring flagged an open question here: no public accessor existed for "has this env's
+    goal been repinned yet", so this class gated acceptance on an independently-evaluated copy of
+    ``c3_rung_core.st_should_repin``'s three conditions, a narrower duplication of the same shape as
+    the reference-pose bug two paragraphs up. c3-impl has since exposed
+    ``C3RungGoalPoseCommand.goal_is_final`` (a property, ``return ~self._st_awaiting_repin`` --
+    a derived view of the ONE latch, not a second buffer): ``False`` from reset until S_t's deferred
+    re-pin fires, then ``True`` for the rest of the episode; always ``True`` for S1 (never re-pinned,
+    goal is correct from arming). This class now reads that property directly -- :meth:`check` no
+    longer recomputes any settle condition of its own, has no settle-related constructor parameters,
+    and holds no local trust latch. There is exactly one place, ``c3_rung.py``, that decides whether
+    a commanded goal is final; this class only reads it.
 
-    An env whose trust latch has never fired reads ``last_within_tolerance = False`` unconditionally
+    An env whose goal is not yet final reads ``last_within_tolerance = False`` unconditionally
     (fails closed), same discipline ``_SeatingGateAddon``'s construction-time assert uses for
     "refuse to measure against nothing".
     """
@@ -1743,30 +1725,12 @@ class _SpawnPoseToleranceAddon:
         rot_tol_rad: float | None = None,
         *,
         command_name: str = dexlift_mdp.GOAL_COMMAND_NAME,
-        settle_min_steps: int = SETTLE_STEPS,
-        settle_speed_mps: float = c3_rung_core.DEFAULT_ST_SETTLE_SPEED_MPS,
-        settle_ang_speed_rad_s: float = c3_rung_core.DEFAULT_ST_SETTLE_ANG_SPEED_RAD_S,
     ) -> None:
         # NB: no default for pos_tol_m/rot_tol_rad at THIS signature either -- but a caller passing
         # an explicit ``None`` (e.g. an unset CLI flag threaded straight through) would not trip a
         # bare missing-argument TypeError, so the REAL validation lives in
         # SpawnToleranceConfig.__post_init__, invoked unconditionally right here.
         self.cfg = SpawnToleranceConfig(pos_tol_m=pos_tol_m, rot_tol_rad=rot_tol_rad)
-
-        # settle_min_steps/settle_speed_mps/settle_ang_speed_rad_s are DIFFERENT from
-        # pos_tol_m/rot_tol_rad: they are not an OPEN acceptance criterion, they are the
-        # already-sourced "is this state genuinely at rest" plumbing constants this class's own
-        # docstring reuses from c3_rung_core -- so THESE get real defaults, validated with
-        # c3_rung_core's OWN validators rather than restated ones (same reuse discipline, applied
-        # to validation too). settle_speed_mps and settle_ang_speed_rad_s are DELIBERATELY NOT
-        # unified into one number even though both currently read 0.05 -- different units,
-        # different sources (see c3_rung_core.DEFAULT_ST_SETTLE_ANG_SPEED_RAD_S's own docstring).
-        c3_rung_core.validate_st_settle_min_steps(settle_min_steps)
-        c3_rung_core.validate_st_settle_speed(settle_speed_mps)
-        c3_rung_core.validate_st_settle_ang_speed(settle_ang_speed_rad_s)
-        self._settle_min_steps = int(settle_min_steps)
-        self._settle_speed_mps = float(settle_speed_mps)
-        self._settle_ang_speed_rad_s = float(settle_ang_speed_rad_s)
         self.command_name = command_name
 
         self.object_cfg = object_cfg
@@ -1777,24 +1741,22 @@ class _SpawnPoseToleranceAddon:
             "measure against."
         )
         # FAIL LOUDLY HERE, not on the first check() -- confirm the named command term actually
-        # exists and is a C3RungGoalPoseCommand (has pose_command_w) before this addon is trusted
-        # to read from it every step. Same "resolve at construction, not in a deferred callback"
-        # idiom as object_cfg.resolve() above / _SeatingGateAddon's own receptive_object_cfg check.
+        # exists and is a C3RungGoalPoseCommand (has pose_command_w AND goal_is_final) before this
+        # addon is trusted to read from it every step. Same "resolve at construction, not in a
+        # deferred callback" idiom as object_cfg.resolve() above / _SeatingGateAddon's own
+        # receptive_object_cfg check.
         goal_term = env.command_manager.get_term(self.command_name)
-        assert hasattr(goal_term, "pose_command_w"), (
+        assert hasattr(goal_term, "pose_command_w") and hasattr(goal_term, "goal_is_final"), (
             f"_SpawnPoseToleranceAddon: command term {self.command_name!r} "
-            f"({type(goal_term).__name__}) has no pose_command_w -- this addon reads the COMMANDED"
-            " GOAL (team-lead correction, dr-sj6.22) and needs a TaskStateVisPoseCommand-derived"
-            " term (C3RungGoalPoseCommand is one). Refusing to construct a gate that would read the"
-            " wrong quantity or crash mid-run instead of at construction."
+            f"({type(goal_term).__name__}) is missing pose_command_w and/or goal_is_final -- this "
+            "addon reads the COMMANDED GOAL (team-lead correction, dr-sj6.22) and whether it is "
+            "FINAL yet (bead dr-ai1.18's public goal_is_final) and needs a C3RungGoalPoseCommand. "
+            "Refusing to construct a gate that would read the wrong quantity or crash mid-run "
+            "instead of at construction."
         )
 
         n = env.num_envs
         device = env.device
-        # Latched "has this env been observed at rest, past the step floor, since its last
-        # reset" -- see this class's own docstring, "PRE-SETTLE WINDOW". NOT a captured pose.
-        self._goal_trusted = torch.zeros(n, dtype=torch.bool, device=device)
-
         self.last_pos_dist_m = torch.zeros(n, device=device)
         self.last_rot_dist_rad = torch.zeros(n, device=device)
         self.last_within_tolerance = torch.zeros(n, dtype=torch.bool, device=device)
@@ -1802,22 +1764,17 @@ class _SpawnPoseToleranceAddon:
         rot_tol_str = "disabled" if self.cfg.rot_tol_rad is None else f"{math.degrees(self.cfg.rot_tol_rad):.2f}deg"
         print(
             f"[c3-st-spawn-tolerance-gate] ENABLED pos_tol={self.cfg.pos_tol_m * 1000.0:.2f}mm "
-            f"rot_tol={rot_tol_str}  settle_min_steps={self._settle_min_steps}"
-            f"  settle_speed_mps={self._settle_speed_mps:.3f}"
-            f"  settle_ang_speed_rad_s={self._settle_ang_speed_rad_s:.3f}  object={self.object_cfg.name}"
-            f"  command_name={self.command_name}"
-            "  -- reference pose is the COMMANDED GOAL (team-lead correction, dr-sj6.22),"
-            " never a self-captured pose",
+            f"rot_tol={rot_tol_str}  object={self.object_cfg.name}  command_name={self.command_name}"
+            "  -- reference pose is the COMMANDED GOAL, gated on goal_is_final (bead dr-ai1.18),"
+            " never a self-captured pose or a locally re-evaluated settle predicate",
             flush=True,
         )
 
     def reset(self, env_ids) -> None:
-        """Clear the trust latch for these envs. Does NOT read scene/command state here -- same
-        deferred-read discipline the first version's docstring already argued for, now applied to
-        a boolean latch instead of a pose."""
-        if env_ids is None:
-            env_ids = slice(None)
-        self._goal_trusted[env_ids] = False
+        """No-op: this class holds no per-env state of its own to clear any more -- goal_is_final
+        and pose_command_w are both read fresh from the command term on every check(), and the
+        command term owns its own reset() (called separately, by whatever wires terminations)."""
+        del env_ids
 
     def check(self, env) -> torch.Tensor:
         obj = env.scene[self.object_cfg.name]
@@ -1828,33 +1785,13 @@ class _SpawnPoseToleranceAddon:
         goal_pos_w = goal_term.pose_command_w[:, :3]
         goal_quat_w = goal_term.pose_command_w[:, 3:]
 
-        # -- Tensor form of c3_rung_core.st_should_repin -- SAME three conditions (step floor,
-        # absolute LINEAR speed ceiling, absolute ANGULAR speed ceiling), SAME semantics, as
-        # c3_rung.py's own _update_command uses to decide when S_t's GOAL may re-pin (bead
-        # dr-ai1.18). Used HERE only to latch "is pose_command_w trustworthy yet", never to
-        # capture a reference pose of this class's own -- see this class's own docstring,
-        # "PRE-SETTLE WINDOW". NEITHER speed is held_check's relative co-move speed (a leg carried
-        # steadily by the hand would pass that and is not "at rest") -- both are absolute,
-        # world-frame.
-        steps = env.episode_length_buf
-        lin_speed = torch.linalg.vector_norm(obj.data.root_lin_vel_w, dim=-1)
-        ang_speed = torch.linalg.vector_norm(obj.data.root_ang_vel_w, dim=-1)
-        newly_trusted = (
-            (~self._goal_trusted)
-            & (steps > self._settle_min_steps)
-            & (lin_speed <= self._settle_speed_mps)
-            & (ang_speed <= self._settle_ang_speed_rad_s)
-        )
-        if newly_trusted.any():
-            self._goal_trusted[newly_trusted] = True
-
         pos_dist_m, rot_dist_rad = pose_distance(goal_pos_w, goal_quat_w, live_pos_w, live_quat_w)
         self.last_pos_dist_m = pos_dist_m
         self.last_rot_dist_rad = rot_dist_rad
 
-        # An env whose goal has never been trusted yet cannot be judged -- fails closed rather than
-        # comparing against a still-provisional (mid-air) commanded goal.
-        within = within_spawn_tolerance(pos_dist_m, rot_dist_rad, self.cfg) & self._goal_trusted
+        # goal_is_final: False while pose_command_w is still the provisional mid-air spawn pose
+        # (S_t, pre-repin) -- fails closed rather than comparing against it. Always True for S1.
+        within = within_spawn_tolerance(pos_dist_m, rot_dist_rad, self.cfg) & goal_term.goal_is_final
         self.last_within_tolerance = within
         return within
 
@@ -1883,23 +1820,17 @@ class SpawnToleranceHeldWithProbe(dexlift_mdp.held_with_probe):
             "'CONFIGURATION COMES FROM', and _SpawnPoseToleranceAddon's own docstring for why there "
             "is no default to silently fall back to."
         )
-        # settle_min_steps/settle_speed_mps/settle_ang_speed_rad_s are OPTIONAL overrides of the
-        # already-sourced defaults (SETTLE_STEPS / c3_rung_core.DEFAULT_ST_SETTLE_SPEED_MPS /
-        # c3_rung_core.DEFAULT_ST_SETTLE_ANG_SPEED_RAD_S) -- omitted keys fall through to
-        # _SpawnPoseToleranceAddon's own signature defaults, unlike pos_tol_m/rot_tol_rad which have
-        # none. Built as a kwargs dict so an absent key truly means "use the addon's default", not
-        # "pass None and let SOMETHING ELSE decide".
-        settle_kwargs = {}
-        if st_cfg.get("settle_min_steps") is not None:
-            settle_kwargs["settle_min_steps"] = st_cfg["settle_min_steps"]
-        if st_cfg.get("settle_speed_mps") is not None:
-            settle_kwargs["settle_speed_mps"] = st_cfg["settle_speed_mps"]
-        if st_cfg.get("settle_ang_speed_rad_s") is not None:
-            settle_kwargs["settle_ang_speed_rad_s"] = st_cfg["settle_ang_speed_rad_s"]
+        # command_name is the only OPTIONAL override left (bead dr-ai1.18 retired the
+        # settle_min_steps/settle_speed_mps/settle_ang_speed_rad_s overrides along with the settle
+        # predicate they tuned -- _SpawnPoseToleranceAddon now reads goal_is_final directly instead
+        # of recomputing it, so there is nothing left here to override). Built as a kwargs dict so
+        # an absent key truly means "use the addon's default", not "pass None and let SOMETHING ELSE
+        # decide".
+        addon_kwargs = {}
         if st_cfg.get("command_name") is not None:
-            settle_kwargs["command_name"] = st_cfg["command_name"]
+            addon_kwargs["command_name"] = st_cfg["command_name"]
         self._spawn_tolerance = _SpawnPoseToleranceAddon(
-            env, self.object_cfg, st_cfg.get("pos_tol_m"), st_cfg.get("rot_tol_rad"), **settle_kwargs
+            env, self.object_cfg, st_cfg.get("pos_tol_m"), st_cfg.get("rot_tol_rad"), **addon_kwargs
         )
 
     def reset(self, env_ids=None) -> None:
@@ -3393,14 +3324,31 @@ def main() -> None:
     _reset_type_requests_partial_assembly = args_cli.reset_type == "ObjectPartiallyAssembledEEGrasped"
     _dexlift_partial_env_set = os.environ.get("DEXLIFT_PARTIAL_ASSEMBLY") == "1"
     _built_partial_assembly = _dexlift_partial_env_set and _reset_object_is_partial_assembly_term
+    # -- C3(S_t) CARVE-OUT (bead dr-sj6.22, team-lead's --reset_type decision, 2026-08-29). Team-lead:
+    # --reset_type is a NAMING/output-path selector, not a machinery selector (its own help string:
+    # "Reset type name for the output path"; v1 precedent, launch_dexreset_s1_s2_bank_gen.sh:27,
+    # generates BOTH its rungs under one --reset_type and renames the bank downstream). DEXRESET_C3_RUNG=1
+    # draws S1 vs S_t per episode from ONE scene, and C3RungGoalPoseCommand requires 'receptive_object'
+    # in the scene for BOTH branches -- it parks the fixture on every S_t env too (c3_rung.py's own
+    # module docstring: "The fixture is parked on every S_t env on EVERY reset"). So a CORRECT C3(S_t)
+    # run legitimately sets DEXLIFT_PARTIAL_ASSEMBLY=1 (receptive_object built) while --reset_type is
+    # DELIBERATELY ObjectRestingEEGrasped, not ObjectPartiallyAssembledEEGrasped: S_t must not share
+    # --c4_seating_gate's reset_type, or MultiResetManager (which matches banks by reset_types entries,
+    # not filenames) could silently consume S_t's bank as an S1/C4 one -- the worst failure shape
+    # available, per team-lead. Without this carve-out the bidirectional guard below would reject every
+    # correct C3(S_t) invocation as the exact naming mismatch it exists to catch, which it is not.
+    _requested_partial_assembly_scene = _reset_type_requests_partial_assembly or args_cli.c3_st_spawn_tolerance
     _require(
-        "--reset_type=ObjectPartiallyAssembledEEGrasped",
-        requested=_reset_type_requests_partial_assembly,
+        "--reset_type=ObjectPartiallyAssembledEEGrasped (or --c3_st_spawn_tolerance, which requests the "
+        "same receptive_object scene under a different --reset_type)",
+        requested=_requested_partial_assembly_scene,
         actual=_built_partial_assembly,
         message=(
             f"requires DEXLIFT_PARTIAL_ASSEMBLY=1 exported AND events.reset_object.func built as "
             f"SpawnPartialAssembly; got DEXLIFT_PARTIAL_ASSEMBLY={os.environ.get('DEXLIFT_PARTIAL_ASSEMBLY')!r} "
-            f"and events.reset_object.func={_reset_object_func.__name__!r}."
+            f"and events.reset_object.func={_reset_object_func.__name__!r}. (--c3_st_spawn_tolerance="
+            f"{args_cli.c3_st_spawn_tolerance} also requests this scene, independent of --reset_type; "
+            "see the carve-out comment above this guard.)"
         ),
     )
 
@@ -3447,11 +3395,16 @@ def main() -> None:
             "S_t is never seating-gated (_SpawnPoseToleranceAddon's own docstring: S_t has no "
             "mating frame, _SeatingGateAddon would reject ~100% of valid S_t states)."
         )
-        assert args_cli.reset_type == "ObjectPartiallyAssembledEEGrasped", (
-            "--c3_st_spawn_tolerance only makes sense for --reset_type "
-            "ObjectPartiallyAssembledEEGrasped: C3RungGoalPoseCommand needs a receptive_object/"
-            f"fixture already in the scene, same requirement as the C4 flags. Got "
-            f"--reset_type={args_cli.reset_type!r}."
+        assert args_cli.reset_type == "ObjectRestingEEGrasped", (
+            "--c3_st_spawn_tolerance requires --reset_type ObjectRestingEEGrasped (team-lead decision, "
+            "2026-08-29): S_t IS 'object resting on the table, end-effector grasped' -- the reset_type "
+            "name literally describes the rung -- and it must NOT be ObjectPartiallyAssembledEEGrasped, "
+            "the reset_type --c4_seating_gate couples to, because S_t is never seating-gated (see the "
+            "mutual-exclusion assert just above) and its bank must not collide with an S1/C4 bank under "
+            "MultiResetManager's reset_types matching. The receptive_object/fixture C3RungGoalPoseCommand "
+            "needs is governed by DEXLIFT_PARTIAL_ASSEMBLY=1 SEPARATELY from --reset_type (see the carve-"
+            "out on the bidirectional partial-assembly guard above in main()) -- --reset_type here is "
+            f"purely the output-path/bank-identity name. Got --reset_type={args_cli.reset_type!r}."
         )
         assert os.environ.get("DEXRESET_C3_RUNG") == "1", (
             "--c3_st_spawn_tolerance requires DEXRESET_C3_RUNG=1 already staged in the environment "
@@ -3513,19 +3466,16 @@ def main() -> None:
             "settle_steps": args_cli.c4_terminate_settle_steps,
         }
     if args_cli.c3_st_spawn_tolerance:
-        # Only keys the CLI actually gave get set -- an absent key means
-        # _SpawnPoseToleranceAddon's own signature default (SETTLE_STEPS /
-        # c3_rung_core.DEFAULT_ST_SETTLE_SPEED_MPS / .../DEFAULT_ST_SETTLE_ANG_SPEED_RAD_S /
-        # dexlift_mdp.GOAL_COMMAND_NAME), not a restated copy of any of them here. pos_tol_m /
-        # rot_tol_rad are the two exceptions -- pos_tol_m is asserted present above;
+        # command_name is the only key the CLI can override -- an absent value means
+        # _SpawnPoseToleranceAddon's own signature default (dexlift_mdp.GOAL_COMMAND_NAME). No
+        # settle_* keys any more (bead dr-ai1.18: the addon reads goal_is_final off the command term
+        # directly instead of recomputing a settle predicate, so there is nothing left to override).
+        # pos_tol_m / rot_tol_rad are the two exceptions -- pos_tol_m is asserted present above;
         # rot_tol_deg -> rad conversion happens here, once, rather than inside the addon, so the
         # addon's own unit is always radians regardless of caller.
         env_cfg.c3_st_spawn_tolerance_config = {
             "pos_tol_m": args_cli.c3_st_pos_tol_mm / 1000.0,
             "rot_tol_rad": math.radians(args_cli.c3_st_rot_tol_deg) if args_cli.c3_st_rot_tol_deg is not None else None,
-            "settle_min_steps": args_cli.c3_st_settle_min_steps,
-            "settle_speed_mps": args_cli.c3_st_settle_speed_mps,
-            "settle_ang_speed_rad_s": args_cli.c3_st_settle_ang_speed_rad_s,
             "command_name": args_cli.c3_st_command_name,
         }
     print(
