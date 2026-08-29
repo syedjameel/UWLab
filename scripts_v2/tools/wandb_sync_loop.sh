@@ -18,7 +18,11 @@ set -uo pipefail
 
 DIR=${1:?usage: wandb_sync_loop.sh <wandb dir> [interval seconds]}
 INTERVAL=${2:-1800}
-WANDB_BIN=${WANDB_BIN:-$(command -v wandb || echo "$HOME/UWLab/env_uwlab/bin/wandb")}
+
+# Fallback checked directly on DL_H100, not assumed: no `wandb` on PATH in a non-interactive shell,
+# and $HOME/UWLab/env_uwlab (the old fallback) does not exist there at all -- venv_uwlab is the real
+# venv (confirmed: wandb 0.28.2 installed).
+WANDB_BIN=${WANDB_BIN:-$(command -v wandb || echo "$HOME/venv_uwlab/bin/wandb")}
 
 [ -x "$WANDB_BIN" ] || { echo "REFUSING: wandb binary not found (set WANDB_BIN)"; exit 1; }
 [ -d "$DIR" ] || { echo "REFUSING: $DIR does not exist -- start the training job first"; exit 1; }
