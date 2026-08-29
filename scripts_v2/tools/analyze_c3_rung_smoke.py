@@ -90,13 +90,19 @@ reported separately:
       the smoke script, not re-derived here), so this is an EXACT check, not a tolerance: every
       recorded ``repin_step`` must be strictly greater than ``meta.settle_steps``
       (``held_check_core.SETTLE_STEPS``, imported by the smoke script, never restated).
-  S4. **RE-PIN TIMING ADVISORY (not a hard gate)** -- team-lead's own triage order: re-pins
-      clustering suspiciously early (immediately after the step floor opens) point at the LATCH or
-      the HOOK misbehaving, not the predicate (which carries 64 tests and seven negative controls of
-      its own) -- but distinguishing "the physics genuinely settled fast" from "the hook fired
-      without checking speed" needs a human looking at the histogram, not a bright-line assert. This
-      script reports the full ``repin_step`` histogram and prints an ADVISORY (never a FAIL) if more
-      than half of the observed re-pins land within the first 5 steps after the floor opens.
+  S4. **NO RE-PIN WHILE THE LEG IS STILL MOVING** -- a HARD gate, not an advisory. The predicate has
+      THREE conditions (step floor, linear speed ceiling, angular speed ceiling); S3 checks only the
+      first. The smoke script now records the object's absolute linear/angular speed at the exact
+      step each re-pin fires, so every recorded re-pin must satisfy
+      ``repin_speed_mps <= meta.st_settle_speed_mps`` AND
+      ``repin_ang_speed_rad_s <= meta.st_settle_ang_speed_rad_s`` -- thresholds read off the LIVE
+      ``cmd_term`` by the smoke script, never restated defaults. The angular ceiling is the newer
+      condition in the stage (added because a leg can read near-zero linear speed while still
+      pivoting), so a re-pin that clears S3 but fires mid-pivot is exactly the hook-fired-blind case
+      this gate exists to catch. A separate, non-failing ADVISORY still reports whether re-pins
+      cluster within 5 steps of the floor -- now genuinely informative rather than circumstantial:
+      clustering WITH speeds inside the thresholds means the physics really does settle that fast;
+      clustering WITH speeds outside them would already have failed the hard gate above.
 
 TILT/REPIN-STEP ARE REPORTED AS HISTOGRAMS, NOT MEANS -- deliberately, because a mean over a bimodal
 distribution (S1-vs-S_t tilt; settled-vs-still-bouncing repin timing) describes an outcome that
@@ -450,6 +456,8 @@ def run_settle_gates(data: np.lib.npyio.NpzFile, meta: dict, n: int, args: argpa
     contaminated = data["contaminated"].astype(bool)
     ever_repinned = data["ever_repinned"].astype(bool)
     repin_step = data["repin_step"]
+    repin_speed = data["repin_speed_mps"]
+    repin_ang_speed = data["repin_ang_speed_rad_s"]
     goal_pos_t0 = data["goal_pos_t0_w"]
     goal_quat_t0 = data["goal_quat_t0_w_wxyz"]
     goal_pos_final = data["goal_pos_final_w"]
@@ -568,19 +576,66 @@ def run_settle_gates(data: np.lib.npyio.NpzFile, meta: dict, n: int, args: argpa
                 " tolerance."
             )
 
-        # ==================== GATE S4: RE-PIN TIMING ADVISORY (not a hard gate) ====================
+        # ================ GATE S4: NO RE-PIN WHILE THE LEG IS STILL MOVING (hard gate) ================
+        # The predicate has THREE conditions; S3 above checks only the step floor. Thresholds read
+        # off the LIVE cfg by the smoke script (meta.st_settle_speed_mps / st_settle_ang_speed_rad_s),
+        # never restated defaults -- an override in this run must be honoured, not second-guessed.
+        settle_speed_mps = float(meta["st_settle_speed_mps"])
+        settle_ang_speed_rad_s = float(meta["st_settle_ang_speed_rad_s"])
+        fired_speed = repin_speed[st_repinned]
+        fired_ang_speed = repin_ang_speed[st_repinned]
+        speed_hist = histogram_report(fired_speed)
+        ang_speed_hist = histogram_report(fired_ang_speed)
+        print(
+            f"[analyze_c3_rung] GATE S4 repin linear-speed histogram (m/s, ceiling={settle_speed_mps}):"
+            f" {json.dumps(speed_hist)}",
+            flush=True,
+        )
+        print(
+            f"[analyze_c3_rung] GATE S4 repin angular-speed histogram (rad/s, ceiling="
+            f"{settle_ang_speed_rad_s}): {json.dumps(ang_speed_hist)}",
+            flush=True,
+        )
+        too_fast = fired_speed > settle_speed_mps
+        too_fast_ang = fired_ang_speed > settle_ang_speed_rad_s
+        if bool(too_fast.any()):
+            failures.append(
+                f"GATE S4 (LINEAR SPEED CEILING): {int(too_fast.sum())}/{n_st_repinned} repinned S_t"
+                f" envs have |v_object| > {settle_speed_mps} m/s at the instant the re-pin fired (max"
+                f" {fired_speed.max():.4f} m/s). The re-pin fired while the leg was still moving -- the"
+                " hook fired without the predicate's linear-speed condition actually holding."
+            )
+        if bool(too_fast_ang.any()):
+            failures.append(
+                f"GATE S4 (ANGULAR SPEED CEILING): {int(too_fast_ang.sum())}/{n_st_repinned} repinned"
+                f" S_t envs have |omega_object| > {settle_ang_speed_rad_s} rad/s at the instant the"
+                f" re-pin fired (max {fired_ang_speed.max():.4f} rad/s). This is the hook-fired-blind"
+                " case the angular term exists to catch: a leg can read near-zero linear speed while"
+                " still pivoting, and a re-pin here would command holding the leg mid-pivot."
+            )
+
+        # ==================== CLUSTERING ADVISORY (informational, never a failure) ====================
+        # With speeds now recorded this is genuinely informative rather than circumstantial: clustered
+        # AND inside the thresholds means the physics really does settle that fast; clustered AND
+        # outside them would already have failed GATE S4 above.
         early_window_hi = settle_steps + 5
         n_early = int(((fired_steps > settle_steps) & (fired_steps <= early_window_hi)).sum())
         frac_early = n_early / n_st_repinned
         if frac_early > 0.5:
+            early_mask = (fired_steps > settle_steps) & (fired_steps <= early_window_hi)
+            early_within_thresholds = bool(
+                (fired_speed[early_mask] <= settle_speed_mps).all()
+                and (fired_ang_speed[early_mask] <= settle_ang_speed_rad_s).all()
+            )
+            verdict = (
+                "all within the speed ceilings -- the drop physics genuinely settles this fast."
+                if early_within_thresholds
+                else "SOME OUTSIDE the speed ceilings, which GATE S4 above has already failed on by name."
+            )
             print(
-                f"[analyze_c3_rung] ADVISORY (GATE S4, not a failure): {n_early}/{n_st_repinned}"
+                f"[analyze_c3_rung] ADVISORY (clustering, informational): {n_early}/{n_st_repinned}"
                 f" ({frac_early:.0%}) of re-pins fired within 5 steps of the floor opening"
-                f" ({settle_steps}, {early_window_hi}]. Per team-lead's triage order: clustering this"
-                " early points at the LATCH or the HOOK misbehaving, not the predicate (64 tests + 7"
-                " negative controls of its own) -- worth a human look at the histogram above before"
-                " trusting these re-pins, but this script does not have enough information (no"
-                " per-step speed trace) to fail this on its own.",
+                f" ({settle_steps}, {early_window_hi}]; their recorded speeds are {verdict}",
                 flush=True,
             )
 

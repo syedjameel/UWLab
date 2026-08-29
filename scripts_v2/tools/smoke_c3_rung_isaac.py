@@ -104,8 +104,14 @@ whether an env's own ``episode_length_buf`` ever DECREASED mid-window (a stray t
 auto-resetting that env inside a plain ``env.step()`` call, IsaacLab's own documented behaviour --
 see ``measure_vertical_hold.py``'s module docstring -- which would silently splice a second episode's
 draw into this one's row; such envs are flagged ``contaminated`` and excluded from the analysis
-script's settle-mode assertions rather than trusted). See ``analyze_c3_rung_smoke.py`` for what gets
-asserted from the settle-mode npz -- most importantly that a re-pin never fires at a bounce apex.
+script's settle-mode assertions rather than trusted). At the SAME instant (the same step's tensors)
+it also records the object's absolute linear and angular speed
+(``torch.linalg.vector_norm(obj.data.root_lin_vel_w / root_ang_vel_w, dim=-1)``), so the analysis
+script can check the re-pin predicate's other two conditions -- not just the step floor -- against
+the speed ceilings read off the LIVE ``cmd_term`` (``_st_settle_speed_mps`` /
+``_st_settle_ang_speed_rad_s``), never a restated default. See ``analyze_c3_rung_smoke.py`` for what
+gets asserted from the settle-mode npz -- most importantly that a re-pin never fires while the leg is
+still moving (either linearly or, the newer and easier condition to miss, angularly).
 
 Run (one Isaac process; never two on one GPU):
     <python> scripts_v2/tools/smoke_c3_rung_isaac.py \\
@@ -456,11 +462,26 @@ else:
 
     zero_action = torch.zeros((args_cli.num_envs, unwrapped.action_manager.total_action_dim), device=device)
 
+    # -- The re-pin predicate's own speed ceilings, read off the LIVE command-term instance -- never
+    # a restated constant, never c3_rung_core's DEFAULT_ST_SETTLE_SPEED_MPS /
+    # DEFAULT_ST_SETTLE_ANG_SPEED_RAD_S, which this run may have overridden. Team-lead's own point:
+    # S3 checked the step floor; nothing checked the linear or angular ceiling, and the angular term
+    # is the newest code in the stage (added specifically because a leg can read near-zero linear
+    # speed while still pivoting) -- so both are captured at the exact instant each re-pin fires.
+    st_settle_speed_mps = float(cmd_term._st_settle_speed_mps)  # noqa: SLF001
+    st_settle_ang_speed_rad_s = float(cmd_term._st_settle_ang_speed_rad_s)  # noqa: SLF001
+    print(
+        f"[smoke_c3_rung] re-pin speed ceilings (from the live cfg): linear <= {st_settle_speed_mps}"
+        f" m/s, angular <= {st_settle_ang_speed_rad_s} rad/s",
+        flush=True,
+    )
+
     kind_all = []
     goal_pos_t0_all, goal_quat_t0_all = [], []
     goal_pos_final_all, goal_quat_final_all = [], []
     leg_pos_final_all, leg_quat_final_all = [], []
     repin_step_all, ever_repinned_all, contaminated_all = [], [], []
+    repin_speed_all, repin_ang_speed_all = [], []
     env_id_all, round_all = [], []
 
     for r in range(args_cli.rounds):
@@ -482,6 +503,8 @@ else:
         # code itself reads, not a re-derivation.
         awaiting = cmd_term._st_awaiting_repin.detach().clone()  # noqa: SLF001
         repin_step = torch.full((args_cli.num_envs,), -1, dtype=torch.long, device=device)
+        repin_speed = torch.full((args_cli.num_envs,), -1.0, device=device)
+        repin_ang_speed = torch.full((args_cli.num_envs,), -1.0, device=device)
         contaminated = torch.zeros(args_cli.num_envs, dtype=torch.bool, device=device)
         prev_episode_len = unwrapped.episode_length_buf.detach().clone()
 
@@ -499,8 +522,14 @@ else:
             if bool(just_fired.any()):
                 # The EXACT step count the predicate itself used (self._env.episode_length_buf at
                 # the instant _update_command fired), not this loop's own counter -- no off-by-one
-                # between what triggered the re-pin and what this script reports.
+                # between what triggered the re-pin and what this script reports. Same instant, same
+                # step's tensors, for the object's own linear/angular speed -- team-lead's ask: the
+                # missing datum to turn "clustering looks suspicious" into "the hook fired blind."
                 repin_step[just_fired] = cur_episode_len[just_fired]
+                speed = torch.linalg.vector_norm(obj.data.root_lin_vel_w, dim=-1)
+                ang_speed = torch.linalg.vector_norm(obj.data.root_ang_vel_w, dim=-1)
+                repin_speed[just_fired] = speed[just_fired]
+                repin_ang_speed[just_fired] = ang_speed[just_fired]
             awaiting = cur_awaiting
 
         goal_pos_final, goal_quat_final = combine_frame_transforms(
@@ -521,6 +550,8 @@ else:
         leg_pos_final_all.append(leg_pos_final)
         leg_quat_final_all.append(leg_quat_final)
         repin_step_all.append(repin_step)
+        repin_speed_all.append(repin_speed)
+        repin_ang_speed_all.append(repin_ang_speed)
         ever_repinned_all.append(ever_repinned)
         contaminated_all.append(contaminated)
         env_id_all.append(torch.arange(args_cli.num_envs, device=device))
@@ -544,6 +575,8 @@ else:
     leg_pos_final_all = torch.cat(leg_pos_final_all, dim=0)
     leg_quat_final_all = torch.cat(leg_quat_final_all, dim=0)
     repin_step_all = torch.cat(repin_step_all, dim=0)
+    repin_speed_all = torch.cat(repin_speed_all, dim=0)
+    repin_ang_speed_all = torch.cat(repin_ang_speed_all, dim=0)
     ever_repinned_all = torch.cat(ever_repinned_all, dim=0)
     contaminated_all = torch.cat(contaminated_all, dim=0)
     env_id_all = torch.cat(env_id_all, dim=0)
@@ -570,6 +603,8 @@ else:
         "leg_quat_final_w_wxyz": leg_quat_final_all.cpu().numpy(),
         "leg_tilt_final_deg": leg_tilt_final_deg_all.cpu().numpy(),
         "repin_step": repin_step_all.cpu().numpy(),  # -1 = never repinned in the window
+        "repin_speed_mps": repin_speed_all.cpu().numpy(),  # -1.0 = never repinned; else |v_obj| at the edge
+        "repin_ang_speed_rad_s": repin_ang_speed_all.cpu().numpy(),  # -1.0 = never repinned; else |omega_obj|
         "ever_repinned": ever_repinned_all.cpu().numpy(),
         "contaminated": contaminated_all.cpu().numpy(),  # mid-window auto-reset; exclude from gates
     }
@@ -588,6 +623,10 @@ else:
         "episode_length_s": episode_length_s,
         "step_dt": step_dt,
         "usable_steps": usable_steps,
+        # -- Read off the live cfg (cmd_term._st_settle_speed_mps / _ang_speed_rad_s), not
+        # c3_rung_core's DEFAULT_ST_SETTLE_*: this run may have overridden either.
+        "st_settle_speed_mps": st_settle_speed_mps,
+        "st_settle_ang_speed_rad_s": st_settle_ang_speed_rad_s,
         "n_samples": n,
     }
 
