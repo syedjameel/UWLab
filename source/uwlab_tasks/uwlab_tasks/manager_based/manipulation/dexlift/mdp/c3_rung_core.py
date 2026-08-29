@@ -142,6 +142,45 @@ ST_NOMINAL_TILT_RAD = math.pi / 2
 subtracting 106.203 mm from an S_t height -- the precise error F49 recorded."""
 
 
+DEFAULT_ST_SETTLE_SPEED_MPS = 0.05
+"""Ceiling on the object's ABSOLUTE linear speed (m/s, world frame) for S_t's leg to count as
+settled, i.e. for its goal to be re-pinned (bead ``dr-ai1.18``, ``V2_C3_DESIGN.md`` sec 7).
+
+PROVENANCE, and read this before changing it -- the number is sourced, the FILE it was attributed
+to was not. ``generate_reset_states_policy.py``'s ``--c2_max_resting_speed`` (default **0.05**)
+is "a hard filter, enforced not just documented: a rewound candidate whose object linear velocity
+magnitude exceeds this (m/s) at the REWOUND step is rejected at emit time ... measured medians at
+the locked offsets are 0.000-0.049 m/s, so this discards only the tail that was not actually
+resting." ``--c4_rewind_max_speed`` (also 0.05) is the same quantity applied at candidate-selection
+time. **That is the established absolute-object-linear-speed resting convention in this tree, and
+this constant deliberately matches it**, so the env side and the generation side call the same
+states resting.
+
+WHAT THIS IS *NOT*: ``held_check.py``'s ``settled``. That gate is
+``steps_since_reset > SETTLE_STEPS`` -- a STEP COUNT with no speed term at all (``held_check.py``,
+``settled = steps > self.settle_steps``; ``held_check_core.SETTLE_STEPS == 60``). The ``0.05`` that
+does appear in ``held_check`` is ``comove_speed_thresh``, a ceiling on the RELATIVE speed
+``|v_obj - v_palm|`` for the co-move gate -- a leg being carried steadily by the hand passes it, so
+it does not mean "at rest on the table" and cannot be used here. Both halves of ``held_check``'s
+settle logic ARE reused: the step count as :data:`ST_SETTLE_MIN_STEPS_SOURCE` below, and this
+absolute-speed ceiling alongside it. Neither is re-derived, and no third settle test is written."""
+
+ST_SETTLE_MIN_STEPS_SOURCE = "held_check_core.SETTLE_STEPS"
+"""Where the minimum-step floor comes from -- a POINTER, not a copy of the number.
+
+This module never restates ``60``. :func:`st_should_repin` takes ``min_steps`` as a REQUIRED
+keyword-only argument with no default (the same API shape as ``c3_transport_core.tip_z_from_root_z``'s
+``tilt_rad``, and for the same F49b reason: "the fix worth copying is the API shape, not the
+arithmetic"), and ``c3_rung.py`` passes ``held_check_core.SETTLE_STEPS`` into it. So the constant
+lives in exactly one place in the tree and a future change to it reaches this stage automatically.
+
+WHY A STEP FLOOR IS NEEDED AT ALL, alongside the speed ceiling: a dropped leg's linear speed passes
+through ZERO at the apex of every bounce. Speed alone would re-pin S_t's goal mid-bounce, at an
+airborne pose in whatever orientation the leg was tumbling through -- reintroducing the exact defect
+the deferred re-pin exists to remove. The two conditions together mean "enough time has passed AND
+the leg is actually at rest"."""
+
+
 def validate_s1_fraction(s1_fraction: float) -> None:
     """Fail loudly on a C3 split outside ``[0, 1]``.
 
@@ -164,12 +203,78 @@ def validate_s1_goal_delta_mm(delta_mm: float) -> None:
         )
 
 
+def validate_st_settle_speed(speed_mps: float) -> None:
+    """Fail loudly on a non-positive settle-speed ceiling. Zero would mean "re-pin only at exactly
+    zero speed", which floating-point physics never reports, so the re-pin would silently never
+    fire and S_t would quietly revert to its pre-settle behaviour -- a regression that looks like
+    nothing at all in a log."""
+    if not speed_mps > 0.0:
+        raise ValueError(
+            f"DEXRESET_C3_ST_SETTLE_SPEED must be > 0 m/s; got {speed_mps}. Zero would mean the"
+            " re-pin never fires and S_t silently keeps its spawn-pinned goal."
+        )
+
+
+def validate_st_settle_min_steps(min_steps: int) -> None:
+    """Fail loudly on a negative step floor."""
+    if min_steps < 0:
+        raise ValueError(f"DEXRESET_C3_ST_SETTLE_STEPS must be >= 0; got {min_steps}")
+
+
+def st_should_repin(
+    *,
+    already_repinned: bool,
+    steps_since_reset: int,
+    object_lin_speed_mps: float,
+    settle_speed_mps: float,
+    min_steps: int,
+) -> bool:
+    """Should S_t's goal be re-pinned at the object's CURRENT pose on this step?
+
+    ``RESET_SPEC_V2.md`` sec 1 C3 / ``V2_C3_DESIGN.md`` sec 7 / bead ``dr-ai1.18``. True on the
+    FIRST step at which the leg has both waited out ``min_steps`` and come to rest, and never again
+    that episode -- ``already_repinned`` is the latch, and the caller clears it at reset.
+
+    WHY THIS EXISTS AT ALL. S_t's defining property is that the target sits exactly where the leg
+    is. Pinning the goal during ``CommandManager.reset()`` pins it where the leg WAS, in mid-air.
+    The position error that causes is bounded by the drop-height clamp (~50 mm), but **the
+    ORIENTATION error is not bounded at all**: spawn orientation is randomized and settling is
+    precisely the process that carries a randomly-oriented airborne leg to a flat resting one
+    (F50/F51: 99.02% settle lying flat). A spawn-pinned goal can therefore sit up to ~90 deg from
+    the leg's resting orientation, which does not merely add error -- it INVERTS the rung, turning
+    S_t into a commanded REORIENTATION, the one thing its definition says it must never ask for.
+
+    NOT A SPAWN CHANGE, and it does not contradict F51. The leg spawns and settles exactly as it
+    does today and the 99.02% figure still describes it; only the MOMENT THE GOAL IS READ moves.
+    ``DEXRESET_ST_SPAWN_TIPDOWN`` stays off and stays surplus.
+
+    BOTH CONDITIONS ARE LOAD-BEARING -- see :data:`ST_SETTLE_MIN_STEPS_SOURCE` for why the step
+    floor cannot be dropped (a bouncing leg's linear speed passes through zero at every apex) and
+    :data:`DEFAULT_ST_SETTLE_SPEED_MPS` for where the speed ceiling comes from and why
+    ``held_check``'s own ``settled`` (a step count) and ``comove_speed_thresh`` (a RELATIVE speed)
+    are each only half of what is needed here.
+
+    ``min_steps`` is REQUIRED and keyword-only so this module holds no copy of the number -- the
+    caller passes ``held_check_core.SETTLE_STEPS``. Every argument is keyword-only: the two float
+    arguments are a speed and a speed ceiling, and a positional swap between them would produce a
+    predicate that is wrong in a way no type checker would catch.
+    """
+    if already_repinned:
+        return False
+    return steps_since_reset > min_steps and object_lin_speed_mps <= settle_speed_mps
+
+
 @dataclass(frozen=True)
 class C3RungStaging:
     """The parsed, validated C3 stage configuration. Frozen: nothing downstream may mutate it."""
 
     s1_fraction: float
     s1_goal_delta_m: float
+    st_settle_speed_mps: float = DEFAULT_ST_SETTLE_SPEED_MPS
+    st_settle_min_steps: int | None = None
+    """``None`` means "use :data:`ST_SETTLE_MIN_STEPS_SOURCE`" -- resolved by ``c3_rung.py``, which
+    can import it. Kept as ``None`` rather than eagerly resolved so this module holds no copy of the
+    number; see :data:`ST_SETTLE_MIN_STEPS_SOURCE`."""
 
     @property
     def st_fraction(self) -> float:
@@ -193,6 +298,10 @@ def parse_c3_rung_env(environ) -> C3RungStaging | None:
     * ``DEXRESET_C3_S1_GOAL_DELTA_MM`` -- signed millimetres the S1 goal is displaced deeper along
       the bore axis. Default :data:`DEFAULT_S1_GOAL_DELTA_MM` (+5.0), the value S1 bank generation
       already uses.
+    * ``DEXRESET_C3_ST_SETTLE_SPEED`` -- m/s ceiling on the object's absolute linear speed for S_t's
+      deferred goal re-pin. Default :data:`DEFAULT_ST_SETTLE_SPEED_MPS` (0.05).
+    * ``DEXRESET_C3_ST_SETTLE_STEPS`` -- minimum steps since reset before the re-pin may fire.
+      Unset (the default) means :data:`ST_SETTLE_MIN_STEPS_SOURCE`, resolved by the caller.
 
     Read from ``os.environ`` at ``__post_init__`` time by the caller, NOT declared as Hydra
     dataclass fields -- the same reachability argument every other whole-run toggle in
@@ -223,7 +332,34 @@ def parse_c3_rung_env(environ) -> C3RungStaging | None:
         ) from exc
     validate_s1_goal_delta_mm(delta_mm)
 
-    return C3RungStaging(s1_fraction=s1_fraction, s1_goal_delta_m=delta_mm / 1000.0)
+    speed_raw = environ.get("DEXRESET_C3_ST_SETTLE_SPEED", str(DEFAULT_ST_SETTLE_SPEED_MPS))
+    try:
+        settle_speed = float(speed_raw)
+    except ValueError as exc:
+        raise ValueError(
+            f"DEXRESET_C3_ST_SETTLE_SPEED must be a single metres-per-second value, e.g. '0.05';"
+            f" got {speed_raw!r}"
+        ) from exc
+    validate_st_settle_speed(settle_speed)
+
+    steps_raw = environ.get("DEXRESET_C3_ST_SETTLE_STEPS")
+    if steps_raw is None:
+        settle_min_steps = None
+    else:
+        try:
+            settle_min_steps = int(steps_raw)
+        except ValueError as exc:
+            raise ValueError(
+                f"DEXRESET_C3_ST_SETTLE_STEPS must be a non-negative integer, e.g. '60'; got {steps_raw!r}"
+            ) from exc
+        validate_st_settle_min_steps(settle_min_steps)
+
+    return C3RungStaging(
+        s1_fraction=s1_fraction,
+        s1_goal_delta_m=delta_mm / 1000.0,
+        st_settle_speed_mps=settle_speed,
+        st_settle_min_steps=settle_min_steps,
+    )
 
 
 def c3_kind_for_draw(draw: float, s1_fraction: float) -> int:
@@ -335,6 +471,9 @@ def c3_rung_banner(staging: C3RungStaging) -> str:
     Returned as a string rather than printed here so a test can assert on it byte-for-byte, same
     technique as ``c3_transport_core.transport_goal_banner``.
     """
+    settle_steps_text = (
+        ST_SETTLE_MIN_STEPS_SOURCE if staging.st_settle_min_steps is None else str(staging.st_settle_min_steps)
+    )
     return (
         f"[dexreset] C3 RUNG staged (bead dr-ai1.4, RESET_SPEC_V2.md sec 1 C3):"
         f" {staging.s1_fraction:.3f} of envs draw S1 and {staging.st_fraction:.3f} draw S_t."
@@ -345,6 +484,12 @@ def c3_rung_banner(staging: C3RungStaging) -> str:
         " (measured baseline, n=2048 settled: 99.02% lie flat with the tip within 20 mm of the"
         " table) -- with the goal pinned at the leg's OWN pose, ZERO delta in position AND"
         " orientation, so the policy acquires and holds without transporting or reorienting."
+        " S_t's goal is RE-PINNED ONCE at the SETTLED pose -- the first step with"
+        f" steps_since_reset > {settle_steps_text}"
+        f" AND object linear speed <= {staging.st_settle_speed_mps:.3f} m/s -- NOT at the spawn"
+        " pose, which is mid-air and in a randomized orientation up to ~90 deg from where the leg"
+        " comes to rest (bead dr-ai1.18, V2_C3_DESIGN.md sec 7). This moves only WHEN the goal is"
+        " read; the spawn is unchanged."
         " S_t makes NO spawn change and DEXRESET_ST_SPAWN_TIPDOWN is not read here (F51)."
         " Root-to-tip conversion differs between the halves and is never a bare subtraction:"
         f" a root z of 0.200 m means tip z {goal_tip_z_from_root_z(0.200, C3_KIND_S1):.4f} m for S1"

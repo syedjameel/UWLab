@@ -394,6 +394,317 @@ def test_the_banner_prints_both_root_to_tip_conversions_so_they_cannot_be_confus
     assert "F49" in text
 
 
+# ---------------------------------------------------------------------------------------------
+# 6. S_t's DEFERRED RE-PIN AT THE SETTLED POSE (bead dr-ai1.18, V2_C3_DESIGN.md sec 7)
+# ---------------------------------------------------------------------------------------------
+
+# A scripted drop: the leg spawns airborne in a RANDOMIZED orientation, bounces once (its linear
+# speed passes through zero at the apex -- the trap a speed-only predicate falls into), and finally
+# comes to rest lying flat. Steps are (step, speed_mps, pos, quat). Orientations are stand-ins; only
+# "spawn orientation differs from resting orientation" matters, which is the rung-inverting case
+# V2_C3_DESIGN.md sec 7 describes.
+_SPAWN_QUAT = (0.5, 0.5, 0.5, 0.5)  # randomized, ~90 deg from flat
+_RESTING_QUAT = (0.7071067811865476, 0.0, 0.7071067811865476, 0.0)  # lying flat
+_SPAWN_POS = (0.31, -0.07, 0.0480)  # mid-air, inside the [0, 0.05] m drop clamp
+_APEX_POS = (0.32, -0.07, 0.0300)  # bounce apex: speed 0.0 but NOT settled
+_RESTING_POS = (0.33, -0.06, 0.0153)  # at rest, tip on the table
+
+_DROP_TRAJECTORY = [
+    (0, 0.00, _SPAWN_POS, _SPAWN_QUAT),  # the instant CommandManager.reset() reads
+    (10, 1.20, (0.31, -0.07, 0.030), (0.5, 0.5, 0.5, 0.5)),
+    (30, 0.00, _APEX_POS, (0.6, 0.4, 0.5, 0.48)),  # apex: zero speed, still tumbling
+    (55, 0.90, (0.33, -0.06, 0.020), (0.68, 0.1, 0.70, 0.05)),
+    (61, 0.30, (0.33, -0.06, 0.016), (0.70, 0.02, 0.71, 0.01)),  # past the floor, still moving
+    (70, 0.02, _RESTING_POS, _RESTING_QUAT),  # FIRST genuinely settled step
+    (90, 0.00, (0.34, -0.06, 0.0153), (0.70, 0.0, 0.71, 0.0)),  # later; must NOT re-pin again
+]
+
+_MIN_STEPS = 60  # held_check_core.SETTLE_STEPS; passed in, never imported here (torch dependency)
+
+
+def _play_drop(trajectory, *, settle_speed_mps=None, min_steps=_MIN_STEPS):
+    """Run a scripted drop through st_should_repin and return (fire_count, pinned_pose_or_None).
+
+    The pinned pose is what st_goal_pose returns at the step the re-pin fires -- i.e. exactly what
+    the runtime writes into pose_command_b.
+    """
+    if settle_speed_mps is None:
+        settle_speed_mps = _c3_rung_core.DEFAULT_ST_SETTLE_SPEED_MPS
+    already = False
+    fires = 0
+    pinned = None
+    for step, speed, pos, quat in trajectory:
+        if _c3_rung_core.st_should_repin(
+            already_repinned=already,
+            steps_since_reset=step,
+            object_lin_speed_mps=speed,
+            settle_speed_mps=settle_speed_mps,
+            min_steps=min_steps,
+        ):
+            fires += 1
+            pinned = st_goal_pose(pos, quat)
+            already = True
+    return fires, pinned
+
+
+def test_the_repin_lands_on_the_settled_pose_not_the_spawn_pose():
+    # THE TEST THE WHOLE RE-PIN EXISTS FOR. Under a randomized spawn orientation the pre-settle pin
+    # and the post-settle pin MUST differ -- in orientation above all, since a spawn-pinned goal
+    # commands a reorientation, which is the one thing S_t must never ask for (V2_C3_DESIGN.md
+    # sec 7). This test FAILS against the old spawn-pinned behaviour, which is the point of it.
+    fires, pinned = _play_drop(_DROP_TRAJECTORY)
+    assert fires == 1, fires
+    pinned_pos, pinned_quat = pinned
+    assert pinned_pos == _RESTING_POS
+    assert pinned_quat == _RESTING_QUAT
+    # And explicitly NOT the spawn pose -- both components.
+    assert pinned_pos != _SPAWN_POS
+    assert pinned_quat != _SPAWN_QUAT
+
+
+def test_the_repin_fires_exactly_once_per_episode():
+    # The latch. Later settled steps must not move the goal again -- after the re-pin the target is
+    # constant, so nothing downstream ever sees it move.
+    fires, _ = _play_drop(_DROP_TRAJECTORY)
+    assert fires == 1
+
+
+def test_the_repin_does_not_fire_at_the_bounce_apex():
+    # A dropped leg's linear speed passes through ZERO at every apex. A speed-only predicate would
+    # re-pin there -- mid-air, mid-tumble -- reintroducing the exact defect this mechanism removes.
+    # The step floor is what prevents it; this proves the floor is load-bearing.
+    apex_only = [t for t in _DROP_TRAJECTORY if t[0] <= 30]
+    fires, pinned = _play_drop(apex_only)
+    assert fires == 0, f"re-pinned at the apex: {pinned}"
+
+
+def test_the_step_floor_alone_is_not_enough_either():
+    # Symmetric check: past the step floor but still moving (step 61, 0.30 m/s) must not fire.
+    assert not _c3_rung_core.st_should_repin(
+        already_repinned=False,
+        steps_since_reset=61,
+        object_lin_speed_mps=0.30,
+        settle_speed_mps=0.05,
+        min_steps=_MIN_STEPS,
+    )
+
+
+def test_the_repin_fires_on_the_first_step_where_both_conditions_hold():
+    assert _c3_rung_core.st_should_repin(
+        already_repinned=False,
+        steps_since_reset=61,
+        object_lin_speed_mps=0.05,  # exactly at the ceiling -- inclusive
+        settle_speed_mps=0.05,
+        min_steps=_MIN_STEPS,
+    )
+    # ... and not one step earlier: the floor is strict (steps > min_steps), matching held_check's
+    # own `settled = steps > self.settle_steps`.
+    assert not _c3_rung_core.st_should_repin(
+        already_repinned=False,
+        steps_since_reset=60,
+        object_lin_speed_mps=0.0,
+        settle_speed_mps=0.05,
+        min_steps=_MIN_STEPS,
+    )
+
+
+def test_the_latch_blocks_every_later_step():
+    assert not _c3_rung_core.st_should_repin(
+        already_repinned=True,
+        steps_since_reset=999,
+        object_lin_speed_mps=0.0,
+        settle_speed_mps=0.05,
+        min_steps=_MIN_STEPS,
+    )
+
+
+def test_a_never_settling_leg_simply_keeps_the_provisional_goal():
+    # No fire, no crash, no exception -- the provisional reset-time pin stands. Stated as a test so
+    # the degenerate case is a known, benign outcome rather than an unexamined one.
+    never = [(s, 0.90, _SPAWN_POS, _SPAWN_QUAT) for s in (10, 60, 120, 300)]
+    fires, pinned = _play_drop(never)
+    assert fires == 0
+    assert pinned is None
+
+
+def test_the_settle_speed_default_matches_the_generation_side_resting_convention():
+    # 0.05 m/s is --c2_max_resting_speed / --c4_rewind_max_speed in generate_reset_states_policy.py:
+    # "object linear velocity magnitude ... at the REWOUND step", measured medians 0.000-0.049 m/s.
+    # Matching it means the env side and the generation side call the same states resting.
+    assert _c3_rung_core.DEFAULT_ST_SETTLE_SPEED_MPS == 0.05
+
+
+def test_the_min_steps_argument_is_required_so_the_number_lives_in_one_place():
+    # No default: c3_rung.py passes held_check_core.SETTLE_STEPS. Same API shape as
+    # c3_transport_core.tip_z_from_root_z's required tilt_rad (F49b: "the fix worth copying is the
+    # API shape, not the arithmetic"). This module must not carry a second copy of 60.
+    _raises(
+        TypeError,
+        _c3_rung_core.st_should_repin,
+        already_repinned=False,
+        steps_since_reset=61,
+        object_lin_speed_mps=0.0,
+        settle_speed_mps=0.05,
+    )
+    src = (_MDP_DIR / "c3_rung_core.py").read_text()
+    assert "SETTLE_STEPS" in src, "the pointer to the source of the number must be named"
+    # No EXECUTABLE copy of 60 -- checked on the AST, not by grepping text. A docstring may cite
+    # held_check_core's value (and does, as provenance); what must not exist is an assignment or a
+    # parameter default carrying it, because only those can drift into use.
+    import ast
+
+    tree = ast.parse(src)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and node.value == 60 and not isinstance(node.value, bool):
+            raise AssertionError(
+                f"c3_rung_core.py restates held_check's 60 as an executable literal at line {node.lineno};"
+                " it must be passed in from held_check_core.SETTLE_STEPS instead"
+            )
+
+
+def test_the_settle_knobs_are_parameterised_not_hardcoded():
+    staging = parse_c3_rung_env(
+        {
+            "DEXRESET_C3_RUNG": "1",
+            "DEXRESET_C3_ST_SETTLE_SPEED": "0.01",
+            "DEXRESET_C3_ST_SETTLE_STEPS": "120",
+        }
+    )
+    assert staging.st_settle_speed_mps == 0.01
+    assert staging.st_settle_min_steps == 120
+
+
+def test_the_settle_steps_default_to_none_meaning_the_shared_constant():
+    staging = parse_c3_rung_env({"DEXRESET_C3_RUNG": "1"})
+    assert staging.st_settle_min_steps is None
+    assert staging.st_settle_speed_mps == 0.05
+
+
+def test_a_zero_settle_speed_is_rejected_because_it_would_silently_never_fire():
+    _raises(ValueError, parse_c3_rung_env, {"DEXRESET_C3_RUNG": "1", "DEXRESET_C3_ST_SETTLE_SPEED": "0"})
+    _raises(ValueError, parse_c3_rung_env, {"DEXRESET_C3_RUNG": "1", "DEXRESET_C3_ST_SETTLE_SPEED": "-0.1"})
+
+
+def test_a_negative_settle_step_floor_is_rejected():
+    _raises(ValueError, parse_c3_rung_env, {"DEXRESET_C3_RUNG": "1", "DEXRESET_C3_ST_SETTLE_STEPS": "-1"})
+
+
+def test_the_banner_states_the_repin_and_both_of_its_conditions():
+    text = c3_rung_banner(parse_c3_rung_env({"DEXRESET_C3_RUNG": "1"}))
+    assert "RE-PINNED ONCE at the SETTLED pose" in text
+    assert "held_check_core.SETTLE_STEPS" in text
+    assert "0.050 m/s" in text
+    assert "dr-ai1.18" in text
+
+
+# ---------------------------------------------------------------------------------------------
+# 7. DRIFT GUARD: our goal expression vs the episode mixture's (team-lead decision, task 2)
+# ---------------------------------------------------------------------------------------------
+#
+# The team lead's call was: KEEP the duplicated goal expression rather than subclass
+# MixtureGoalPoseCommand (subclassing would drag in that class's gating and banners for the sake of
+# ~10 lines), but PIN the two copies against each other, because two statements of one convention is
+# the F27 defect class this campaign keeps rediscovering. When one drifts, this fails -- instead of a
+# bank silently filling with wrong states.
+#
+# The comparison is STRUCTURAL, on the real source of both methods, via `ast`. It cannot be numeric:
+# both methods are torch code operating on Isaac scene handles, and neither torch nor isaaclab is
+# importable in this test's environment. Normalising the delta operand is the only licensed
+# difference -- ours is a parameter (`delta_m`), the mixture's is an attribute
+# (`self._partial_delta_m`) -- and everything else must match token for token.
+
+_MIXTURE_PATH = _MDP_DIR / "episode_mixture.py"
+_C3_RUNG_PATH = _MDP_DIR / "c3_rung.py"
+_DELTA_TOKENS = ("self._partial_delta_m", "delta_m")
+
+
+def _normalised_statements(path, class_name: str, method_name: str) -> list[str]:
+    """Unparse one method's body to normalised source lines, with the delta operand canonicalised."""
+    import ast
+
+    tree = ast.parse(path.read_text())
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef) and node.name == class_name:
+            for item in node.body:
+                if isinstance(item, ast.FunctionDef) and item.name == method_name:
+                    out = []
+                    for stmt in ast.walk(item):
+                        if isinstance(stmt, (ast.Assign, ast.If)):
+                            text = ast.unparse(stmt.test if isinstance(stmt, ast.If) else stmt)
+                            for token in _DELTA_TOKENS:
+                                text = text.replace(token, "DELTA")
+                            out.append(text)
+                    return out
+    raise AssertionError(f"{class_name}.{method_name} not found in {path}")
+
+
+_OURS = _normalised_statements(_C3_RUNG_PATH, "C3RungGoalPoseCommand", "_pin_goal_at_object_pose")
+_THEIRS = _normalised_statements(_MIXTURE_PATH, "MixtureGoalPoseCommand", "_resample_goal_at_spawn")
+
+
+def test_both_read_the_objects_pose_the_same_way():
+    for stmt in (
+        "object_pos_w = self.object.data.root_pos_w[env_ids]",
+        "object_quat_w = self.object.data.root_quat_w[env_ids]",
+    ):
+        assert stmt in _OURS, (stmt, _OURS)
+        assert stmt in _THEIRS, (stmt, _THEIRS)
+
+
+def test_both_guard_the_displacement_on_a_nonzero_delta():
+    assert "DELTA != 0.0" in _OURS, _OURS
+    assert "DELTA != 0.0" in _THEIRS, _THEIRS
+
+
+def test_both_take_the_bore_axis_from_the_same_shared_helper():
+    # Same function, same arguments -- so the two cannot disagree about which way "deeper" points,
+    # and both inherit live_bore_deep_axis's runtime axis guard.
+    stmt = "axis_world = live_bore_deep_axis(self._fixture, self._fixture_local_deep_axis, env_ids)"
+    assert stmt in _OURS, _OURS
+    assert stmt in _THEIRS, _THEIRS
+
+
+def test_both_displace_the_goal_with_the_identical_expression():
+    # THE ONE THAT MATTERS. One expression, both signs, no branch on the sign.
+    stmt = "goal_pos_w = object_pos_w + DELTA * axis_world"
+    assert stmt in _OURS, _OURS
+    assert stmt in _THEIRS, _THEIRS
+
+
+def test_both_start_from_the_undisplaced_pose():
+    assert "goal_pos_w = object_pos_w" in _OURS
+    assert "goal_pos_w = object_pos_w" in _THEIRS
+
+
+def test_both_convert_to_the_robot_root_frame_identically():
+    # Including that the goal QUATERNION is the object's own in both -- neither half of either
+    # mechanism commands a reorientation.
+    stmt = (
+        "pos_b, quat_b = subtract_frame_transforms(self.robot.data.root_pos_w[env_ids],"
+        " self.robot.data.root_quat_w[env_ids], goal_pos_w, object_quat_w)"
+    )
+    assert stmt in _OURS, _OURS
+    assert stmt in _THEIRS, _THEIRS
+
+
+def test_both_write_the_same_command_slots():
+    for stmt in ("self.pose_command_b[env_ids, 0:3] = pos_b", "self.pose_command_b[env_ids, 3:7] = quat_b"):
+        assert stmt in _OURS, (stmt, _OURS)
+        assert stmt in _THEIRS, (stmt, _THEIRS)
+
+
+def test_the_numeric_model_matches_the_mixture_on_a_tilted_bore_axis():
+    # The lead asked for a tilted axis explicitly. c3_rung_core.s1_goal_position is the pure model
+    # of the expression both methods share; check it against an independently written reference on
+    # a tilted, non-axis-aligned unit vector and on BOTH signs, so an implementation that only works
+    # for world -Z (or only for a positive delta) fails here.
+    axis = (0.4, -0.48, -0.78)  # roughly unit, deliberately not axis-aligned
+    spawn = (0.30, 0.05, 0.1362)
+    for delta in (0.005, -0.060, 0.0):
+        expected = tuple(s + delta * a for s, a in zip(spawn, axis))
+        assert s1_goal_position(spawn, axis, delta) == expected
+
+
 if __name__ == "__main__":
     _failures = 0
     for _name, _fn in sorted(globals().items()):

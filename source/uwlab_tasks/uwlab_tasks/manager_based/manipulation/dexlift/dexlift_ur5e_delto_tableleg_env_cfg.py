@@ -995,7 +995,10 @@ def _apply_c3_rung_stage(env_cfg, legacy_toggle_active: bool) -> bool:
     * **S1** -- partial-assembly spawn (leg pre-inserted, hence tip-down), goal displaced a shallow
       ``DEXRESET_C3_S1_GOAL_DELTA_MM`` deeper along the bore's own axis, orientation unchanged.
     * **S_t** -- the ORDINARY table spawn, **unchanged**, goal pinned at the leg's own pose with
-      ZERO delta in position and orientation.
+      ZERO delta in position and orientation, and RE-PINNED ONCE at the leg's SETTLED pose rather
+      than its mid-air spawn pose (bead ``dr-ai1.18``, ``V2_C3_DESIGN.md`` sec 7 -- a spawn-pinned
+      goal can sit ~90 deg from the resting orientation and would command a reorientation). This
+      moves only WHEN the goal is read; the spawn itself is untouched.
 
     REFUSES RATHER THAN LOSES A RACE. Both the legacy whole-run toggles and the episode mixture
     replace ``events.reset_object`` and ``commands.object_pose`` -- the same two slots this stage
@@ -1083,7 +1086,13 @@ def _apply_c3_rung_stage(env_cfg, legacy_toggle_active: bool) -> bool:
     )
 
     env_cfg.commands.object_pose = mdp.upgrade_to_c3_rung(
-        env_cfg.commands.object_pose, s1_goal_delta_m=staging.s1_goal_delta_m
+        env_cfg.commands.object_pose,
+        s1_goal_delta_m=staging.s1_goal_delta_m,
+        # S_t's deferred goal re-pin (bead dr-ai1.18, V2_C3_DESIGN.md sec 7). st_settle_min_steps
+        # stays None here on purpose -- C3RungGoalPoseCommand.__init__ resolves it from
+        # held_check_core.SETTLE_STEPS, so the number is not copied into this file either.
+        st_settle_speed_mps=staging.st_settle_speed_mps,
+        st_settle_min_steps=staging.st_settle_min_steps,
     )
 
     # -- Y6, see this function's docstring. Read episode_length_s off the cfg rather than hardcoding

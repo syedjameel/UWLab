@@ -28,7 +28,13 @@ WHAT IS REUSED RATHER THAN REIMPLEMENTED, and this is most of the file:
 * **S1's goal** -- the leg's spawn pose displaced along ``partial_assembly.live_bore_deep_axis``,
   the SAME function ``GoalBelowSpawnPoseCommand`` and the mixture's partial branch use, so all three
   agree about which way "deeper" points and refuse under the same runtime guard.
-* **S_t's goal** -- the leg's own pose, pinned. Identical to ``GoalAtSpawnPoseCommand._resample_command``.
+* **S_t's goal** -- the leg's own pose, pinned. The arithmetic is identical to
+  ``GoalAtSpawnPoseCommand._resample_command``; WHEN it is read is not -- see
+  :meth:`C3RungGoalPoseCommand._update_command` for the deferred re-pin at the SETTLED pose
+  (bead ``dr-ai1.18``).
+* **S_t's settle predicate** -- ``held_check_core.SETTLE_STEPS`` for the step floor, imported, plus
+  the absolute resting-speed ceiling ``generate_reset_states_policy.py``'s ``--c2_max_resting_speed``
+  already establishes. No third settle test is written here.
 * **The fixture parking pose** -- ``episode_mixture.PARKED_FIXTURE_POSE_RANGE`` and its clearance
   margin, imported rather than re-picked, together with the ``filter_collisions`` assert that makes
   that pose's real dependency loud (it is clear of the NEIGHBOURING env's geometry by PhysX
@@ -77,6 +83,7 @@ from uwlab_tasks.manager_based.manipulation.omnireset.mdp.events import (
 
 from . import c3_rung_core
 from .episode_mixture import _PARKED_FIXTURE_MIN_CLEARANCE_M, PARKED_FIXTURE_POSE_RANGE
+from .held_check_core import SETTLE_STEPS
 from .partial_assembly import live_bore_deep_axis
 from .task_state_vis import TaskStateVisPoseCommand, TaskStateVisPoseCommandCfg
 
@@ -237,7 +244,8 @@ class C3RungGoalPoseCommand(TaskStateVisPoseCommand):
     * **S1** -- goal = the leg's spawn pose displaced ``s1_goal_delta_m`` along the bore's own deep
       axis, ORIENTATION UNCHANGED. Tip-down is inherited from the spawn rather than commanded, which
       is what makes the rung a depth task about the mating frame and never a reorientation task.
-    * **S_t** -- goal = the leg's OWN pose, position and orientation, ZERO delta.
+    * **S_t** -- goal = the leg's OWN pose, position and orientation, ZERO delta, re-pinned once
+      at the SETTLED pose (:meth:`_update_command`) rather than left at the mid-air spawn pose.
 
     Both are computed by the same expression with a per-env delta (``0`` for S_t), which is the same
     single-expression form ``GoalBelowSpawnPoseCommand`` and
@@ -250,6 +258,22 @@ class C3RungGoalPoseCommand(TaskStateVisPoseCommand):
 
         self._s1_goal_delta_m: float = float(cfg.s1_goal_delta_m)
         c3_rung_core.validate_s1_goal_delta_mm(self._s1_goal_delta_m * 1000.0)
+
+        # -- S_t's DEFERRED GOAL RE-PIN (bead dr-ai1.18, V2_C3_DESIGN.md sec 7). See
+        # :meth:`_update_command`. SETTLE_STEPS is IMPORTED from held_check_core, never restated
+        # here -- c3_rung_core.st_should_repin takes min_steps as a required argument precisely so
+        # this file is the only place that names the source.
+        self._st_settle_speed_mps: float = float(cfg.st_settle_speed_mps)
+        c3_rung_core.validate_st_settle_speed(self._st_settle_speed_mps)
+        self._st_settle_min_steps: int = int(
+            SETTLE_STEPS if cfg.st_settle_min_steps is None else cfg.st_settle_min_steps
+        )
+        c3_rung_core.validate_st_settle_min_steps(self._st_settle_min_steps)
+        # Per-env latch: True from the reset that drew S_t until the re-pin fires. S1 envs are
+        # never armed, so their goal keeps the reset-time pin (their leg spawns already seated in
+        # the fixture; there is no settling transient to wait out, and re-pinning them at rest
+        # would silently absorb any slump into the target).
+        self._st_awaiting_repin = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
 
         if "receptive_object" not in env.scene.rigid_objects:
             raise ValueError(
@@ -287,9 +311,76 @@ class C3RungGoalPoseCommand(TaskStateVisPoseCommand):
         st_ids = env_ids_t[kind == c3_rung_core.C3_KIND_ST]
 
         if st_ids.numel() > 0:
+            # PROVISIONAL for S_t -- the leg is still airborne at this instant. This write keeps the
+            # command well-defined for the first ~SETTLE_STEPS steps (an env's goal is read every
+            # step by observations and rewards, so it cannot be left unset); _update_command
+            # replaces it with the SETTLED pose as soon as the leg comes to rest. See that method.
             self._pin_goal_at_object_pose(st_ids, delta_m=0.0)
         if s1_ids.numel() > 0:
             self._pin_goal_at_object_pose(s1_ids, delta_m=self._s1_goal_delta_m)
+
+        # Arm the deferred re-pin for exactly the S_t envs resetting in THIS call, and disarm the
+        # S1 ones. Written for all env_ids first so an env that switched S1 -> S_t (or back) between
+        # episodes cannot inherit the previous episode's latch.
+        self._st_awaiting_repin[env_ids_t] = False
+        if st_ids.numel() > 0:
+            self._st_awaiting_repin[st_ids] = True
+
+    def _update_command(self):
+        """Re-pin S_t's goal ONCE, at the settled pose (bead dr-ai1.18, V2_C3_DESIGN.md sec 7).
+
+        THE HOOK ALREADY EXISTED; NOTHING WAS ADDED TO THE FRAMEWORK. ``CommandTerm.compute(dt)``
+        calls ``_update_metrics()``, decrements ``time_left``, resamples if due, then calls
+        ``_update_command()`` -- every step, for every env (isaaclab ``managers/command_manager.py``,
+        ``compute``). ``ObjectUniformPoseCommand._update_command`` is a bare ``pass`` and
+        ``TaskStateVisPoseCommand`` does not override it (it overrides only ``_update_metrics``), so
+        this is an unused, already-wired, post-reset per-step hook on the command term this stage
+        already owns. No new event term, no new manager, no config plumbing, no change to any file
+        outside this stage.
+
+        WHY THE GOAL MOVES AT ALL, restated because a reader will reasonably flinch at a command
+        that rewrites itself mid-episode: S_t's rung definition is "the target is exactly where the
+        leg is". At reset the leg is mid-air in a randomized orientation; where it IS, in the sense
+        the rung means, is only determined once it has settled. Pinning at reset does not merely
+        add position error (that is bounded by the ~50 mm drop clamp) -- it can place the goal up to
+        ~90 deg from the leg's resting orientation and so command a REORIENTATION, which is exactly
+        what S_t must never ask for. The re-pin fires at most once per episode and the goal is
+        constant from then on, so nothing downstream sees a moving target after settle.
+
+        ONE STEP OF SKEW, stated rather than hidden: ``compute`` calls ``_update_metrics()`` BEFORE
+        ``_update_command()``, so on the single step the re-pin fires, that step's metrics were
+        computed against the provisional goal. Every subsequent step uses the settled goal.
+
+        S1 IS NEVER RE-PINNED -- see ``__init__``'s latch comment.
+        """
+        super()._update_command()
+
+        # Cheap early-out: no S_t env is waiting, which is every step after each episode's re-pin
+        # and every step of an all-S1 configuration.
+        if not bool(self._st_awaiting_repin.any()):
+            return
+
+        # ABSOLUTE object linear speed in the world frame -- NOT held_check's relative
+        # |v_obj - v_palm| (a leg carried steadily by the hand passes that and is not at rest) and
+        # NOT held_check's own `settled`, which is a pure step count. Both halves are used here:
+        # the step floor below and this speed ceiling. See c3_rung_core.DEFAULT_ST_SETTLE_SPEED_MPS
+        # for the provenance of 0.05 m/s (--c2_max_resting_speed).
+        speed = torch.linalg.vector_norm(self.object.data.root_lin_vel_w, dim=-1)
+        steps = self._env.episode_length_buf
+
+        # Tensor form of c3_rung_core.st_should_repin -- same three conditions, same order. The
+        # scalar version is what the unit test proves; this is the batched expression of it.
+        ready = (
+            self._st_awaiting_repin
+            & (steps > self._st_settle_min_steps)
+            & (speed <= self._st_settle_speed_mps)
+        )
+        ready_ids = ready.nonzero().flatten()
+        if ready_ids.numel() == 0:
+            return
+
+        self._pin_goal_at_object_pose(ready_ids, delta_m=0.0)
+        self._st_awaiting_repin[ready_ids] = False
 
     def _pin_goal_at_object_pose(self, env_ids: torch.Tensor, *, delta_m: float):
         """Goal = the object's CURRENT world pose, optionally displaced ``delta_m`` along the bore's
@@ -341,9 +432,22 @@ class C3RungGoalPoseCommandCfg(TaskStateVisPoseCommandCfg):
     ``c3_rung_core.DEFAULT_S1_GOAL_DELTA_MM`` for where the default comes from and why it is a
     shaping device rather than a target."""
 
+    st_settle_speed_mps: float = c3_rung_core.DEFAULT_ST_SETTLE_SPEED_MPS
+    """m/s ceiling on the object's ABSOLUTE linear speed for S_t's deferred goal re-pin. See
+    ``c3_rung_core.DEFAULT_ST_SETTLE_SPEED_MPS`` for the provenance of 0.05 and for why
+    ``held_check``'s ``comove_speed_thresh`` is a different quantity that cannot be used here."""
+
+    st_settle_min_steps: int | None = None
+    """Minimum steps since reset before S_t's re-pin may fire. ``None`` means
+    ``held_check_core.SETTLE_STEPS``, resolved in :meth:`C3RungGoalPoseCommand.__init__` -- the
+    number is not copied into this file."""
+
 
 def upgrade_to_c3_rung(
-    command_cfg: TaskStateVisPoseCommandCfg, s1_goal_delta_m: float
+    command_cfg: TaskStateVisPoseCommandCfg,
+    s1_goal_delta_m: float,
+    st_settle_speed_mps: float = c3_rung_core.DEFAULT_ST_SETTLE_SPEED_MPS,
+    st_settle_min_steps: int | None = None,
 ) -> C3RungGoalPoseCommandCfg:
     """Rebuild an already-configured ``TaskStateVisPoseCommandCfg`` as a C3 rung goal command.
 
@@ -362,6 +466,11 @@ def upgrade_to_c3_rung(
     fields = {
         field.name: getattr(command_cfg, field.name)
         for field in dataclasses.fields(command_cfg)
-        if field.name not in ("class_type", "s1_goal_delta_m")
+        if field.name not in ("class_type", "s1_goal_delta_m", "st_settle_speed_mps", "st_settle_min_steps")
     }
-    return C3RungGoalPoseCommandCfg(**fields, s1_goal_delta_m=s1_goal_delta_m)
+    return C3RungGoalPoseCommandCfg(
+        **fields,
+        s1_goal_delta_m=s1_goal_delta_m,
+        st_settle_speed_mps=st_settle_speed_mps,
+        st_settle_min_steps=st_settle_min_steps,
+    )
