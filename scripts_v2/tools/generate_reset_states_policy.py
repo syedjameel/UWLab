@@ -391,6 +391,79 @@ parser.add_argument(
     "post-reset artifact (a still-settling object rarely holds low velocity AND opposed contact for "
     "N consecutive steps); this knob exists to tune that trade-off, not to silently restore it.",
 )
+# -- C3(S_t) SPAWN-TOLERANCE GATE (bead dr-sj6.22, RESET_SPEC_V2.md sec 1 C3 / V2_C3_DESIGN.md sec
+# 5+7). Composes SpawnToleranceHeldWithProbe -- held_with_probe AND "is the leg still within
+# tolerance of the COMMANDED GOAL" -- as terminations.success, the S_t analogue of --c4_seating_gate
+# (never combined with it: S_t has no mating frame, see _SpawnPoseToleranceAddon's own docstring).
+# Requires DEXRESET_C3_RUNG=1 already staged in the environment (this script does not set it -- same
+# convention as DEXLIFT_PARTIAL_ASSEMBLY for the C4 flags above) and --reset_type
+# ObjectPartiallyAssembledEEGrasped, because C3RungGoalPoseCommand needs the SAME receptive_object/
+# fixture already in the scene the C4 flags require -- both asserted in main(), before Isaac starts.
+parser.add_argument(
+    "--c3_st_spawn_tolerance", action="store_true",
+    help=(
+        "OPT-IN acceptance gate for C3(S_t) generation (bead dr-sj6.22): held_with_probe AND "
+        "distance-from-the-COMMANDED-GOAL within tolerance -- the goal IS the leg's settled "
+        "reference pose once C3RungGoalPoseCommand's own deferred re-pin fires (V2_C3_DESIGN.md "
+        "sec 7); this gate never captures a reference pose of its own (team-lead correction -- see "
+        "_SpawnPoseToleranceAddon's own docstring for the F27 defect that caused). Requires "
+        "DEXRESET_C3_RUNG=1 already set in the environment and --reset_type "
+        "ObjectPartiallyAssembledEEGrasped -- both asserted below, before gym.make(). Mutually "
+        "exclusive with --c4_seating_gate/--c4_terminate_on_grasp/--c4_rewind_deepest (different "
+        "success_func families; S_t is never seating-gated). Requires --c3_st_pos_tol_mm "
+        "explicitly -- there is no default and the run refuses to start without one "
+        "(V2_ACCEPTANCE_CRITERIA.md sec 4: this number is OPEN, not yet sourced -- bead dr-sj6.24 "
+        "derives it from THIS flag's own R4 validation run, not from a guess)."
+    ),
+)
+parser.add_argument(
+    "--c3_st_pos_tol_mm", type=float, default=None,
+    help=(
+        "REQUIRED when --c3_st_spawn_tolerance is passed; no default. Max position drift (mm) of "
+        "the leg from the commanded goal. OPEN per V2_ACCEPTANCE_CRITERIA.md sec 4 / bead "
+        "dr-sj6.24 -- pass a value to run a measurement pass, not a value you believe is correct; "
+        "the run's own SpawnToleranceConfig raises if this is missing or non-positive."
+    ),
+)
+parser.add_argument(
+    "--c3_st_rot_tol_deg", type=float, default=None,
+    help=(
+        "Optional max rotation drift (deg) of the leg from the commanded goal. Omitted (default) "
+        "DISABLES the rotation gate entirely -- same 'tested for truthiness' convention as "
+        "success.py's within_success_tolerance (0 would silently mean 'disabled', not 'no rotation "
+        "allowed', so an explicit 0 is rejected rather than accepted as that). V2_C3_DESIGN.md sec "
+        "7's own still-open item: the rotation METRIC here is the full quaternion angle (position "
+        "AND orientation together), not an axis-tilt-only metric -- axis-tilt would ignore spin "
+        "about the leg's own long axis, which for a horizontal S_t peg may be the more defensible "
+        "choice (see that section) but is a SEPARATE decision from this tolerance NUMBER and has "
+        "not been made; do not assume this flag is scoring axis-tilt."
+    ),
+)
+parser.add_argument(
+    "--c3_st_settle_min_steps", type=int, default=None,
+    help="Override the step floor _SpawnPoseToleranceAddon uses to decide the commanded goal is "
+    "trustworthy (past the pre-settle window). Default None -> held_check_core.SETTLE_STEPS, the "
+    "SAME constant C3RungGoalPoseCommand's own re-pin uses -- only override if you know why.",
+)
+parser.add_argument(
+    "--c3_st_settle_speed_mps", type=float, default=None,
+    help="Override the absolute-linear-speed settle ceiling used for the same trust gate. Default "
+    "None -> c3_rung_core.DEFAULT_ST_SETTLE_SPEED_MPS (0.05, matches --c2_max_resting_speed).",
+)
+parser.add_argument(
+    "--c3_st_settle_ang_speed_rad_s", type=float, default=None,
+    help="Override the absolute-angular-speed settle ceiling used for the same trust gate. Default "
+    "None -> c3_rung_core.DEFAULT_ST_SETTLE_ANG_SPEED_RAD_S (0.05, F50/F51's own settled pair -- "
+    "NOT the same 0.05 as the linear ceiling; see that constant's own docstring for why they must "
+    "never be unified).",
+)
+parser.add_argument(
+    "--c3_st_command_name", type=str, default=None,
+    help="Override the command term name _SpawnPoseToleranceAddon reads the goal from. Default "
+    "None -> dexlift_mdp.GOAL_COMMAND_NAME ('object_pose'), the term _apply_c3_rung_stage installs "
+    "C3RungGoalPoseCommand under -- only override if the env config wires the C3 rung goal under a "
+    "different command name.",
+)
 AppLauncher.add_app_launcher_args(parser)
 args_cli, _ = parser.parse_known_args()
 
@@ -3363,8 +3436,48 @@ def main() -> None:
         "measuring what Arm 1's own design (rewinding to before a genuinely PROBE-validated "
         "acceptance) is supposed to measure."
     )
+    # -- C3(S_t) SPAWN-TOLERANCE GATE (bead dr-sj6.22). Same "assert before Isaac starts" discipline
+    # as the C4 flags immediately above, not folded into their assert: S_t is a DIFFERENT rung with
+    # a different success_func family, and conflating the messages would blur which gate a given
+    # failure is about.
+    if args_cli.c3_st_spawn_tolerance:
+        assert not (args_cli.c4_seating_gate or args_cli.c4_terminate_on_grasp or args_cli.c4_rewind_deepest), (
+            "--c3_st_spawn_tolerance is mutually exclusive with --c4_seating_gate/"
+            "--c4_terminate_on_grasp/--c4_rewind_deepest -- different success_func families, and "
+            "S_t is never seating-gated (_SpawnPoseToleranceAddon's own docstring: S_t has no "
+            "mating frame, _SeatingGateAddon would reject ~100% of valid S_t states)."
+        )
+        assert args_cli.reset_type == "ObjectPartiallyAssembledEEGrasped", (
+            "--c3_st_spawn_tolerance only makes sense for --reset_type "
+            "ObjectPartiallyAssembledEEGrasped: C3RungGoalPoseCommand needs a receptive_object/"
+            f"fixture already in the scene, same requirement as the C4 flags. Got "
+            f"--reset_type={args_cli.reset_type!r}."
+        )
+        assert os.environ.get("DEXRESET_C3_RUNG") == "1", (
+            "--c3_st_spawn_tolerance requires DEXRESET_C3_RUNG=1 already staged in the environment "
+            "(this script does not set it -- same convention as DEXLIFT_PARTIAL_ASSEMBLY for the C4 "
+            f"flags). Got DEXRESET_C3_RUNG={os.environ.get('DEXRESET_C3_RUNG')!r}. Without it, "
+            "env_cfg.commands.object_pose is never upgraded to C3RungGoalPoseCommand and this gate "
+            "would construct against the wrong command term (or crash trying)."
+        )
+        # EXISTENCE check only, at the CLI boundary, for a fast/clear failure before Isaac starts --
+        # the RANGE check (must be > 0) is SpawnToleranceConfig's own job (spawn_tolerance_core.py),
+        # not restated here, so there is exactly one place that decides what a valid tolerance is.
+        assert args_cli.c3_st_pos_tol_mm is not None, (
+            "--c3_st_spawn_tolerance requires --c3_st_pos_tol_mm explicitly -- there is no default "
+            "(V2_ACCEPTANCE_CRITERIA.md sec 4 / bead dr-sj6.24: this number is OPEN, meant to be "
+            "DERIVED from this flag's own R4 validation run, not guessed). Refusing to start rather "
+            "than falling back to a plausible-looking value."
+        )
+        assert args_cli.c3_st_rot_tol_deg is None or args_cli.c3_st_rot_tol_deg > 0.0, (
+            f"--c3_st_rot_tol_deg must be > 0 or omitted (omitted disables the rotation gate; 0 "
+            f"would silently mean the same thing, which is not what an explicit 0 should mean); got "
+            f"{args_cli.c3_st_rot_tol_deg}."
+        )
     if args_cli.c4_terminate_on_grasp:
         success_func = SeatedTerminateOnGrasp if args_cli.c4_seating_gate else TerminateOnGraspSuccess
+    elif args_cli.c3_st_spawn_tolerance:
+        success_func = SpawnToleranceHeldWithProbe
     else:
         success_func = SeatedHeldWithProbe if args_cli.c4_seating_gate else dexlift_mdp.held_with_probe
     # -- params STAYS EMPTY for every one of the four combinations (team-lead catch, third attempt,
@@ -3399,9 +3512,26 @@ def main() -> None:
             "force_threshold": args_cli.c4_terminate_force_threshold,
             "settle_steps": args_cli.c4_terminate_settle_steps,
         }
+    if args_cli.c3_st_spawn_tolerance:
+        # Only keys the CLI actually gave get set -- an absent key means
+        # _SpawnPoseToleranceAddon's own signature default (SETTLE_STEPS /
+        # c3_rung_core.DEFAULT_ST_SETTLE_SPEED_MPS / .../DEFAULT_ST_SETTLE_ANG_SPEED_RAD_S /
+        # dexlift_mdp.GOAL_COMMAND_NAME), not a restated copy of any of them here. pos_tol_m /
+        # rot_tol_rad are the two exceptions -- pos_tol_m is asserted present above;
+        # rot_tol_deg -> rad conversion happens here, once, rather than inside the addon, so the
+        # addon's own unit is always radians regardless of caller.
+        env_cfg.c3_st_spawn_tolerance_config = {
+            "pos_tol_m": args_cli.c3_st_pos_tol_mm / 1000.0,
+            "rot_tol_rad": math.radians(args_cli.c3_st_rot_tol_deg) if args_cli.c3_st_rot_tol_deg is not None else None,
+            "settle_min_steps": args_cli.c3_st_settle_min_steps,
+            "settle_speed_mps": args_cli.c3_st_settle_speed_mps,
+            "settle_ang_speed_rad_s": args_cli.c3_st_settle_ang_speed_rad_s,
+            "command_name": args_cli.c3_st_command_name,
+        }
     print(
         f"[verify] c4_seating_gate enabled={args_cli.c4_seating_gate}  "
         f"c4_terminate_on_grasp enabled={args_cli.c4_terminate_on_grasp}  "
+        f"c3_st_spawn_tolerance enabled={args_cli.c3_st_spawn_tolerance}  "
         f"success.func={success_func.__name__}",
         flush=True,
     )
