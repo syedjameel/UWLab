@@ -3889,6 +3889,20 @@ def main() -> None:
         gate_names = gate_names + ["spawn_tolerance"]
     rejection_counts = {g: 0 for g in gate_names}
     rejection_counts["accepted"] = 0
+    # -- co_move MARGINAL, computed OUTSIDE the priority loop entirely, because no position in
+    # gate_names produces it. While co_move sat third it was first-fail-attributed (an episode that
+    # also failed something later was never counted); now that it trails the probe gates it is
+    # tail-attributed. Neither is "what fraction of ended episodes had co_move true", which is the
+    # only number that answers "was co_move doing work" now that it gates nothing. Named so it
+    # cannot be mistaken for the priority row.
+    n_co_move_true_marginal = 0
+    # -- SAFETY-KILLED REJECTIONS. `held` is ANDed with abnormal_robot / object_out_of_bound inside
+    # held_check, and NEITHER is a row in `breakdown`. So an episode killed by one of them is
+    # not success_now while every breakdown gate reads True. Before the reorder those fell off the
+    # end of the attribution loop UNCOUNTED; after it they would land on whichever gate happens to
+    # be last, which is co_move -- silently mislabelling the row. Counted here under their own name
+    # so the attribution stays honest and does not move again the next time anyone reorders.
+    n_rejected_no_gate_failed = 0
     # -- PER-GATE REACH COUNTS (repose-recipe requirement, team-lead 2026-08-29, this file named as
     # owner). rejection_counts[g] (first-failing-gate, priority order = gate_names) is a NUMERATOR
     # with no denominator: a gate reading zero first-failing-gate hits could mean "this gate almost
@@ -3987,6 +4001,11 @@ def main() -> None:
                 reach_counts[g] += int(still_reaching.sum().item())
                 still_reaching = still_reaching & breakdown[g][done_idx]
 
+            # THE co_move MARGINAL. Deliberately not inside either loop above: it is a plain mean
+            # over every ended episode, unconditioned on any other gate's result, which is exactly
+            # what a first-failing-gate or reach count cannot be.
+            n_co_move_true_marginal += int(breakdown["co_move"][done_idx].sum().item())
+
             if _measure_only_log_file is not None:
                 # -- MEASURE-ONLY LOG WRITE (bead dr-sj6.24). A SEPARATE loop over done_idx, not
                 # folded into the reach-count reduction above or the first-failing-gate rejection
@@ -4053,6 +4072,12 @@ def main() -> None:
                             if not fired_other:
                                 probe_ready_term_histogram["none_of_the_above"] += 1
                         break
+                else:
+                    # Every breakdown gate True, yet not success_now: the env-level safety terms
+                    # ANDed into `held` inside held_check (abnormal_robot / object_out_of_bound),
+                    # which have no breakdown row. This `for/else` is what stops them being
+                    # silently attributed to the last gate in the list.
+                    n_rejected_no_gate_failed += 1
 
         new_accepted = env.recorder_manager.exported_successful_episode_count
         if new_accepted > n_accepted_at_reset:
@@ -4107,11 +4132,46 @@ def main() -> None:
     if hasattr(success_term, "n_probes_armed"):
         print(f"probes armed: {success_term.n_probes_armed}  finalized: {success_term.n_probes_finalized}  "
               f"tracked (displacement matched): {success_term.n_probes_tracked}", flush=True)
+    # -- DID THE co_move DROP ACTUALLY REACH THE PROBE. armed>0 proves the TRIGGER changed; it does
+    # NOT prove anything was MEASURED. A probe must survive PROBE_STEPS to finalize, arming just
+    # became much more frequent, and an episode ending mid-probe yields a healthy-looking armed
+    # count with zero observations. FINALIZED is the real gate on the number; armed >> finalized is
+    # a leak indicator meaning the sample is biased toward states that qualify early.
+    if hasattr(success_term, "n_probes_armed_co_move_false"):
+        _a = success_term.n_probes_armed_co_move_false
+        _f = success_term.n_probes_finalized_co_move_false
+        _t = success_term.n_probes_tracked_co_move_false
+        print(f"probes on co_move-FALSE states -- armed: {_a}  finalized: {_f}  tracked: {_t}"
+              f"{'  (finalized/armed ' + format(_f / _a, '.1%') + ')' if _a else ''}", flush=True)
+        if _f == 0:
+            print("  WARNING: ZERO probes FINALIZED on a co_move-false state. The co_move drop"
+                  " produced no observation of the population it exists to admit -- armed>0 alone"
+                  " does not answer the question. Treat any conclusion about co_move as UNMEASURED.",
+                  flush=True)
     if n_attempts > 0:
         print(f"acceptance rate: {n_accepted_at_reset / n_attempts:.2%}", flush=True)
+    if n_attempts > 0:
+        print(f"co_move MARGINAL (fraction of ALL ended episodes with co_move true, NOT the"
+              f" priority row below): {n_co_move_true_marginal / n_attempts:.2%}"
+              f"  [{n_co_move_true_marginal}/{n_attempts}]", flush=True)
     print("rejection breakdown (first failing gate, priority order = gate_names above):", flush=True)
     for g in gate_names + ["accepted"]:
         print(f"  {g:22s}: {rejection_counts[g]}", flush=True)
+    print(f"  {'safety_killed_no_gate':22s}: {n_rejected_no_gate_failed}"
+          "   (abnormal_robot / object_out_of_bound -- ANDed into held, no breakdown row;"
+          " NOT attributable to any gate above)", flush=True)
+    # -- THE SUM CHECK THAT DID NOT EXIST. Every ended episode is attributed exactly once: to
+    # "accepted", to the first gate it failed, or to safety_killed_no_gate. Without this the table
+    # can silently fail to add up -- which is how the safety-killed population went uncounted for
+    # as long as it did. Reported, not asserted: a mismatch at the end of a long generation run is
+    # a number to investigate, not a reason to throw away the run.
+    _attributed = sum(rejection_counts[g] for g in gate_names) + rejection_counts["accepted"] + n_rejected_no_gate_failed
+    if _attributed != n_attempts:
+        print(f"  !! ATTRIBUTION MISMATCH: rows sum to {_attributed} but {n_attempts} episodes"
+              " ended. The breakdown above does not account for every episode -- do not quote a"
+              " per-gate rate from it until this is explained.", flush=True)
+    else:
+        print(f"  (sum check OK: {_attributed} rows == {n_attempts} episodes ended)", flush=True)
     # -- PER-GATE REACH COUNTS + local fail rate (repose-recipe requirement, team-lead 2026-08-29).
     # reach_counts[g] is the denominator rejection_counts[g] never had: episodes for which g's
     # result was actually the deciding one (every gate before it, in this SAME priority order,
