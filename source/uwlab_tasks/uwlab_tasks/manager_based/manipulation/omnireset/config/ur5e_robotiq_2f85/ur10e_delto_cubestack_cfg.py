@@ -170,6 +170,7 @@ class CubeStackObjectAnywhereEEAnywhereCfg(Ur10eDeltoObjectAnywhereEEAnywhereRes
         super().__post_init__()
         _apply_cube_dataset_dir(self)
         _apply_grasp_matched_hand_actuator(self)
+        _apply_hand_matched_mass_randomization(self)
 
 
 @configclass
@@ -180,6 +181,7 @@ class CubeStackObjectRestingEEGraspedCfg(Ur10eDeltoObjectRestingEEGraspedResetSt
         super().__post_init__()
         _apply_cube_dataset_dir(self)
         _apply_grasp_matched_hand_actuator(self)
+        _apply_hand_matched_mass_randomization(self)
 
 
 @configclass
@@ -190,6 +192,7 @@ class CubeStackObjectAnywhereEEGraspedCfg(Ur10eDeltoObjectAnywhereEEGraspedReset
         super().__post_init__()
         _apply_cube_dataset_dir(self)
         _apply_grasp_matched_hand_actuator(self)
+        _apply_hand_matched_mass_randomization(self)
 
 
 @configclass
@@ -200,6 +203,7 @@ class CubeStackObjectPartiallyAssembledEEAnywhereCfg(Ur10eDeltoObjectPartiallyAs
         super().__post_init__()
         _apply_cube_dataset_dir(self)
         _apply_grasp_matched_hand_actuator(self)
+        _apply_hand_matched_mass_randomization(self)
 
 
 @configclass
@@ -212,6 +216,7 @@ class CubeStackObjectPartiallyAssembledEEGraspedCfg(Ur10eDeltoObjectPartiallyAss
         super().__post_init__()
         _apply_cube_dataset_dir(self)
         _apply_grasp_matched_hand_actuator(self)
+        _apply_hand_matched_mass_randomization(self)
 
 
 # ---------------------------------------------------------------------------------------
@@ -223,6 +228,7 @@ class CubeStackTrainCfg(Ur10eDeltoRelCartesianOSCTrainCfg):
         super().__post_init__()
         _apply_cube_dataset_dir(self)
         _apply_grasp_matched_hand_actuator(self)
+        _apply_hand_matched_mass_randomization(self)
         _apply_oriented(self)
 
 
@@ -232,6 +238,7 @@ class CubeStackEvalCfg(Ur10eDeltoRelCartesianOSCEvalCfg):
         super().__post_init__()
         _apply_cube_dataset_dir(self)
         _apply_grasp_matched_hand_actuator(self)
+        _apply_hand_matched_mass_randomization(self)
         _apply_oriented(self)
 
 
@@ -244,6 +251,7 @@ class CubeStackNoOrientTrainCfg(Ur10eDeltoRelCartesianOSCTrainCfg):
         super().__post_init__()
         _apply_cube_dataset_dir(self)
         _apply_grasp_matched_hand_actuator(self)
+        _apply_hand_matched_mass_randomization(self)
         _apply_orientation_free(self)
 
 
@@ -253,6 +261,7 @@ class CubeStackNoOrientEvalCfg(Ur10eDeltoRelCartesianOSCEvalCfg):
         super().__post_init__()
         _apply_cube_dataset_dir(self)
         _apply_grasp_matched_hand_actuator(self)
+        _apply_hand_matched_mass_randomization(self)
         _apply_orientation_free(self)
 
 
@@ -351,3 +360,38 @@ class CubeStackObjectAnywhereEEGraspedThumbFixCfg(CubeStackObjectAnywhereEEGrasp
     subclass adds nothing. Kept registered so the A/B's task id still resolves and the experiment
     stays reproducible.
     """
+
+
+# ---------------------------------------------------------------------------------------
+# Mass randomization, narrowed to what this hand can actually hold
+# ---------------------------------------------------------------------------------------
+# The shared `randomize_insertive_object_mass` draws mass_abs ~ U(0.02, 0.2) kg at STARTUP, so each
+# environment keeps one fixed mass for the whole run. Its own comment states the assumption:
+# "we assume insertive object is somewhere between 20g and 200g" -- reasonable for the Robotiq 2F-85
+# the task family was built around.
+#
+# It is not reasonable for the DG-5F. Measured in this repo, the hand holds its VALIDATED 34 mm
+# 0.030 kg reference object about 5% of the time, and fails to hold a 40 mm 0.049 kg cube at all
+# (0/320). Under U(0.02, 0.2), only (0.05-0.02)/(0.2-0.02) = 17% of environments would draw a mass
+# at or below 50 g; the other ~83% would spend the entire run holding a cube heavier than anything
+# this hand has been shown to hold. The policy would be optimising against mostly unsolvable
+# episodes, and the failure would look like "RL did not converge" rather than "the task was
+# impossible in five environments out of six".
+#
+# NARROWED TO U(0.02, 0.06): centred on the validated 0.03 kg, spanning 2/3x to 2x of it, so domain
+# randomization still does its job (the policy cannot assume one exact mass) without spending most
+# of its samples on a physically unavailable grasp.
+#
+# WHAT THIS IS NOT: it is not a claim that 0.06 kg is the hand's limit. The fingertip force cap is
+# ~2.2 N (effort_limit_sim 0.06 N.m over a 25.5 mm distal lever), which in a frictionless-free-body
+# sense would suggest a far higher bound -- but the measured hold rate at 0.030 kg is already only
+# 5%, so the analytic bound plainly is not what governs here. The range is set from the measurement,
+# not from the force budget, and the honest statement is that the upper end is untested.
+CUBE_MASS_RANGE_KG = (0.02, 0.06)
+
+
+def _apply_hand_matched_mass_randomization(cfg) -> None:
+    """Narrow insertive-object mass DR to the range this hand is measured to handle."""
+    term = getattr(cfg.events, "randomize_insertive_object_mass", None)
+    if term is not None:
+        term.params["mass_distribution_params"] = CUBE_MASS_RANGE_KG
