@@ -169,6 +169,7 @@ class CubeStackObjectAnywhereEEAnywhereCfg(Ur10eDeltoObjectAnywhereEEAnywhereRes
     def __post_init__(self):
         super().__post_init__()
         _apply_cube_dataset_dir(self)
+        _apply_grasp_matched_hand_actuator(self)
 
 
 @configclass
@@ -178,6 +179,7 @@ class CubeStackObjectRestingEEGraspedCfg(Ur10eDeltoObjectRestingEEGraspedResetSt
     def __post_init__(self):
         super().__post_init__()
         _apply_cube_dataset_dir(self)
+        _apply_grasp_matched_hand_actuator(self)
 
 
 @configclass
@@ -187,6 +189,7 @@ class CubeStackObjectAnywhereEEGraspedCfg(Ur10eDeltoObjectAnywhereEEGraspedReset
     def __post_init__(self):
         super().__post_init__()
         _apply_cube_dataset_dir(self)
+        _apply_grasp_matched_hand_actuator(self)
 
 
 @configclass
@@ -196,6 +199,7 @@ class CubeStackObjectPartiallyAssembledEEAnywhereCfg(Ur10eDeltoObjectPartiallyAs
     def __post_init__(self):
         super().__post_init__()
         _apply_cube_dataset_dir(self)
+        _apply_grasp_matched_hand_actuator(self)
 
 
 @configclass
@@ -207,6 +211,7 @@ class CubeStackObjectPartiallyAssembledEEGraspedCfg(Ur10eDeltoObjectPartiallyAss
     def __post_init__(self):
         super().__post_init__()
         _apply_cube_dataset_dir(self)
+        _apply_grasp_matched_hand_actuator(self)
 
 
 # ---------------------------------------------------------------------------------------
@@ -217,6 +222,7 @@ class CubeStackTrainCfg(Ur10eDeltoRelCartesianOSCTrainCfg):
     def __post_init__(self):
         super().__post_init__()
         _apply_cube_dataset_dir(self)
+        _apply_grasp_matched_hand_actuator(self)
         _apply_oriented(self)
 
 
@@ -225,6 +231,7 @@ class CubeStackEvalCfg(Ur10eDeltoRelCartesianOSCEvalCfg):
     def __post_init__(self):
         super().__post_init__()
         _apply_cube_dataset_dir(self)
+        _apply_grasp_matched_hand_actuator(self)
         _apply_oriented(self)
 
 
@@ -236,6 +243,7 @@ class CubeStackNoOrientTrainCfg(Ur10eDeltoRelCartesianOSCTrainCfg):
     def __post_init__(self):
         super().__post_init__()
         _apply_cube_dataset_dir(self)
+        _apply_grasp_matched_hand_actuator(self)
         _apply_orientation_free(self)
 
 
@@ -244,6 +252,7 @@ class CubeStackNoOrientEvalCfg(Ur10eDeltoRelCartesianOSCEvalCfg):
     def __post_init__(self):
         super().__post_init__()
         _apply_cube_dataset_dir(self)
+        _apply_grasp_matched_hand_actuator(self)
         _apply_orientation_free(self)
 
 
@@ -329,14 +338,16 @@ def _apply_grasp_matched_hand_actuator(cfg) -> None:
 
 @configclass
 class CubeStackObjectAnywhereEEGraspedThumbFixCfg(CubeStackObjectAnywhereEEGraspedCfg):
-    """C3, with the hand actuator matched to the one the grasp bank was validated against.
+    """Retained as the A/B probe's identity; now identical to its base.
 
-    Registered as a SEPARATE task rather than replacing C3, so the effect can be measured as an A/B
-    against the stock actuator instead of assumed. C3 is the cleanest probe available: it spawns the
-    object in mid-air with the gripper at a recorded grasp point and accepts only if the grasp
-    holds, so its acceptance rate IS the hold rate.
+    This class existed to measure the grasp-matched actuator against the stock one before adopting
+    it. That A/B ran: 512 envs, 420 s per arm, same object and grasp bank, only the two thumb-side
+    stiffnesses differing -- **stock 23 states, grasp-matched 31**. At those counts Poisson noise is
+    +-4.8 and +-5.6, so the difference is 8 +- 7.4, about 1.1 sigma: NOT significant, and not
+    evidence that the stiffness explains the 5% -> ~1% sampling-to-reset gap.
+
+    The actuator was adopted regardless, on the consistency argument rather than the speed one (see
+    ``_apply_grasp_matched_hand_actuator``), so every CubeStack class now applies it and this
+    subclass adds nothing. Kept registered so the A/B's task id still resolves and the experiment
+    stays reproducible.
     """
-
-    def __post_init__(self):
-        super().__post_init__()
-        _apply_grasp_matched_hand_actuator(self)
