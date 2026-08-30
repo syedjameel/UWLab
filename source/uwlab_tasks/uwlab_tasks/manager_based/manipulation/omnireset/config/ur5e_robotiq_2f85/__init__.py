@@ -619,3 +619,72 @@ gym.register(
         "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_cfg:Base_DAggerRunnerCfg",
     },
 )
+
+
+# ---- UR10e + DELTO CUBE STACKING (both variants) ----
+# Reset-state banks are SHARED by the oriented and position-only variants: recording grades with
+# check_reset_state_success, which reads success_thresholds from the receptive object's metadata
+# and never consults the command term. Record these five once; train both variants from them.
+for _rs_name, _rs_cls in [
+    ("ObjectAnywhereEEAnywhere", "CubeStackObjectAnywhereEEAnywhereCfg"),
+    ("ObjectRestingEEGrasped", "CubeStackObjectRestingEEGraspedCfg"),
+    ("ObjectAnywhereEEGrasped", "CubeStackObjectAnywhereEEGraspedCfg"),
+    ("ObjectPartiallyAssembledEEAnywhere", "CubeStackObjectPartiallyAssembledEEAnywhereCfg"),
+    ("ObjectPartiallyAssembledEEGrasped", "CubeStackObjectPartiallyAssembledEEGraspedCfg"),
+]:
+    gym.register(
+        id=f"OmniReset-UR10eDelto-CubeStack-{_rs_name}-v0",
+        entry_point="isaaclab.envs:ManagerBasedRLEnv",
+        disable_env_checker=True,
+        kwargs={"env_cfg_entry_point": f"{__name__}.ur10e_delto_cubestack_cfg:{_rs_cls}"},
+    )
+del _rs_name, _rs_cls
+
+# ORIENTED: roll/pitch constrained at 0.05 rad (the docs' cube-stacking tolerance), yaw free.
+gym.register(
+    id="OmniReset-UR10eDelto-CubeStack-RelCartesianOSC-State-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.ur10e_delto_cubestack_cfg:CubeStackTrainCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_cfg:UR10eDelto_PPORunnerCfg",
+    },
+)
+
+gym.register(
+    id="OmniReset-UR10eDelto-CubeStack-RelCartesianOSC-State-Play-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.ur10e_delto_cubestack_cfg:CubeStackEvalCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_cfg:UR10eDelto_PPORunnerCfg",
+    },
+)
+
+# POSITION-ONLY: orientation dropped from the success test AND from the dense goal shaping.
+gym.register(
+    id="OmniReset-UR10eDelto-CubeStackNoOrient-RelCartesianOSC-State-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.ur10e_delto_cubestack_cfg:CubeStackNoOrientTrainCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_cfg:UR10eDelto_PPORunnerCfg",
+    },
+)
+
+gym.register(
+    id="OmniReset-UR10eDelto-CubeStackNoOrient-RelCartesianOSC-State-Play-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.ur10e_delto_cubestack_cfg:CubeStackNoOrientEvalCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_cfg:UR10eDelto_PPORunnerCfg",
+    },
+)
+
+gym.register(
+    id="OmniReset-CubeStack-PartialAssemblies-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={"env_cfg_entry_point": f"{__name__}.ur10e_delto_cubestack_cfg:CubeStackPartialAssembliesCfg"},
+)

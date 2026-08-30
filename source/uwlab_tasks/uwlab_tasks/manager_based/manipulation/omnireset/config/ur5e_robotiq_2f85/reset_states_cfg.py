@@ -514,26 +514,26 @@ class ResetStatesRewardsCfg:
     pass
 
 
-def make_insertive_object(usd_path: str, override_mass: bool = True):
+def make_insertive_object(usd_path: str, override_mass: bool = True, mass: float = 0.001, scale: float = 1.0):
     """Build an insertive-object config, optionally preserving its authored mass."""
     return RigidObjectCfg(
         prim_path="{ENV_REGEX_NS}/InsertiveObject",
         spawn=sim_utils.UsdFileCfg(
             usd_path=usd_path,
-            scale=(1, 1, 1),
+            scale=(scale, scale, scale),
             rigid_props=sim_utils.RigidBodyPropertiesCfg(
                 solver_position_iteration_count=4,
                 solver_velocity_iteration_count=0,
                 disable_gravity=False,
                 kinematic_enabled=False,
             ),
-            mass_props=sim_utils.MassPropertiesCfg(mass=0.001) if override_mass else None,
+            mass_props=sim_utils.MassPropertiesCfg(mass=mass) if override_mass else None,
         ),
         init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, 0.0), rot=(1.0, 0.0, 0.0, 0.0)),
     )
 
 
-def make_receptive_object(usd_path: str, disable_articulation_root: bool = False):
+def make_receptive_object(usd_path: str, disable_articulation_root: bool = False, scale: float = 1.0):
     """Build a receptive-object config, optionally disabling a baked-in articulation root.
 
     ``disable_articulation_root``: every receptive asset up to this one was authored directly as a
@@ -550,7 +550,7 @@ def make_receptive_object(usd_path: str, disable_articulation_root: bool = False
         prim_path="{ENV_REGEX_NS}/ReceptiveObject",
         spawn=sim_utils.UsdFileCfg(
             usd_path=usd_path,
-            scale=(1, 1, 1),
+            scale=(scale, scale, scale),
             rigid_props=sim_utils.RigidBodyPropertiesCfg(
                 solver_position_iteration_count=4,
                 solver_velocity_iteration_count=0,
@@ -577,6 +577,22 @@ variants = {
         "peg": make_insertive_object(f"{UWLAB_CLOUD_ASSETS_DIR}/Props/Custom/Peg/peg.usd"),
         "cupcake": make_insertive_object(f"{UWLAB_CLOUD_ASSETS_DIR}/Props/Custom/CupCake/cupcake.usd"),
         "cube": make_insertive_object(f"{UWLAB_CLOUD_ASSETS_DIR}/Props/Custom/InsertiveCube/insertive_cube.usd"),
+        # ---- The paper's cube pair at the DG-5F's validated size (see InsertiveCube34/metadata.yaml).
+        # 0.85 * 40 mm = 34.0 mm, mass 0.03 kg: geometrically and inertially identical to
+        # `deltoblock`, the object this hand's grip-force budget was sized against. Measured in this
+        # repo 2026-08-31 with identical grasp-sampler settings, only the object differing:
+        #     deltoblock 34 mm 0.030 kg   64 attempts -> 2 successes (3.1%)
+        #     cube       40 mm 0.049 kg  320 attempts -> 0 successes (0.0%)
+        #     cube34     34 mm 0.030 kg   64 attempts -> 1 success   (1.6%)
+        # At 40 mm the hand never holds the object: not_far=0, above_ground=0 in every env of every
+        # batch from gravity onset. The USD is a byte-copy of the shipped one; it needs its own
+        # directory only because read_metadata_from_usd_directory keys metadata by USD DIRECTORY and
+        # the assembled/bottom offsets must track the spawn scale (+-0.017, not +-0.02).
+        "cube34": make_insertive_object(
+            f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/InsertiveCube34/insertive_cube34.usd",
+            mass=0.03,
+            scale=0.85,
+        ),
         "rectangle": make_insertive_object(f"{UWLAB_CLOUD_ASSETS_DIR}/Props/Custom/Rectangle/rectangle.usd"),
         # Local dev asset (PCB slab). Switch to UWLAB_CLOUD_ASSETS_DIR when sharing.
         "pcb": make_insertive_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/Pcb/pcb.usd"),
@@ -626,6 +642,10 @@ variants = {
         "peghole": make_receptive_object(f"{UWLAB_CLOUD_ASSETS_DIR}/Props/Custom/PegHole/peg_hole.usd"),
         "plate": make_receptive_object(f"{UWLAB_CLOUD_ASSETS_DIR}/Props/Custom/Plate/plate.usd"),
         "cube": make_receptive_object(f"{UWLAB_CLOUD_ASSETS_DIR}/Props/Custom/ReceptiveCube/receptive_cube.usd"),
+        # The fixed bottom cube of the stack, at 34 mm to match "cube34" above. Kinematic.
+        "cube34": make_receptive_object(
+            f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/ReceptiveCube34/receptive_cube34.usd", scale=0.85
+        ),
         "wall": make_receptive_object(f"{UWLAB_CLOUD_ASSETS_DIR}/Props/Custom/Wall/wall.usd"),
         # Local dev asset (open-top box). Switch to UWLAB_CLOUD_ASSETS_DIR when sharing.
         "openbox": make_receptive_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/OpenBox/open_box.usd"),

@@ -145,3 +145,60 @@ class DeltoFullHandAction:
     """
 
     gripper = DELTO_FULL_HAND_ACTIONS
+
+
+# ---------------------------------------------------------------------------------------
+# TWO-FINGER SUBSET -- an experiment, not the default. Nothing above is modified.
+# ---------------------------------------------------------------------------------------
+# For a 40 mm cube the hand only needs its designed opposition, and the DG-5F's grasp geometry is
+# already defined as exactly that: ``DeltoHand/metadata.yaml:8`` calls it "a virtual jaw of finger 1
+# against finger 2", and ``grasp_center_offset`` is ``midpoint(rl_dg_1_tip, rl_dg_2_tip)``. The
+# five-tip centroid was explicitly REJECTED as the grasp centre because finger 5 sits at y = -68 mm.
+# So {1, 2} is the one subset that leaves the calibrated grasp centre meaningful; any other pair
+# needs a fresh FK derivation and a re-sampled dataset.
+#
+# Actuating {1, 2} and holding {3, 4, 5} takes the policy's action dimension from 6 + 20 = 26 down
+# to 6 + 8 = 14. For reference the paper's own robot acts in 7 dimensions (6 Cartesian + a binary
+# gripper), so 26 is a large departure from the setting its hyperparameters were chosen in.
+#
+# THIS IS NOT A FREE WIN, and the cost is not the full-actuation guard (that is satisfied simply by
+# narrowing what is REQUIRED). The cost is that unactuated joints hold
+# ``DELTO_HAND_DEFAULT_JOINT_POS``, which is the OPEN SPLAY -- fingers 3/4/5 sit at ``_2 = 0.9``,
+# out in the workspace, where they can foul both the cube and the receptive fixture. Hence the
+# tucked posture below, and hence this whole path stays gated behind measured grasp yield rather
+# than being adopted on the strength of the argument.
+DELTO_TWO_FINGER_JOINT_NAMES = tuple(f"rj_dg_{finger}_{joint}" for finger in (1, 2) for joint in range(1, 5))
+DELTO_TWO_FINGER_JOINT_REGEX = r"rj_dg_[1-2]_[1-4]"
+
+# The three held fingers, and the posture they are held AT. Curled toward the palm and away from
+# the finger-1/finger-2 working volume. The proximal ``_1`` joints keep their open-posture values
+# (they set finger spread, and moving them would swing the fingers sideways rather than fold them);
+# the ``_2``/``_3``/``_4`` chain is what curls.
+DELTO_HELD_FINGER_JOINT_NAMES = tuple(f"rj_dg_{finger}_{joint}" for finger in (3, 4, 5) for joint in range(1, 5))
+
+DELTO_TUCKED_HELD_FINGER_JOINT_POS = {
+    "rj_dg_3_1": -0.032855,  # spread, unchanged from the open posture
+    "rj_dg_3_2": 1.60,
+    "rj_dg_3_3": 1.40,
+    "rj_dg_3_4": 1.00,
+    "rj_dg_4_1": 0.174352,
+    "rj_dg_4_2": 1.60,
+    "rj_dg_4_3": 1.40,
+    "rj_dg_4_4": 1.00,
+    "rj_dg_5_1": 0.193785,
+    "rj_dg_5_2": 1.60,
+    "rj_dg_5_3": 1.40,
+    "rj_dg_5_4": 1.00,
+}
+
+DELTO_TWO_FINGER_ACTION_SCALE = {name: 0.1 for name in DELTO_TWO_FINGER_JOINT_NAMES}
+DELTO_TWO_FINGER_ACTION_CLIP = {name: (-1.0, 1.0) for name in DELTO_TWO_FINGER_JOINT_NAMES}
+
+# Eight independent policy actions, one per joint of fingers 1 and 2. Action dimension is 8.
+DELTO_TWO_FINGER_ACTIONS = RelativeJointPositionActionCfg(
+    asset_name="robot",
+    joint_names=[DELTO_TWO_FINGER_JOINT_REGEX],
+    scale=DELTO_TWO_FINGER_ACTION_SCALE,
+    clip=DELTO_TWO_FINGER_ACTION_CLIP,
+    use_zero_offset=True,
+)

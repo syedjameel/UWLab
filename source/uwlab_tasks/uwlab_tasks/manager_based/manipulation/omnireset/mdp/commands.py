@@ -177,8 +177,21 @@ class TaskCommand(TaskDependentCommand):
             pos=tuple(receptive_meta.get("assembled_offset").get("pos")),
             quat=tuple(receptive_meta.get("assembled_offset").get("quat")),
         )
-        self.success_position_threshold: float = receptive_meta.get("success_thresholds").get("position")
-        self.success_orientation_threshold: float = receptive_meta.get("success_thresholds").get("orientation")
+        # Thresholds come from the receptive object's metadata.yaml unless the task overrides them.
+        # metadata.yaml is keyed by USD DIRECTORY and shared by every task spawning that object, so a
+        # per-task variation (a looser orientation tolerance, or none at all) cannot live there
+        # without changing the criterion for every other task using the same asset.
+        _meta_thresholds = receptive_meta.get("success_thresholds")
+        self.success_position_threshold: float = (
+            cfg.success_position_threshold
+            if cfg.success_position_threshold is not None
+            else _meta_thresholds.get("position")
+        )
+        self.success_orientation_threshold: float = (
+            cfg.success_orientation_threshold
+            if cfg.success_orientation_threshold is not None
+            else _meta_thresholds.get("orientation")
+        )
 
         self.metrics["average_rot_align_error"] = torch.zeros(self.num_envs, device=self.device)
         self.metrics["average_pos_align_error"] = torch.zeros(self.num_envs, device=self.device)

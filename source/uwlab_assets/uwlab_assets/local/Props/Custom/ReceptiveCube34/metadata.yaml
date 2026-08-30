@@ -1,0 +1,24 @@
+# Copyright (c) 2024-2026, The UW Lab Project Developers.
+# SPDX-License-Identifier: BSD-3-Clause
+#
+# The OmniReset paper's ReceptiveCube at 34 mm -- the fixed bottom cube of the stack. Spawned
+# kinematic by make_receptive_object, i.e. immovable; this is "place a cube on a fixed cube", the
+# authors' own framing, not a simplification added here.
+#
+# See InsertiveCube34/metadata.yaml for why this asset exists and why the offsets are +-0.017.
+# assembled_offset is +0.017 (the top face) against the insertive cube's -0.017 (its bottom face),
+# so the two align exactly when one cube is seated on the other.
+assembled_offset:
+  pos: [0.0, 0.0, 0.017]
+  quat: [1.0, 0.0, 0.0, 0.0]
+bottom_offset:
+  pos: [0.0, 0.0, -0.017]
+  quat: [1.0, 0.0, 0.0, 0.0]
+# A receptive object REQUIRES success_thresholds: mdp/commands.py reads position and orientation
+# with no default. position 0.005 is the shipped cube value, kept. orientation 0.025 is the shipped
+# TIGHT-FIT value meant for screw insertion; new_task.rst:92 explicitly recommends 0.05 for cube
+# stacking, and the oriented task config sets that via TaskCommandCfg.success_orientation_threshold
+# rather than by loosening it here, so this file stays the conservative reference.
+success_thresholds:
+  position: 0.005
+  orientation: 0.025

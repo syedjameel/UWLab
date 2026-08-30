@@ -39,8 +39,24 @@
 # This full-robot copy must match DeltoHand/metadata.yaml. Freeze it with
 # the grasp datasets: observations, rewards and resets all consume this frame.
 # quat is (w, x, y, z), with +Z along approach and +X along the closing axis.
+#
+# CORRECTED 2026-08-31 (cube-stacking work). This copy had drifted from the value it declares it
+# must match: it still carried [0.07445, 0.05800, 0.14970], the PRE-2026-08-17 number that
+# DeltoHand/metadata.yaml documents as "fitted by PhysX replay against the ONE-SCALAR closure model,
+# which commit ea540d0 DELETED", and whose use cost "6144 attempts -> 0 successes" with every one of
+# the 25 hand bodies reading 0.000 N. DeltoHand/metadata.yaml:64 was corrected to the FK-derived
+# midpoint(rl_dg_1_tip, rl_dg_2_tip) = [0.0637, 0.0465, 0.1500]; this file was not, leaving the two
+# 15.7 mm apart while line 39 above states they must match.
+#
+# SCOPE OF THE CHANGE: only `pos` moves, and it has exactly one functional consumer --
+# rl_state_cfg.py:594 binds it as `root_asset_offset_metadata_key` for
+# mdp/rewards.ee_asset_distance_tanh, the reach shaping term (the paper's r_reach, weight 0.1). The
+# quat has no counterpart in DeltoHand/metadata.yaml and is left untouched. This CANNOT invalidate
+# any grasp dataset: the grasp sampler reads grasp_center_offset from Robots/DeltoHand/metadata.yaml,
+# never this field. It does change the reach reward's reference point for every task on this robot,
+# including the table-leg ones -- deliberately, since the point it referenced does not exist.
 gripper_offset:
-  pos: [0.07445, 0.05800, 0.14970]
+  pos: [0.0637, 0.0465, 0.1500]
   quat: [0.357494, 0.033307, 0.278099, 0.890926]
 
 # DUPLICATED FROM Robots/DeltoHand/metadata.yaml. This is the one exception to the field split

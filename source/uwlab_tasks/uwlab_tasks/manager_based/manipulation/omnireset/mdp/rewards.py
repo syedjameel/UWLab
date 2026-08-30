@@ -160,9 +160,19 @@ class ProgressContext(ManagerTermBase):
 
 
 def dense_success_reward(
-    env: ManagerBasedRLEnv, std: float, std_angle: float | None = None, context: str = "progress_context"
+    env: ManagerBasedRLEnv,
+    std: float,
+    std_angle: float | None = None,
+    context: str = "progress_context",
+    use_orientation: bool = True,
 ) -> torch.Tensor:
+    """Goal-distance shaping. Paper Eq. 5: ``lambda_dist * 1/2 * [exp(-|x_err|/s) + exp(-|th_err|/s)]``.
 
+    ``use_orientation=False`` implements the orientation-free variant EXACTLY as the paper's
+    equation degrades: the ``exp(-|th_err|/s)`` summand is dropped AND the ``1/2`` goes with it, so
+    the position term keeps its full scale instead of being halved. Setting ``std_angle`` huge is
+    NOT equivalent -- that leaves a constant ``+0.5`` and halves the position gradient.
+    """
     context_term: ManagerTermBase = env.reward_manager.get_term_cfg(context).func  # type: ignore
     angle_diff: torch.Tensor = getattr(context_term, "euler_xy_distance")
     xyz_distance: torch.Tensor = getattr(context_term, "xyz_distance")
@@ -171,9 +181,11 @@ def dense_success_reward(
     # different scales, so a single shared std can flatten one of the two terms.
     if std_angle is None:
         std_angle = std
+    xyz_term = torch.exp(-xyz_distance / std)
+    if not use_orientation:
+        return xyz_term
     angle_diff = torch.exp(-angle_diff / std_angle)
-    xyz_distance = torch.exp(-xyz_distance / std)
-    stacked = torch.stack([angle_diff, xyz_distance], dim=0)
+    stacked = torch.stack([angle_diff, xyz_term], dim=0)
     return torch.mean(stacked, dim=0)
 
 

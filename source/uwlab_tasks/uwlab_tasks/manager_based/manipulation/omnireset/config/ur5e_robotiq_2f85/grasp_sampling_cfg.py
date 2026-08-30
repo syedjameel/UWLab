@@ -155,20 +155,28 @@ class GraspSamplingRewardsCfg:
     pass
 
 
-def make_object(usd_path: str, override_mass: bool = True):
-    """Build an object config, optionally preserving the mass authored in its USD."""
+def make_object(usd_path: str, override_mass: bool = True, mass: float = 0.001, scale: float = 1.0):
+    """Build an object config, optionally preserving the mass authored in its USD.
+
+    ``mass`` is only consulted when ``override_mass`` is True, and defaults to the historical
+    0.001 kg so every existing variant is byte-for-byte unchanged. It exists for assets that
+    author NO root ``MassAPI`` at all -- for those, ``override_mass=False`` does not preserve a
+    sensible mass, it just hands the value to PhysX's density fallback. ``InsertiveCube`` is
+    exactly such an asset (verified with pxr: no MassAPI on any prim), so pinning its mass
+    explicitly is the only way to sample its grasps against a realistic load.
+    """
     return RigidObjectCfg(
         prim_path="{ENV_REGEX_NS}/InsertiveObject",
         spawn=sim_utils.UsdFileCfg(
             usd_path=usd_path,
-            scale=(1, 1, 1),
+            scale=(scale, scale, scale),
             rigid_props=sim_utils.RigidBodyPropertiesCfg(
                 solver_position_iteration_count=4,
                 solver_velocity_iteration_count=0,
                 disable_gravity=False,
                 kinematic_enabled=False,
             ),
-            mass_props=sim_utils.MassPropertiesCfg(mass=0.001) if override_mass else None,
+            mass_props=sim_utils.MassPropertiesCfg(mass=mass) if override_mass else None,
         ),
         init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, 1.0), rot=(1.0, 0.0, 0.0, 0.0)),
     )
@@ -194,6 +202,51 @@ variants = {
         # authored mass is what keeps the recorded grasps meaningful for the hand's force budget.
         "deltoblock": make_object(
             f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/DeltoBlock/delto_block.usd", override_mass=False
+        ),
+        # The paper's own 40 mm cube, re-massed for DELTO grasp sampling. SAME USD as "cube"
+        # above -- only the mass differs, so it still writes to Grasps/InsertiveCube/.
+        #
+        # WHY THIS VARIANT HAS TO EXIST. The shipped "cube" entry takes the 0.001 kg default, and
+        # for the DELTO sampler specifically that is not a small inaccuracy but an invalidated
+        # test: DeltoGraspSamplingCfg sets force_torque_scale_by_mass=True, so the shake that
+        # VALIDATES each candidate is scaled by the object's mass. At 1 g the shake is negligible
+        # and essentially every candidate survives it, exactly the failure the deltoblock comment
+        # above describes. override_mass=False is not the fix here either: measured directly off
+        # insertive_cube.usd with pxr (2026-08-31), the asset authors NO MassAPI on any prim, so
+        # False would just defer to PhysX's density fallback rather than preserve an authored
+        # value.
+        #
+        # 0.049 kg is DERIVED, not picked: it is the validated 34 mm deltoblock's 0.03 kg carried
+        # to 40 mm at constant density -- 0.03 * (40/34)**3 = 0.0488 kg. That keeps the hand's
+        # grip-force budget, which was sized against deltoblock, meaningful at the new size. It
+        # also sits mid-range of the paper's own insertive-object mass randomization,
+        # U(0.02, 0.2) kg (rl_state_cfg.py randomize_insertive_object_mass), so nothing about it
+        # is exotic relative to what the policy will see during RL.
+        "cubedelto": make_object(
+            f"{UWLAB_CLOUD_ASSETS_DIR}/Props/Custom/InsertiveCube/insertive_cube.usd", mass=0.049
+        ),
+        # The paper's cube asset scaled to THIS HAND'S validated size. 0.85 * 40 mm = 34 mm, which
+        # is deltoblock's size exactly -- the centre of the 24.67-41.48 mm window rather than its
+        # upper edge -- and the mass is deltoblock's 0.03 kg, so the object is geometrically and
+        # inertially identical to the one the hand's grip-force budget was sized against.
+        #
+        # MEASURED, this repo, 2026-08-31, identical sampler settings, only the object differing:
+        #   deltoblock  34 mm 0.030 kg   64 attempts -> 2 successes  (3.1%)
+        #   cubedelto   40 mm 0.049 kg  320 attempts -> 0 successes  (0.0%)
+        # The 40 mm cube is not marginal, it is unheld: UWLAB_GRASP_DEBUG showed not_far=0 and
+        # above_ground=0 across every env of every batch the moment gravity engaged at t=10 s.
+        # For context the sampler's yield on its OWN reference object is documented in delto_cfg.py
+        # as "2/12, 1/12, 1/12 -- roughly 11 percent per-episode", itself called "well below the
+        # 60 percent acceptance bar", so the DELTO grasp path is a known-weak link even before an
+        # oversized object is put in front of it.
+        # MUST be the same USD DIRECTORY the RL/reset configs use: record_grasps writes to
+        # Grasps/<object_name_from_usd(path)>/, and the reset events read from the same key. Pointing
+        # this at the shipped InsertiveCube while the task spawns InsertiveCube34 would silently
+        # write the bank to a directory nothing ever reads.
+        "cube34": make_object(
+            f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/InsertiveCube34/insertive_cube34.usd",
+            mass=0.03,
+            scale=0.85,
         ),
         # Our table-leg pair (bead UWLab-zvd.8), for the DELTO thread-insertion task. SAME shipped
         # USD as reset_states_cfg's "leg200mm" -- SquareTableLeg200mmDecomp, not the plain

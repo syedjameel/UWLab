@@ -1,0 +1,28 @@
+# Copyright (c) 2024-2026, The UW Lab Project Developers.
+# SPDX-License-Identifier: BSD-3-Clause
+#
+# The OmniReset paper's InsertiveCube, at the Tesollo DG-5F's validated size.
+#
+# The USD is a byte-for-byte copy of Props/Custom/InsertiveCube/insertive_cube.usd (measured with
+# pxr: a 40.0 mm cube on every axis, no MassAPI on any prim). It is spawned with scale=0.85, giving
+# a 34.0 mm cube -- the size of `deltoblock`, the object this hand's grip-force budget was sized
+# against, and the centre of the 24.67-41.48 mm validated grasp window rather than its upper edge.
+#
+# WHY, measured in this repo on 2026-08-31 with identical sampler settings:
+#     deltoblock  34 mm, 0.030 kg   64 attempts -> 2 successes  (3.1%)
+#     the cube    40 mm, 0.049 kg  320 attempts -> 0 successes  (0.0%)
+#     this asset  34 mm, 0.030 kg   64 attempts -> 1 success    (1.6%)
+# At 40 mm the hand does not hold the object at all: UWLAB_GRASP_DEBUG read not_far=0 and
+# above_ground=0 in every environment of every batch from the moment gravity engaged at t=10 s.
+#
+# OFFSETS ARE IN THE SCALED FRAME. The shipped 40 mm asset carries +-0.02 m (its half-extent);
+# at 34 mm the half-extent is 0.017 m. These are metres of world displacement applied to the
+# spawned object, so they must track the spawn scale -- which is precisely why this asset needs its
+# own directory: read_metadata_from_usd_directory() keys metadata by USD DIRECTORY, so the scaled
+# variant cannot share the 40 mm asset's metadata.yaml.
+assembled_offset:
+  pos: [0.0, 0.0, -0.017]
+  quat: [1.0, 0.0, 0.0, 0.0]
+bottom_offset:
+  pos: [0.0, 0.0, -0.017]
+  quat: [1.0, 0.0, 0.0, 0.0]
