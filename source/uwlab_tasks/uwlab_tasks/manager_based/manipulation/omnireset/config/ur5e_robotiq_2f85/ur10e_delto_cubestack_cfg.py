@@ -275,3 +275,68 @@ class CubeStackPartialAssembliesCfg(PartialAssembliesCfg):
     def __post_init__(self):
         super().__post_init__()
         self.events.axial_depth_sampling = None
+
+
+# ---------------------------------------------------------------------------------------
+# The thumb-side stiffness seam
+# ---------------------------------------------------------------------------------------
+# THE INCONSISTENCY THIS ADDRESSES. `DeltoGraspSamplingCfg` rebinds two joints before it samples
+# (delto_cfg.py:623-632): `rj_dg_1_4` 0.1698 -> 1.698 and `rj_dg_5_4` 0.1694 -> 1.694, with
+# `velocity_limit_sim` 3.0 -> 1.0. Those are the distal joints of the THUMB-SIDE pair the held-check
+# opposes against fingers 2/3/4, and delto_cfg records exactly why the stock values do not work:
+#
+#   "the relative action caps PD error at 0.1 rad per control step regardless of distance to target,
+#    so realised torque is bounded by stiffness * 0.1. At 0.1698 that is 0.0170 N.m -- matching the
+#    measured applied torque to four decimals -- against a 0.01 N.m friction floor ... The joint sat
+#    frozen at ~1.05 rad, velocity exactly 0.000, in EVERY velocity/deadband/stiffness combination
+#    swept."
+#
+# and what the 10x rebind bought:
+#
+#   "the thumb gap collapsing 1.267 -> 0.006 rad and holding through gravity AND shake, 7 bodies in
+#    contact, no limit cycle."
+#
+# That rebind is scoped to the sampler alone -- deliberately, per its own comment. The consequence
+# is that a grasp is SAMPLED AND SHAKE-VALIDATED by a hand that can close its thumb, and then
+# REPLAYED, during reset-state recording and during RL, by a hand that cannot. The grasp bank
+# describes postures the training articulation is not equipped to reach.
+#
+# NOT MONOTONIC, so do not raise it casually: delto_cfg records that 20x is WORSE than 10x
+# (0/180 successes, fewer bodies in contact, lower peak force), and that 0.30 -- the value its
+# already-fixed siblings use -- leaves rj_dg_1_4 0.364 rad short of target with 0/180 successes.
+# 10x is the measured value, and it is reused verbatim here rather than re-derived.
+_THUMB_SIDE_STIFFNESS = {"rj_dg_1_4": 1.698, "rj_dg_5_4": 1.694}
+
+
+def _apply_grasp_matched_hand_actuator(cfg) -> None:
+    """Give the training/reset hand the actuator its grasp bank was validated against.
+
+    Rebinds through the actuators dict rather than mutating the shared ``DELTO_HAND_ACTUATOR``
+    instance, exactly as the sampler does, so `IMPLICIT_UR10E_DELTO` and `EXPLICIT_UR10E_DELTO`
+    stay untouched for every other task on this robot.
+    """
+    hand = cfg.scene.robot.actuators["hand"]
+    stiffness = dict(hand.stiffness)
+    stiffness.update(_THUMB_SIDE_STIFFNESS)
+    cfg.scene.robot.actuators = {
+        **cfg.scene.robot.actuators,
+        # velocity_limit_sim 1.0 travels exactly the 0.1 rad a control step commands, instead of
+        # the 0.3 rad that 3.0 allows -- the 3x overshoot delto_cfg names as a standing cause of a
+        # permanent limit cycle. Matched to the sampler for the same reason the stiffness is.
+        "hand": hand.replace(stiffness=stiffness, velocity_limit_sim={r"rj_dg_[1-5]_[1-4]": 1.0}),
+    }
+
+
+@configclass
+class CubeStackObjectAnywhereEEGraspedThumbFixCfg(CubeStackObjectAnywhereEEGraspedCfg):
+    """C3, with the hand actuator matched to the one the grasp bank was validated against.
+
+    Registered as a SEPARATE task rather than replacing C3, so the effect can be measured as an A/B
+    against the stock actuator instead of assumed. C3 is the cleanest probe available: it spawns the
+    object in mid-air with the gripper at a recorded grasp point and accepts only if the grasp
+    holds, so its acceptance rate IS the hold rate.
+    """
+
+    def __post_init__(self):
+        super().__post_init__()
+        _apply_grasp_matched_hand_actuator(self)

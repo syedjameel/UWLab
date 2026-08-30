@@ -688,3 +688,15 @@ gym.register(
     disable_env_checker=True,
     kwargs={"env_cfg_entry_point": f"{__name__}.ur10e_delto_cubestack_cfg:CubeStackPartialAssembliesCfg"},
 )
+
+# A/B probe: C3 with the thumb-side actuator matched to the grasp sampler's. See
+# ur10e_delto_cubestack_cfg._apply_grasp_matched_hand_actuator for why the stock actuator cannot
+# reproduce the postures the grasp bank records.
+gym.register(
+    id="OmniReset-UR10eDelto-CubeStack-ObjectAnywhereEEGrasped-ThumbFix-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.ur10e_delto_cubestack_cfg:CubeStackObjectAnywhereEEGraspedThumbFixCfg"
+    },
+)
