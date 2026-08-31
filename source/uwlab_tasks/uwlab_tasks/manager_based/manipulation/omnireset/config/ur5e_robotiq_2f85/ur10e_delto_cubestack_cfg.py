@@ -7,11 +7,25 @@
 
 This is a thin layer over ``ur10e_delto_cfg.py``. Every class here subclasses the corresponding
 UR10eDelto class, so the arm, the hand actuator, the OSC gains, ``_apply_delto`` and the collision
-stack size are all inherited unchanged. Only two things are added:
+stack size are all inherited unchanged. Only three things are added:
 
-1. a DELTO-specific ``dataset_dir`` (see DATASET DIR below), and
+1. a DELTO-specific ``dataset_dir`` (see DATASET DIR below),
 2. for the position-only variant, the orientation clause is removed from the success criterion and
-   from the dense goal-distance shaping.
+   from the dense goal-distance shaping, and
+3. for the RL-state variants only, fingertip contact sensing and the grasp/lift reward terms that
+   read it -- see THE GRASP SEAM below and ``_apply_fingertip_contact_sensors`` /
+   ``_apply_grasp_shaping``. The shared ``RewardsCfg`` and the shared robot cfg are NOT touched;
+   these are ``__post_init__`` overlays exactly like ``_apply_precision_shaping``, so every other
+   task in the package is byte-for-byte unchanged.
+
+THE GRASP SEAM -- the reward graph had no arc across the grasp
+----------------------------------------------------------------
+The shipped OmniReset reward is a pure function of two rigid-body poses (see the block comment
+above ``_apply_fingertip_contact_sensors`` for the full audit and the numbers). Closing this hand
+was worth 0.0 and cost a small action penalty, so the reward was maximised by parking the OPEN hand
+on the cube and holding still -- 9.26% success on the one family that starts already holding the
+cube, 0.0% on the three that do not. The fix ports dexlift's already-validated contact terms for
+this exact hand rather than inventing new physics.
 
 THE CUBE HAD TO BE RESIZED -- 34 mm, NOT THE PAPER'S 40 mm
 ------------------------------------------------------------
@@ -115,6 +129,8 @@ metadata directly and never consults the command term. Record once, train twice.
 from __future__ import annotations
 
 from isaaclab.managers import RewardTermCfg as RewTerm
+from isaaclab.managers import SceneEntityCfg
+from isaaclab.sensors import ContactSensorCfg
 from isaaclab.utils import configclass
 
 import uwlab_assets.robots.ur10e_delto as ur10e_delto
@@ -194,6 +210,230 @@ def _apply_precision_shaping(cfg, std: float = PRECISION_SHAPING_STD) -> None:
         params["use_orientation"] = use_orientation
     cfg.rewards.dense_success_reward_fine = RewTerm(
         func=task_mdp.dense_success_reward, weight=PRECISION_SHAPING_WEIGHT, params=params
+    )
+
+
+# ---------------------------------------------------------------------------------------
+# The grasp seam -- fingertip contact sensing, and the three reward terms that read it
+# ---------------------------------------------------------------------------------------
+# WHAT IS BROKEN. The shipped ``RewardsCfg`` (rl_state_cfg.py:561-603) is a pure function of two
+# rigid-body poses. ``ee_asset_distance`` reads the palm body ``rl_dg_mount`` and ``dense_success_
+# reward``/``dense_success_reward_fine``/``success_reward`` read ``ProgressContext``'s cube-to-goal
+# error; ``progress_context`` itself returns zeros. Not one term reads a contact force, a finger
+# joint angle, an aperture or an object height. On this hand that means flexing all twenty fingers
+# moves the total reward by EXACTLY ZERO -- ``ee_asset_distance`` depends only on the pose of
+# ``rl_dg_mount``, which the fingers do not move, and ``dense_success_reward`` only on the cube,
+# which an ungrasped cube does not move either -- minus the action penalty of having moved them.
+# The reward is maximised by parking the OPEN hand on the cube and holding still.
+#
+# MEASURED CONSEQUENCE. 9.26% genuine success on the NEAR-GOAL family, the one family where the
+# cube starts already held and the geometric graph is therefore complete, and exactly 0.0% on the
+# other three, every one of which requires closing the hand first. That is not a compute shortfall;
+# it is a reward graph with no arc across the grasp.
+#
+# BODY AND PRIM NAMES, read from ``dexlift/dexlift_ur10e_delto_env_cfg.py:59`` and ``:68-72`` and restated here
+# rather than imported. Importing that module runs the vendored dexsuite package and ``omnireset.mdp``
+# -- the cycle ``omnireset/mdp/contact_rewards.py`` refuses to close -- for five string constants.
+# They describe the same five fingertips of the same articulation: both tasks spawn
+# ``IMPLICIT_UR10E_DELTO``. The prim layout was confirmed against the live USD stage with pxr, not
+# assumed: ``scripts_v2/tools/smoke_test_ik_c4_holding.py:59`` records
+# "{ENV_REGEX_NS}/Robot/gripper/rl_dg_mount and .../gripper/rl_dg_{1..5}_tip all exist exactly as"
+# expected, and ``render_reset_states_viewport.py:206-234`` wires this same sensor set against this
+# same OmniReset task.
+DELTO_HAND_PRIM = "gripper"
+DELTO_THUMB_TIP_NAMES = ("rl_dg_1_tip", "rl_dg_5_tip")
+"""The DG-5F has TWO opposable digits, so the opposition gate takes a sequence of thumbs."""
+DELTO_TIP_NAMES = ("rl_dg_2_tip", "rl_dg_3_tip", "rl_dg_4_tip")
+DELTO_ALL_TIP_NAMES = DELTO_THUMB_TIP_NAMES + DELTO_TIP_NAMES
+
+# Force above which a fingertip counts as loading the cube. 0.2 N is dexlift's value for this exact
+# hand (its ``good_finger_contact``/``any_finger_contact``/``object_upward_motion`` all use it,
+# dexlift_ur10e_delto_env_cfg.py:196-232), and it is ~9% of the fingertip force ceiling this hand
+# can actually produce -- ``effort_limit_sim`` 0.06 N.m over the 25.5 mm distal lever is ~2.2 N
+# (delto_cfg.py:65 records the same backstop) -- i.e. comfortably above sensor noise and far below a
+# real pinch. Not re-derived here.
+GRASP_CONTACT_THRESHOLD_N = 0.2
+
+ANY_CONTACT_WEIGHT = 0.01
+GRASP_CONTACT_WEIGHT = 0.05
+LIFT_WEIGHT = 0.05
+# Velocity scale of the lift kernel. NOT dexlift's 0.2: see ``_apply_grasp_shaping``.
+LIFT_STD_MPS = 0.05
+
+
+def _apply_fingertip_contact_sensors(cfg) -> None:
+    """Give the cube-stacking scene the five per-fingertip contact sensors its rewards will read.
+
+    MUST be called AFTER ``_apply_cube_objects``, which is what binds ``scene.insertive_object`` to
+    the cube34 entry; the reporter API has to be flipped on whatever object the scene ends up with,
+    not on the peg default it starts with.
+
+    RL-STATE CLASSES ONLY, not the five reset-state recording classes. Bank recording grades with
+    ``check_reset_state_success``, which is geometric and never reads a force, so those runs would
+    pay the contact-reporting cost for a signal nothing consumes -- and they are already the slowest
+    step of the pipeline.
+
+    ``.replace()``, NOT in-place mutation, on the robot spawn -- this one is load-bearing.
+    ``_apply_delto`` binds the robot as ``IMPLICIT_UR10E_DELTO.replace(prim_path=...)``, and
+    ``configclass``'s ``replace`` is ``dataclasses.replace``, i.e. a SHALLOW reconstruction: the new
+    ``ArticulationCfg``'s ``spawn`` IS the module-level ``IMPLICIT_UR10E_DELTO.spawn`` object at the
+    moment this runs (the per-instance deepcopy ``_custom_post_init`` performs happens only after
+    the whole ``__post_init__`` chain returns). Writing ``activate_contact_sensors`` through that
+    handle would turn contact reporting on for every UR10e+DELTO cfg constructed later in the same
+    process -- dexlift states the same hazard in its own words at
+    ``dexlift_ur10e_delto_env_cfg.py:313-316``. Rebinding instead is exactly what
+    ``_apply_grasp_matched_hand_actuator`` does with ``.actuators`` rather than mutating the shared
+    ``DELTO_HAND_ACTUATOR``.
+
+    The insertive object is written the same way for a weaker reason: ``cfg.variants`` is already a
+    per-instance deepcopy (``configclass``'s ``_return_f`` default factory), so in place would be
+    safe TODAY. It is spelled identically so the two lines cannot drift, and so that a future
+    ``_apply_cube_objects`` that sourced the object from the module-level ``variants`` dict directly
+    -- which is how the sibling ``render_reset_states_viewport.py`` reaches it -- could not silently
+    reintroduce the leak.
+
+    THE REPORTER API IS NOT OPTIONAL AND NOT SYMMETRIC-BY-DEFAULT. ``ur10e_delto.py:167`` ships the
+    robot with ``activate_contact_sensors=False`` and ``make_insertive_object`` never sets it, so
+    without both writes below every sensor registered here raises "could not find any bodies with
+    contact reporter API" at ``gym.make``. That failure mode was confirmed empirically against this
+    task family (``render_reset_states_viewport.py:226-234``).
+
+    SENSOR NAMING IS LOAD-BEARING. ``contact_rewards._sensor_force_magnitudes`` looks each finger up
+    as ``env.scene.sensors[f"{name}_object_s"]``. The suffix is the contract, not decoration.
+
+    COST, AND WHY IT IS EXPECTED TO FIT. Five filtered contact views per environment at the 2048
+    envs these runs use. This does NOT add collision pairs -- the fingertip/cube pairs are already
+    generated and already consume stack whether or not anyone reads them; what is new is that PhysX
+    also writes the filtered results out, which lands in ``gpu_max_rigid_patch_count`` /
+    ``gpu_max_rigid_contact_count`` (both 2**23, rl_state_cfg.py:891-892), not in the collision
+    stack. And the collision stack ceiling was already sized against a profile that INCLUDES these:
+    ``_apply_delto_collision_stack_size``'s own docstring describes the plant it pinned 3.75 GiB for
+    as "23 collider bodies, self-collisions ON, 5 fingertip sensors". Independently, dexlift's
+    UR10e+DELTO task runs this identical five-view set on this identical hand today.
+    ``gpu_collision_stack_size`` is deliberately NOT raised here: 4026531840 is already the maximum
+    legal value (the USD attribute is an unsigned int and exactly 4 GiB dies at ``gym.make``), so
+    there is no headroom to spend even if this were the pool under pressure.
+    IF PhysX nonetheless logs "collisionStackSize buffer overflow detected ... Contacts have been
+    dropped" -- which does not crash, it silently makes a touching finger indistinguishable from a
+    missing one, and would therefore silently disable every gate below -- the fix is the
+    OBJECT-CENTRIC form: one ``object_hand_s`` sensor on ``{ENV_REGEX_NS}/InsertiveObject`` filtered
+    to the five tips, which ``_sensor_force_magnitudes`` already prefers when present and which
+    ``scripts_v2/tools/validate_c4_bank.py:451-454`` already runs against an OmniReset DELTO scene.
+    One view instead of five, same forces (equal and opposite). Flagged rather than adopted because
+    the per-tip form is the one confirmed working on THIS task id.
+    """
+    cfg.scene.robot = cfg.scene.robot.replace(spawn=cfg.scene.robot.spawn.replace(activate_contact_sensors=True))
+    cfg.scene.insertive_object = cfg.scene.insertive_object.replace(
+        spawn=cfg.scene.insertive_object.spawn.replace(activate_contact_sensors=True)
+    )
+    for tip in DELTO_ALL_TIP_NAMES:
+        setattr(
+            cfg.scene,
+            f"{tip}_object_s",
+            ContactSensorCfg(
+                prim_path=f"{{ENV_REGEX_NS}}/Robot/{DELTO_HAND_PRIM}/{tip}",
+                filter_prim_paths_expr=["{ENV_REGEX_NS}/InsertiveObject"],
+            ),
+        )
+
+
+def _apply_grasp_shaping(cfg) -> None:
+    """Pay for closing the hand and for lifting what it closed on. Nothing else in this task does.
+
+    Added dynamically on ``cfg.rewards``, the same mechanism ``_apply_precision_shaping`` uses and
+    for the same reason: the new terms land after ``progress_context`` in ``vars()``, so the
+    ProgressContext-reading terms still see a populated context. (These three read no context at
+    all, so ordering is free for them; the mechanism is shared for consistency, not necessity.)
+
+    THE YARDSTICK, and it is the same one ``_apply_precision_shaping`` argued against. The standing
+    per-step cost of moving at all, measured on this policy, is
+
+        action_rate    -1e-3 * 28 (measured)                        = -2.80e-3 per step
+
+    and the failure that motivated the fine goal term was a task signal of +1.09e-4 per step sitting
+    26x BELOW it -- invisible. Every weight below is sized as a multiple of that same -2.80e-3, in
+    the same ``weight * f`` units (``step_dt`` = 0.1 s multiplies every term identically, so it
+    cancels out of every ratio here).
+
+    (a) ``any_finger_contact`` -- ``any_contact``, f in {0,1}, true when ANY of the five tips loads
+        the cube above 0.2 N.
+
+            0.01 * 1  = +1.0e-2 per step  =  3.6x the action-rate penalty
+
+        The cheap approach signal. Deliberately the SMALLEST of the three: it is satisfied by one
+        finger resting on the cube, which is precisely the degenerate "park the open hand on it"
+        behaviour the audit found. Big enough to be visible (anything under 2.8e-3 is not), small
+        enough that (b) strictly dominates it.
+
+    (b) ``grasp_contact`` -- ``contacts``, f in {0,1}, true only when at least one of the two
+        opposable digits AND at least one of fingers 2/3/4 both exceed 0.2 N, i.e. the cube is
+        PINCHED rather than touched.
+
+            0.05 * 1  = +5.0e-2 per step  = 17.9x the action-rate penalty
+                                          =  5.0x term (a), so a pinch beats a touch by 4.0e-2/step
+
+        Cross-checked against the precedent's own GAE arithmetic (gamma 0.99, lam 0.95, effective
+        horizon 16.8 steps, ``_apply_precision_shaping``): the advantage of switching to a
+        permanently-pinching policy is 16.8 * 5.0e-2 = 0.84, against the 1.68 that docstring
+        computes for crossing the binary success gate. Holding the cube is worth HALF of solving the
+        task, per unit horizon -- a strict subgoal, never a substitute. And the two are not
+        alternatives in the first place: ``success_reward`` pays 1.0 every step the cube is aligned
+        and does not require a release, so a policy holding the cube at the goal collects (b) AND
+        the success term together.
+
+    (c) ``object_lift`` -- ``object_upward_velocity_bonus``, f = tanh(vz / std) gated on the same
+        opposition contact, signed.
+
+        std is 0.05 m/s, NOT dexlift's 0.2. dexlift set 0.2 against ``RelativeJointPositionAction``
+        at 0.1 rad per step on the arm; this task drives ``RelCartesianOSC``, whose realised motion
+        was measured at ~4.7 mm of end-effector travel per unit action per 0.1 s step
+        (``_apply_precision_shaping``) -- about 0.047 m/s at full throttle, which the held cube
+        tracks. At std 0.2 a full-throttle lift scores tanh(0.235) = 0.23 and three quarters of the
+        kernel's range sits on velocities this action space cannot reach. At std 0.05 it scores
+        tanh(0.94) = 0.735:
+
+            0.05 * 0.735 = +3.7e-2 per step  = 13.1x the action-rate penalty, full-throttle lift
+            0.05 * 0.44  = +2.2e-2 per step  =  7.9x, at half throttle (0.024 m/s)
+
+        Signed and odd in vz, so a symmetric up-then-down round trip integrates to ~0: it pays for
+        getting the cube off the table and hands the payment back on the placement descent, rather
+        than biasing the policy to hold the cube high. The stack seat sits ~34 mm ABOVE the spawn
+        height, so the net over a completed stack is positive.
+
+        HONEST BOUND on the obvious exploit: because tanh saturates, a fast-up/slow-down oscillation
+        does farm this rather than integrating to zero. It is bounded at 0.05 * 1.0 = 5.0e-2 per
+        step, i.e. a logged 0.05 against ``success_reward``'s 1.0, and the existing ``joint_vel``
+        (-1e-2) and ``abnormal_robot`` (-100) terms already price arm velocity.
+
+    WHAT THIS LOOKS LIKE IN TENSORBOARD. The RewardManager multiplies by ``step_dt`` = 0.1 s
+    (decimation 12, sim.dt 1/120) and IsaacLab divides the episode sum by ``max_episode_length_s`` =
+    16.0, so for a full 160-step episode the logged value is exactly ``weight * mean(f)``. A policy
+    pinching for 60% of the episode logs 0.030 for (b), against ``action_rate``'s -0.028,
+    ``dense_success_reward``'s ~0.090 and ``dense_success_reward_fine``'s <=0.100. Visible, and about
+    a third of the transport term -- not a new dominant objective.
+
+    NO OBSERVATION CHANGES. Deliberately: the actor is 380 wide (76 features x 5 history) and the
+    critic 375, and ``runner.load()`` is ``strict=True``, so a single extra ObsTerm would make every
+    existing checkpoint fail to load and break the curriculum runs that resume from them. The policy
+    reads contact only through the return, which is what an RL reward is for.
+    """
+    gate = {
+        "threshold": GRASP_CONTACT_THRESHOLD_N,
+        "thumb_contact_name": DELTO_THUMB_TIP_NAMES,
+        "tip_contact_names": DELTO_TIP_NAMES,
+    }
+    cfg.rewards.any_finger_contact = RewTerm(
+        func=task_mdp.any_contact,
+        weight=ANY_CONTACT_WEIGHT,
+        params={"threshold": GRASP_CONTACT_THRESHOLD_N, "contact_names": DELTO_ALL_TIP_NAMES},
+    )
+    cfg.rewards.grasp_contact = RewTerm(func=task_mdp.contacts, weight=GRASP_CONTACT_WEIGHT, params=dict(gate))
+    cfg.rewards.object_lift = RewTerm(
+        func=task_mdp.object_upward_velocity_bonus,
+        weight=LIFT_WEIGHT,
+        # The ported default is SceneEntityCfg("object"); OmniReset's manipulated body is
+        # "insertive_object" and there is no entity named "object" in this scene at all.
+        params={**gate, "std": LIFT_STD_MPS, "object_cfg": SceneEntityCfg("insertive_object")},
     )
 
 
@@ -317,6 +557,8 @@ class CubeStackTrainCfg(Ur10eDeltoRelCartesianOSCTrainCfg):
         _apply_hand_matched_mass_randomization(self)
         _apply_oriented(self)
         _apply_precision_shaping(self)
+        _apply_fingertip_contact_sensors(self)
+        _apply_grasp_shaping(self)
 
 
 @configclass
@@ -329,6 +571,8 @@ class CubeStackEvalCfg(Ur10eDeltoRelCartesianOSCEvalCfg):
         _apply_hand_matched_mass_randomization(self)
         _apply_oriented(self)
         _apply_precision_shaping(self)
+        _apply_fingertip_contact_sensors(self)
+        _apply_grasp_shaping(self)
 
 
 # ---------------------------------------------------------------------------------------
@@ -344,6 +588,8 @@ class CubeStackNoOrientTrainCfg(Ur10eDeltoRelCartesianOSCTrainCfg):
         _apply_hand_matched_mass_randomization(self)
         _apply_orientation_free(self)
         _apply_precision_shaping(self)
+        _apply_fingertip_contact_sensors(self)
+        _apply_grasp_shaping(self)
 
 
 @configclass
@@ -356,6 +602,8 @@ class CubeStackNoOrientEvalCfg(Ur10eDeltoRelCartesianOSCEvalCfg):
         _apply_hand_matched_mass_randomization(self)
         _apply_orientation_free(self)
         _apply_precision_shaping(self)
+        _apply_fingertip_contact_sensors(self)
+        _apply_grasp_shaping(self)
 
 
 # ---------------------------------------------------------------------------------------
