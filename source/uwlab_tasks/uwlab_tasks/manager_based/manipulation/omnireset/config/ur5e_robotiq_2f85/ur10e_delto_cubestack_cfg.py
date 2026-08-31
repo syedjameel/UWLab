@@ -985,3 +985,116 @@ class CubeStackTwoFingerEvalCfg(CubeStackNoOrientEvalCfg):
     def __post_init__(self):
         super().__post_init__()
         _apply_two_finger_hand(self)
+
+
+# =========================================================================================
+# GRIP BIAS -- the fix for "every EEGrasped reset drops the cube on the first control step"
+# =========================================================================================
+# THE DEFECT, MEASURED. `grip_probe.py` resets into each family and applies the null action for
+# 6 s. ObjectAnywhereEEGrasped starts the cube at 102 mm and ends at 34 mm: it slides out of the
+# hand and onto the table, with every fingertip contact force under 0.01 N against a 0.29 N cube
+# weight. ObjectRestingEEGrasped and ObjectPartiallyAssembledEEGrasped look stable only because
+# their cube is already resting on the table or on the base cube -- there too the nearest fingertip
+# is 35-40 mm from the cube centre and carries no load. None of the three "EEGrasped" families is
+# actually holding anything by the time the policy gets to act.
+#
+# WHY. The hand action term is `RelativeJointPositionAction` with `use_zero_offset=True`:
+#
+#     joint_position_target = measured_joint_pos + scale * action        (+ offset, which is 0)
+#
+# `MultiResetManager._reset_to` restores the bank's recorded `joint_position_target` -- the squeeze
+# the recorder had commanded when it validated the grasp -- but that target survives only until the
+# first `apply_actions()`, which unconditionally overwrites it. At action = 0 the new target equals
+# the measurement, the PD error is zero, and so is the grip force. The recorded grasp is discarded
+# one control step after every single reset.
+#
+# The consequence is visible in the training logs and explains them exactly:
+# `Metrics/task_1_success_rate` (ObjectAnywhereEEGrasped) sits at 0.0000 after 200 iterations, while
+# the near-goal family trains to ~0.20 -- because near-goal never needed a grasp. Its cube is
+# resting on the base cube and the task is a nudge.
+#
+# THE FIX. A constant offset on the flexion joints restores exactly the condition the recorder
+# captured: a PD set point held a fixed angle ahead of the measurement. Against a finger blocked by
+# the cube that is a constant force (stiffness x bias); against a free finger it is a slow close.
+# It is a BIAS, NOT A CONSTRAINT -- with scale 0.1 and clip (-1, 1) the policy still commands
+# [-0.1 + bias, +0.1 + bias] per step, so opening the hand stays available at every bias below
+# 0.1 rad. Nothing about the reset banks changes; they become valid instead of hollow.
+#
+# WHY THE BANK CANNOT SUPPLY THE SQUEEZE ITSELF. Decoding the banks directly: the stored hand
+# posture IS the validated closed posture (mean |q - closed| = 0.049 rad on C3 and 0.065 on C4,
+# against |q - open| = 0.281 / 0.293), so the geometry the recorder captured is right -- the fingers
+# really are around the cube. But the stored `joint_position_target` sits a mean of 0.0036 rad from
+# the stored `joint_position`. Applied effort on a PD joint is stiffness x (target - q), so 3.6 mrad
+# on the 0.30 N*m/rad distal joints is about 0.04 N at the fingertip against a 0.29 N cube. The
+# recorder ended its scripted close with the fingers SETTLED at the closed posture, so what it
+# captured is a geometric closure with essentially no force in it. Restoring that target perfectly
+# would still not hold the cube; there is no grip in the bank to restore.
+#
+# WHICH JOINTS, AND HOW MUCH -- measured, not argued. The `--hold_hand` control in `grip_probe.py`
+# drives all twenty hand joints at +0.1 rad/step and settles the fingertip forces at
+# 0.48 / 1.10 / 0.94 / 0.50 / 2.56 N, holding the C3 cube for the whole episode (z 91.3 -> 95.0 mm,
+# it even lifts slightly, and the cube is pulled 6 mm further into the grasp centre). So closure is
+# entirely within the hand's authority; only the command was missing. A bias restricted to the
+# `_2`/`_4` flexion pair -- the joints that differ between the stored open and closed postures --
+# got the C3 drop only from 83 mm down to 40 mm at 0.08 rad. The `_3` joints are IDENTICAL in both
+# stored postures yet carry the largest stiffness in the hand (4.0 N*m/rad), and the hold_hand
+# forces show they supply most of the grip. So: every hand joint.
+GRIP_BIAS_RAD = 0.05
+
+
+def _grip_bias_joint_names(action_cfg) -> list[str]:
+    """Every joint the installed hand action term drives. See the block comment above."""
+    return list(action_cfg.scale) if isinstance(action_cfg.scale, dict) else []
+
+
+def _apply_grip_bias(cfg, bias: float = GRIP_BIAS_RAD) -> None:
+    """Hold the grasp the reset bank recorded, instead of dropping it on the first step.
+
+    MUST be called LAST, after any function that replaces ``cfg.actions.gripper`` -- notably
+    ``_apply_two_finger_hand``. It reads the joint set off whatever action term is installed, so it
+    composes with the two-finger variant without knowing about it.
+    """
+    g = cfg.actions.gripper
+    offset = {n: bias for n in _grip_bias_joint_names(g)}
+    if not offset:
+        raise ValueError(
+            f"{type(cfg).__name__}: gripper action term has no dict `scale`, so the grip-bias joint "
+            "set cannot be resolved by name. Give the action term a per-joint scale dict."
+        )
+    cfg.actions.gripper = g.replace(use_zero_offset=False, offset=offset)
+
+
+@configclass
+class CubeStackGripTrainCfg(CubeStackNoOrientTrainCfg):
+    """Five-finger position-only cube stacking whose EEGrasped resets keep hold of the cube."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        _apply_grip_bias(self)
+
+
+@configclass
+class CubeStackGripEvalCfg(CubeStackNoOrientEvalCfg):
+    """Play/eval twin of :class:`CubeStackGripTrainCfg`."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        _apply_grip_bias(self)
+
+
+@configclass
+class CubeStackTwoFingerGripTrainCfg(CubeStackTwoFingerTrainCfg):
+    """The two-finger hand AND the grip bias. Action dimension 14; resets that actually hold."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        _apply_grip_bias(self)
+
+
+@configclass
+class CubeStackTwoFingerGripEvalCfg(CubeStackTwoFingerEvalCfg):
+    """Play/eval twin of :class:`CubeStackTwoFingerGripTrainCfg`."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        _apply_grip_bias(self)

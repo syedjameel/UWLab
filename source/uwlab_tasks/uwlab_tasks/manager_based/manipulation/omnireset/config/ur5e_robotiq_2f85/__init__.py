@@ -707,6 +707,51 @@ gym.register(
     },
 )
 
+# GRIP BIAS: identical to the two tasks above except that the hand action carries a constant
+# closing offset, so an EEGrasped reset keeps hold of the cube instead of dropping it on the first
+# control step. See ur10e_delto_cubestack_cfg._apply_grip_bias for the measurement that motivates it.
+# Checkpoints transfer between a task and its Grip twin -- the observation and action dimensions are
+# unchanged; only the affine pre-processing of the hand action differs.
+gym.register(
+    id="OmniReset-UR10eDelto-CubeStackGrip-RelCartesianOSC-State-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.ur10e_delto_cubestack_cfg:CubeStackGripTrainCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_cfg:UR10eDelto_PPORunnerCfg",
+    },
+)
+
+gym.register(
+    id="OmniReset-UR10eDelto-CubeStackGrip-RelCartesianOSC-State-Play-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.ur10e_delto_cubestack_cfg:CubeStackGripEvalCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_cfg:UR10eDelto_PPORunnerCfg",
+    },
+)
+
+gym.register(
+    id="OmniReset-UR10eDelto-CubeStackTwoFingerGrip-RelCartesianOSC-State-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.ur10e_delto_cubestack_cfg:CubeStackTwoFingerGripTrainCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_cfg:UR10eDelto_PPORunnerCfg",
+    },
+)
+
+gym.register(
+    id="OmniReset-UR10eDelto-CubeStackTwoFingerGrip-RelCartesianOSC-State-Play-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.ur10e_delto_cubestack_cfg:CubeStackTwoFingerGripEvalCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_cfg:UR10eDelto_PPORunnerCfg",
+    },
+)
+
 gym.register(
     id="OmniReset-CubeStack-PartialAssemblies-v0",
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
