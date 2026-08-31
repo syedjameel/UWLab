@@ -682,6 +682,31 @@ gym.register(
     },
 )
 
+# TWO-FINGER: position-only, with the hand's action narrowed to fingers 1 and 2 -- 6 + 8 = 14
+# dimensions instead of 6 + 20 = 26. The stored reset banks are UNCHANGED and stay valid; fingers
+# 3/4/5 hold the posture the bank's own recorded joint target puts them in. Checkpoints from the
+# 26-dim tasks will not load (actor obs 380 -> 320). See
+# ur10e_delto_cubestack_cfg._apply_two_finger_hand.
+gym.register(
+    id="OmniReset-UR10eDelto-CubeStackTwoFinger-RelCartesianOSC-State-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.ur10e_delto_cubestack_cfg:CubeStackTwoFingerTrainCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_cfg:UR10eDelto_PPORunnerCfg",
+    },
+)
+
+gym.register(
+    id="OmniReset-UR10eDelto-CubeStackTwoFinger-RelCartesianOSC-State-Play-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.ur10e_delto_cubestack_cfg:CubeStackTwoFingerEvalCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_cfg:UR10eDelto_PPORunnerCfg",
+    },
+)
+
 gym.register(
     id="OmniReset-CubeStack-PartialAssemblies-v0",
     entry_point="isaaclab.envs:ManagerBasedRLEnv",

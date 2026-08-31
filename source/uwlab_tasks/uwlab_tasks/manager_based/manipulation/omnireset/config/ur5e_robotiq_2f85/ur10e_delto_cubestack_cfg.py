@@ -108,6 +108,8 @@ Registered gym ids
 * ``OmniReset-UR10eDelto-CubeStack-Object{...}-v0``            x5, reset-state recording
 * ``OmniReset-UR10eDelto-CubeStack-RelCartesianOSC-State-v0``  oriented, + ``-Play``
 * ``OmniReset-UR10eDelto-CubeStackNoOrient-RelCartesianOSC-State-v0``  position-only, + ``-Play``
+* ``OmniReset-UR10eDelto-CubeStackTwoFinger-RelCartesianOSC-State-v0``  position-only, hand acts
+  in 8 dims instead of 20 (total 14, not 26), + ``-Play``
 
 Every class below PINS the cube34 pair via ``_apply_cube_objects``, so
 ``env.scene.insertive_object=cube34 env.scene.receptive_object=cube34`` is no longer required on the
@@ -134,6 +136,7 @@ from isaaclab.sensors import ContactSensorCfg
 from isaaclab.utils import configclass
 
 import uwlab_assets.robots.ur10e_delto as ur10e_delto
+from uwlab.envs.mdp.full_actuation import assert_action_cfg_fully_actuates
 
 from ... import mdp as task_mdp
 from .actions import Ur10eDeltoRelativeOSCAction, Ur10eDeltoRelativeOSCEvalAction
@@ -816,3 +819,169 @@ class CubeStackNearGoalOnlyTrainCfg(CubeStackNoOrientTrainCfg):
         if rst is not None:
             rst.params["reset_types"] = ["ObjectPartiallyAssembledEEGrasped"]
             rst.params["probs"] = [1.0]
+
+
+# ---------------------------------------------------------------------------------------
+# TWO-FINGER VARIANT: the hand acts in 8 dimensions, not 20
+# ---------------------------------------------------------------------------------------
+# WHAT IT DOES. Replaces the 20-dimensional hand action with ``DELTO_TWO_FINGER_ACTIONS``
+# (``ur10e_delto/actions.py:198-204``), which drives fingers 1 and 2 only. Total action dimension
+# falls 6 + 20 = 26 -> 6 + 8 = 14. For reference the paper's own robot acts in 7 (6 Cartesian + a
+# binary gripper), so 26 was always a large departure from the setting its hyperparameters were
+# chosen in.
+#
+# WHY {1, 2} AND NOT {1, 5}. Both are stated in this repo and they are not in conflict, but the
+# distinction decides whether an opposed grip is reachable at all. Fingers 1 and 5 are the two
+# THUMB-SIDE digits -- ``validate_c4_bank.py:87`` ("a thumb-side tip (rl_dg_1 or rl_dg_5)"),
+# ``_THUMB_SIDE_STIFFNESS`` above, and ``DELTO_THUMB_TIP_NAMES`` all say so -- and the opposition
+# gate opposes EITHER of them against fingers 2/3/4. So {1, 5} is two digits on the SAME side of
+# the hand and cannot pinch anything between them; {1, 2} takes one from each side and is the
+# hand's designed jaw. ``DeltoHand/metadata.yaml:8`` states it outright ("a virtual jaw of finger 1
+# against finger 2") and ``grasp_center_offset`` is ``midpoint(rl_dg_1_tip, rl_dg_2_tip)``, with
+# the same file recording that the five-tip centroid was REJECTED as the grasp centre because
+# finger 5 sits at y = -68 mm. {1, 2} is therefore the one pair that leaves the calibrated grasp
+# centre -- and with it the whole sampled grasp bank -- meaningful.
+#
+# WHY THE STORED BANKS STAY VALID. The obvious form of this change is to hold fingers 3/4/5 at
+# ``DELTO_TUCKED_HELD_FINGER_JOINT_POS`` (``actions.py:179-192``). That would invalidate every
+# bank: the banks record all 26 joint positions from grasps sampled with all five fingers, so
+# forcing 3/4/5 to a different posture at reset moves them against the cube and disturbs the grasp
+# the bank was graded on. Regenerating the banks is hours of GPU.
+#
+# So the tuck is NOT applied. Fingers 3/4/5 are simply left out of the action term, and hold
+# whatever posture the reset put them in. Verified against the sources rather than assumed:
+#
+#   * ``RelativeJointPositionAction.apply_actions`` calls
+#     ``set_joint_position_target(..., joint_ids=self._joint_ids)`` -- it writes ONLY the joints
+#     the term resolved. ``Articulation.set_joint_position_target`` assigns into
+#     ``_data.joint_pos_target[env_ids, joint_ids]``, a persistent buffer, so entries no term
+#     writes are left untouched.
+#   * ``Articulation.reset()`` does NOT clear ``joint_pos_target``, so a stale target from the
+#     previous episode WOULD persist if nothing rewrote it. Both reset paths this task uses do
+#     rewrite it, for the full joint set:
+#       - ``MultiResetManager._reset_to`` (``omnireset/mdp/events.py:2506``) calls
+#         ``set_joint_position_target(joint_position_target, env_ids=env_ids)`` with no
+#         ``joint_ids``, i.e. all 26 joints from the bank's own recorded target, and then asserts
+#         at ``:2549-2560`` that what was applied equals what was intended.
+#       - ``reset_end_effector_from_grasp_dataset`` (``events.py:1500-1508``) reconciles the
+#         targets explicitly over ``self.gripper_joint_ids`` -- all 20 hand joints -- and its own
+#         comment records why (a stale gripper target is a measured ~11 rad median gap that reaches
+#         PhysX on the first physics step).
+#
+#   Net: after reset, fingers 3/4/5 carry the bank's own recorded target and nothing moves it for
+#   the rest of the episode. That is strictly closer to the recorded grasp than the tuck would be.
+#
+# WHAT IS NARROWED, AND WHAT DELIBERATELY IS NOT. ``override_gripper_joints`` (called once for
+# every DELTO variant at ``delto_cfg.py:262``) points three things at the 20-joint regex. Only ONE
+# of them may be narrowed here:
+#   * ``check_gripper_joints`` -- the startup half of the full-actuation guard. It resolves its
+#     ``joint_names`` on the articulation and then requires each resolved joint to own an action
+#     dimension (``events.py:1137-1138`` -> ``full_actuation.assert_joints_independently_actuated``).
+#     Left at 20 it would fail the process at startup, correctly. Narrowed to the two-finger regex
+#     it enforces exactly the same rule over exactly the joints this variant drives -- the guard
+#     forbids joints SHARING an action dimension, and ``required_joints`` is a caller argument
+#     precisely so a variant can say which joints it is making that promise about.
+#   * ``reset_end_effector_pose_from_grasp_dataset``'s ``gripper_cfg`` -- NOT narrowed. This is the
+#     selection the grasp replay writes fingers 3/4/5 through; narrowing it is exactly how the
+#     "banks stay valid" argument above would be broken.
+#   * ``randomize_gripper_actuator_parameters`` -- NOT narrowed. Gain DR on a joint no action
+#     drives is inert, and leaving it whole keeps the DR distribution identical to the runs this
+#     variant is compared against.
+# The narrowing is written into THIS variant's own event term, so ``delto_cfg.py`` and every other
+# DELTO task keep the 20-joint requirement unchanged.
+#
+# THE CONSTRUCTION-TIME GUARD IS RE-ASSERTED, not skipped. ``delto_cfg.py:268`` runs
+# ``assert_action_cfg_fully_actuates`` over all 20 joints inside ``_apply_delto``, which happens
+# during ``super().__post_init__()`` -- i.e. BEFORE the swap below, against the action term that is
+# still there at that moment. Passing it therefore proves nothing about the config that ships. The
+# helper re-runs the guard after the swap, at the narrowed requirement, so the two-finger term is
+# checked in its own right rather than inheriting a check of something it replaced.
+#
+# CONTACT REWARDS MUST BE NARROWED WITH IT. ``fingertip_object_distance_tanh`` is
+# ``1 - tanh(mean_tip_distance / std)``, a MEAN over the tips it is handed. Three tips that can no
+# longer be commanded would contribute a distance the policy cannot reduce, putting a floor under
+# that mean and flattening the term's gradient -- the same "length scale chosen without reference
+# to the distances the policy occupies" failure ``FINGERTIP_DISTANCE_STD_M`` documents, arrived at
+# from the other direction. The opposition gate is narrowed for a stronger reason: its thumb side
+# would otherwise be satisfiable by finger 5, which no action can move, and its non-thumb side by
+# fingers 3/4.
+#
+# The sensors for the undriven tips are dropped too. Setting a scene entry to ``None`` removes it
+# (``InteractiveScene._add_entities_from_cfg`` skips ``asset_cfg is None``); this is the same idiom
+# ``CubeStackPartialAssembliesCfg`` uses to drop ``axial_depth_sampling``. Three fewer filtered
+# contact views per environment at 2048 envs, reading forces nothing consumes.
+#
+# COST. Existing checkpoints will NOT load. ``prev_actions`` is an ObsTerm, so the actor's feature
+# width falls 76 -> 64 (26 prev_actions -> 14, ``joint_pos`` stays 26 because the articulation
+# still HAS 20 hand joints, 4 pose terms x 6 unchanged) and the concatenated actor observation
+# 380 -> 320 at history 5. The critic falls 375 -> 363 at history 1. ``runner.load()`` is
+# ``strict=True``. That is expected and is the price of the smaller action space, not a bug.
+DELTO_TWO_FINGER_THUMB_TIP_NAMES = ("rl_dg_1_tip",)
+"""Finger 5 is the OTHER thumb-side digit and is undriven here, so the gate's thumb side is one tip."""
+DELTO_TWO_FINGER_TIP_NAMES = ("rl_dg_2_tip",)
+DELTO_TWO_FINGER_ALL_TIP_NAMES = DELTO_TWO_FINGER_THUMB_TIP_NAMES + DELTO_TWO_FINGER_TIP_NAMES
+# Derived by difference rather than restated, so a change to either list above cannot leave a
+# sensor registered for a finger the action term no longer drives.
+DELTO_UNDRIVEN_TIP_NAMES = tuple(tip for tip in DELTO_ALL_TIP_NAMES if tip not in DELTO_TWO_FINGER_ALL_TIP_NAMES)
+
+
+def _apply_two_finger_hand(cfg) -> None:
+    """Drive fingers 1 and 2 only; leave 3/4/5 holding whatever posture the reset gave them.
+
+    MUST be called LAST -- after ``_apply_fingertip_contact_sensors`` and ``_apply_grasp_shaping``,
+    which is what ``super().__post_init__()`` on the NoOrient base does. It narrows the terms those
+    two register rather than pre-empting them, so the base classes stay byte-for-byte untouched and
+    the three live NoOrient training runs are unaffected.
+
+    See the block comment above for why the pair is {1, 2}, why the stored reset banks survive this
+    unchanged, and which of ``override_gripper_joints``'s three selections may be narrowed.
+    """
+    # ``.replace()`` rather than assigning the module-level instance: the same shared-config hazard
+    # ``_apply_fingertip_contact_sensors`` documents at length for ``scene.robot.spawn``. Nothing
+    # mutates an action term today, so this is insurance, not a fix.
+    cfg.actions.gripper = ur10e_delto.DELTO_TWO_FINGER_ACTIONS.replace()
+
+    # The startup guard, re-scoped to the joints this variant actually promises to actuate
+    # independently. Term absent on a variant that does not carry it -> nothing to narrow.
+    check = getattr(cfg.events, "check_gripper_joints", None)
+    if check is not None:
+        check.params["joint_names"] = [ur10e_delto.DELTO_TWO_FINGER_JOINT_REGEX]
+
+    # ...and the construction-time half, which delto_cfg.py:268 ran against the action term this
+    # line just replaced. Raises from this frame, so it cannot be swallowed by a PLAY callback.
+    assert_action_cfg_fully_actuates(cfg.actions, ur10e_delto.DELTO_TWO_FINGER_JOINT_NAMES, context=type(cfg).__name__)
+
+    for tip in DELTO_UNDRIVEN_TIP_NAMES:
+        setattr(cfg.scene, f"{tip}_object_s", None)
+
+    gate = {
+        "threshold": GRASP_CONTACT_THRESHOLD_N,
+        "thumb_contact_name": DELTO_TWO_FINGER_THUMB_TIP_NAMES,
+        "tip_contact_names": DELTO_TWO_FINGER_TIP_NAMES,
+    }
+    cfg.rewards.fingertip_object_distance.params["asset_cfg"] = SceneEntityCfg(
+        "robot", body_names=list(DELTO_TWO_FINGER_ALL_TIP_NAMES)
+    )
+    cfg.rewards.any_finger_contact.params["contact_names"] = DELTO_TWO_FINGER_ALL_TIP_NAMES
+    # ``update``, not replacement: ``object_lift`` carries ``std`` and ``object_cfg`` alongside the
+    # gate and both must survive.
+    cfg.rewards.grasp_contact.params.update(gate)
+    cfg.rewards.object_lift.params.update(gate)
+
+
+@configclass
+class CubeStackTwoFingerTrainCfg(CubeStackNoOrientTrainCfg):
+    """Position-only cube stacking with an 8-dimensional hand. Total action dimension 14."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        _apply_two_finger_hand(self)
+
+
+@configclass
+class CubeStackTwoFingerEvalCfg(CubeStackNoOrientEvalCfg):
+    """Play/eval twin of :class:`CubeStackTwoFingerTrainCfg`, on the eval OSC gains."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        _apply_two_finger_hand(self)
