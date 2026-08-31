@@ -95,9 +95,17 @@ Registered gym ids
 * ``OmniReset-UR10eDelto-CubeStack-RelCartesianOSC-State-v0``  oriented, + ``-Play``
 * ``OmniReset-UR10eDelto-CubeStackNoOrient-RelCartesianOSC-State-v0``  position-only, + ``-Play``
 
-All of them must be run with ``env.scene.insertive_object=cube34 env.scene.receptive_object=cube34``
-(``env.scene.object=cube34`` for grasp sampling). The variant is not pinned in these configs,
-matching how the published recipe drives every other object pair.
+Every class below PINS the cube34 pair via ``_apply_cube_objects``, so
+``env.scene.insertive_object=cube34 env.scene.receptive_object=cube34`` is no longer required on the
+command line -- it is merely redundant, and still overrides if passed. Grasp sampling takes
+``env.scene.object=cube34`` separately.
+
+Pinning is not cosmetic. ``RlStateSceneCfg`` defaults these two fields to
+``Props/Custom/Peg/peg.usd`` and ``Props/Custom/PegHole/peg_hole.usd``, so a run that omitted the
+flags was peg-in-hole -- different geometry, different ``assembled_offset``, and a success threshold
+read from PegHole's metadata -- while every log line, checkpoint directory and TensorBoard run still
+said CubeStack. The ``assembled_offset`` assertion in ``commands.py`` covers the table-leg/fixture
+pair only and would not have caught it.
 
 The reset-state banks are SHARED between the two variants: bank recording grades with
 ``check_reset_state_success``, which reads ``success_thresholds`` from the receptive object's
@@ -189,6 +197,27 @@ def _apply_precision_shaping(cfg, std: float = PRECISION_SHAPING_STD) -> None:
     )
 
 
+def _apply_cube_objects(cfg) -> None:
+    """Pin the scene to the cube34 pair, so the task cannot silently become peg-in-hole.
+
+    ``RlStateSceneCfg`` defaults ``insertive_object`` to ``Props/Custom/Peg/peg.usd`` and
+    ``receptive_object`` to ``Props/Custom/PegHole/peg_hole.usd``. Until now every CubeStack class
+    inherited those defaults and relied on the caller passing
+    ``env.scene.insertive_object=cube34 env.scene.receptive_object=cube34`` on the command line.
+    Forget the flags and the run is peg-in-hole: different geometry, different
+    ``assembled_offset``, and different ``success_thresholds`` read from PegHole's metadata -- while
+    every log line, checkpoint directory and TensorBoard run still says CubeStack. There is an
+    assertion guarding assembled offsets (``commands.py``) but it covers the table-leg/fixture pair
+    only, so nothing would have caught it.
+
+    Pinning here makes the flags redundant rather than forbidden: ``variants`` still resolves, so
+    ``env.scene.insertive_object=<other>`` on the command line continues to override this.
+    """
+    v = cfg.variants
+    cfg.scene.insertive_object = v["scene.insertive_object"]["cube34"]
+    cfg.scene.receptive_object = v["scene.receptive_object"]["cube34"]
+
+
 def _apply_cube_dataset_dir(cfg) -> None:
     """Point every ``dataset_dir``-bearing event term at the DELTO-specific cube tree."""
     _apply_delto_dataset_dir(cfg, CUBE_DATASET_DIR)
@@ -219,6 +248,7 @@ class CubeStackObjectAnywhereEEAnywhereCfg(Ur10eDeltoObjectAnywhereEEAnywhereRes
 
     def __post_init__(self):
         super().__post_init__()
+        _apply_cube_objects(self)
         _apply_cube_dataset_dir(self)
         _apply_grasp_matched_hand_actuator(self)
         _apply_hand_matched_mass_randomization(self)
@@ -230,6 +260,7 @@ class CubeStackObjectRestingEEGraspedCfg(Ur10eDeltoObjectRestingEEGraspedResetSt
 
     def __post_init__(self):
         super().__post_init__()
+        _apply_cube_objects(self)
         _apply_cube_dataset_dir(self)
         _apply_grasp_matched_hand_actuator(self)
         _apply_hand_matched_mass_randomization(self)
@@ -241,6 +272,7 @@ class CubeStackObjectAnywhereEEGraspedCfg(Ur10eDeltoObjectAnywhereEEGraspedReset
 
     def __post_init__(self):
         super().__post_init__()
+        _apply_cube_objects(self)
         _apply_cube_dataset_dir(self)
         _apply_grasp_matched_hand_actuator(self)
         _apply_hand_matched_mass_randomization(self)
@@ -252,6 +284,7 @@ class CubeStackObjectPartiallyAssembledEEAnywhereCfg(Ur10eDeltoObjectPartiallyAs
 
     def __post_init__(self):
         super().__post_init__()
+        _apply_cube_objects(self)
         _apply_cube_dataset_dir(self)
         _apply_grasp_matched_hand_actuator(self)
         _apply_hand_matched_mass_randomization(self)
@@ -265,6 +298,7 @@ class CubeStackObjectPartiallyAssembledEEGraspedCfg(Ur10eDeltoObjectPartiallyAss
 
     def __post_init__(self):
         super().__post_init__()
+        _apply_cube_objects(self)
         _apply_cube_dataset_dir(self)
         _apply_grasp_matched_hand_actuator(self)
         _apply_hand_matched_mass_randomization(self)
@@ -277,6 +311,7 @@ class CubeStackObjectPartiallyAssembledEEGraspedCfg(Ur10eDeltoObjectPartiallyAss
 class CubeStackTrainCfg(Ur10eDeltoRelCartesianOSCTrainCfg):
     def __post_init__(self):
         super().__post_init__()
+        _apply_cube_objects(self)
         _apply_cube_dataset_dir(self)
         _apply_grasp_matched_hand_actuator(self)
         _apply_hand_matched_mass_randomization(self)
@@ -288,6 +323,7 @@ class CubeStackTrainCfg(Ur10eDeltoRelCartesianOSCTrainCfg):
 class CubeStackEvalCfg(Ur10eDeltoRelCartesianOSCEvalCfg):
     def __post_init__(self):
         super().__post_init__()
+        _apply_cube_objects(self)
         _apply_cube_dataset_dir(self)
         _apply_grasp_matched_hand_actuator(self)
         _apply_hand_matched_mass_randomization(self)
@@ -302,6 +338,7 @@ class CubeStackEvalCfg(Ur10eDeltoRelCartesianOSCEvalCfg):
 class CubeStackNoOrientTrainCfg(Ur10eDeltoRelCartesianOSCTrainCfg):
     def __post_init__(self):
         super().__post_init__()
+        _apply_cube_objects(self)
         _apply_cube_dataset_dir(self)
         _apply_grasp_matched_hand_actuator(self)
         _apply_hand_matched_mass_randomization(self)
@@ -313,6 +350,7 @@ class CubeStackNoOrientTrainCfg(Ur10eDeltoRelCartesianOSCTrainCfg):
 class CubeStackNoOrientEvalCfg(Ur10eDeltoRelCartesianOSCEvalCfg):
     def __post_init__(self):
         super().__post_init__()
+        _apply_cube_objects(self)
         _apply_cube_dataset_dir(self)
         _apply_grasp_matched_hand_actuator(self)
         _apply_hand_matched_mass_randomization(self)
