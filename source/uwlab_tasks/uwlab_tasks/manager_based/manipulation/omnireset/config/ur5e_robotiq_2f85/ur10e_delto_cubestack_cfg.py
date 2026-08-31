@@ -1098,3 +1098,81 @@ class CubeStackTwoFingerGripEvalCfg(CubeStackTwoFingerEvalCfg):
     def __post_init__(self):
         super().__post_init__()
         _apply_grip_bias(self)
+
+
+# =========================================================================================
+# TRANSPORT SHAPING -- the band between "anywhere on the table" and "the last centimetre"
+# =========================================================================================
+# WHAT IS MISSING. There are now two goal-distance terms and neither one can see the carry.
+# `dense_success_reward` is exp(-d/1.0), so across the whole Stable-Grasp transport -- the cube
+# starts a mean 209 mm from the goal -- it moves from 0.811 to 0.995. At weight 0.1 and a 0.1 s
+# step that is 1.8e-3 per step, or about 0.29 of episode reward for a flawless carry.
+# `dense_success_reward_fine` is exp(-d/0.02), which at 209 mm is exp(-10) -- identically zero. So
+# between 200 mm and 20 mm the policy is steering on 0.29 of total reward, against a `joint_vel`
+# penalty of -1e-2 and an `action_rate` penalty of -1e-3 that it pays on every step it moves.
+# Holding still is close to optimal over exactly the interval where the task is transport.
+#
+# This is the same defect as the one `_apply_precision_shaping` documents, one length scale out.
+# That function fixed the endgame by adding a 0.02 m term and deliberately left the 1.0 m term for
+# transport -- but 1.0 m is not a transport scale for this task either. The cube never starts more
+# than 0.66 m from the goal and usually starts around 0.2 m; a shaping length of 1.0 m spends its
+# dynamic range on distances this workspace does not contain.
+#
+# At std = 0.08 m the same carry is worth exp(-0.005/0.08) - exp(-0.209/0.08) = 0.94 - 0.07 = 0.87
+# of the term's range, which at weight 0.2 is 1.7e-2 per step -- an order of magnitude above the
+# action-rate penalty rather than a fraction of it, and concentrated exactly where the cube moves.
+#
+# WHY A THIRD TERM RATHER THAN RETUNING. Same argument as the fine term: the three scales do
+# different jobs (approach from anywhere, carry, seat within 5 mm) and collapsing them costs one of
+# the three. Leaving the shipped term untouched also keeps every other task in the package as it was.
+TRANSPORT_SHAPING_STD_M = 0.08
+TRANSPORT_SHAPING_WEIGHT = 0.2
+
+
+def _apply_transport_shaping(
+    cfg, std: float = TRANSPORT_SHAPING_STD_M, weight: float = TRANSPORT_SHAPING_WEIGHT
+) -> None:
+    """Add a MID-RANGE goal-distance term, for the carry between the approach and the endgame."""
+    params = {"std": std, "std_angle": std}
+    use_orientation = cfg.rewards.dense_success_reward.params.get("use_orientation")
+    if use_orientation is not None:
+        params["use_orientation"] = use_orientation
+    cfg.rewards.dense_success_reward_mid = RewTerm(
+        func=task_mdp.dense_success_reward, weight=weight, params=params
+    )
+
+
+@configclass
+class CubeStackGripCarryTrainCfg(CubeStackGripTrainCfg):
+    """Five-finger, grip bias, AND the mid-range transport term."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        _apply_transport_shaping(self)
+
+
+@configclass
+class CubeStackGripCarryEvalCfg(CubeStackGripEvalCfg):
+    """Play/eval twin of :class:`CubeStackGripCarryTrainCfg`."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        _apply_transport_shaping(self)
+
+
+@configclass
+class CubeStackTwoFingerGripCarryTrainCfg(CubeStackTwoFingerGripTrainCfg):
+    """Two-finger, grip bias, AND the mid-range transport term. Action dimension 14."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        _apply_transport_shaping(self)
+
+
+@configclass
+class CubeStackTwoFingerGripCarryEvalCfg(CubeStackTwoFingerGripEvalCfg):
+    """Play/eval twin of :class:`CubeStackTwoFingerGripCarryTrainCfg`."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        _apply_transport_shaping(self)

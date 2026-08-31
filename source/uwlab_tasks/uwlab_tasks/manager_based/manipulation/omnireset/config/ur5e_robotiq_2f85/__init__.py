@@ -752,6 +752,50 @@ gym.register(
     },
 )
 
+# GRIP + CARRY: the grip bias, plus a mid-range goal-distance term at std 0.08 m. Between 200 mm and
+# 20 mm neither shipped shaping term has any gradient worth acting on -- see
+# ur10e_delto_cubestack_cfg._apply_transport_shaping. Checkpoints transfer to and from the Grip
+# tasks; only the reward differs.
+gym.register(
+    id="OmniReset-UR10eDelto-CubeStackGripCarry-RelCartesianOSC-State-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.ur10e_delto_cubestack_cfg:CubeStackGripCarryTrainCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_cfg:UR10eDelto_PPORunnerCfg",
+    },
+)
+
+gym.register(
+    id="OmniReset-UR10eDelto-CubeStackGripCarry-RelCartesianOSC-State-Play-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.ur10e_delto_cubestack_cfg:CubeStackGripCarryEvalCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_cfg:UR10eDelto_PPORunnerCfg",
+    },
+)
+
+gym.register(
+    id="OmniReset-UR10eDelto-CubeStackTwoFingerGripCarry-RelCartesianOSC-State-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.ur10e_delto_cubestack_cfg:CubeStackTwoFingerGripCarryTrainCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_cfg:UR10eDelto_PPORunnerCfg",
+    },
+)
+
+gym.register(
+    id="OmniReset-UR10eDelto-CubeStackTwoFingerGripCarry-RelCartesianOSC-State-Play-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.ur10e_delto_cubestack_cfg:CubeStackTwoFingerGripCarryEvalCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_cfg:UR10eDelto_PPORunnerCfg",
+    },
+)
+
 gym.register(
     id="OmniReset-CubeStack-PartialAssemblies-v0",
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
