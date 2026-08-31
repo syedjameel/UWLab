@@ -112,7 +112,19 @@ class ProgressContext(ManagerTermBase):
 
     def reset(self, env_ids: torch.Tensor | None = None) -> None:
         super().reset(env_ids)
-        self.continuous_success_counter[:] = 0
+        # SCOPED TO env_ids. This was `[:] = 0`, i.e. every environment's consecutive-success
+        # progress was wiped whenever ANY environment reset -- and RewardManager.reset calls this on
+        # every reset with the ids it is resetting (reward_manager.py:124-125).
+        #
+        # The consequence is not subtle. `consecutive_success_state_with_min_length` terminates an
+        # episode once this counter reaches 5, so the termination fired only when no other
+        # environment happened to reset during those five steps. At 256 parallel environments with
+        # ~160-step episodes roughly 1.6 environments reset per step, so the counter was being
+        # cleared almost continuously and the success termination could only fire in the
+        # synchronised wave right after a global reset. That makes measured episode LENGTH -- and
+        # therefore any statistic conditioned on it -- a function of --num_envs, and makes a
+        # 1-environment recording and a 256-environment evaluation two different experiments.
+        self.continuous_success_counter[env_ids] = 0
 
     def __call__(
         self,
