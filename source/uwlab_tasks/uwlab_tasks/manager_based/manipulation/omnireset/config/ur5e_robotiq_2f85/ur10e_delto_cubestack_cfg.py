@@ -395,3 +395,41 @@ def _apply_hand_matched_mass_randomization(cfg) -> None:
     term = getattr(cfg.events, "randomize_insertive_object_mass", None)
     if term is not None:
         term.params["mass_distribution_params"] = CUBE_MASS_RANGE_KG
+
+
+# ---------------------------------------------------------------------------------------
+# DIAGNOSTIC: near-goal-only training, to separate "not enough compute" from "something is broken"
+# ---------------------------------------------------------------------------------------
+# After 402 iterations on the paper's four-family mixture, the policy scored 9.05% on near-goal
+# against an untrained 10.13% (n~820 each, p=0.454) and 0.0% on the other three families, while its
+# hand action magnitude rose 11.5x. It moved a long way and learned nothing measurable.
+#
+# Two explanations fit that equally well from the outside:
+#   (a) the compute budget is ~2 orders below the paper's and the task is simply unlearnable here;
+#   (b) something in this port prevents learning at all, and (a) is masking it.
+#
+# They are distinguishable. Train on the EASIEST family alone -- near-goal, where the cube starts
+# about 13 mm from a 5 mm tolerance and needs only a small local correction -- and give it 4x the
+# near-goal experience per iteration by removing the other three families from the mixture. If the
+# policy learns THAT, the pipeline is sound and (a) holds. If it cannot learn even that, (b) is live
+# and the negative result means something quite different.
+#
+# This is deliberately NOT the paper's method: OmniReset's whole claim rests on the flat four-family
+# mixture producing an emergent backwards curriculum. Removing three families removes the mechanism
+# under test. It is a diagnostic on the implementation, and it is labelled as one everywhere it is
+# reported.
+#
+# entropy_coef is also lowered, on evidence rather than taste: gSDE's noise std climbed monotonically
+# 0.75 -> 2.65 across the run while the task reward terms stayed flat, which is the entropy bonus
+# dominating a weak advantage signal. At std 2.65 against an action clip of +-1 the sampled actions
+# are largely saturated. That is set on the runner cfg at launch, not here.
+@configclass
+class CubeStackNearGoalOnlyTrainCfg(CubeStackNoOrientTrainCfg):
+    """Position-only cube stacking, trained from the near-goal family alone. Diagnostic, not a port."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        rst = getattr(self.events, "reset_from_reset_states", None)
+        if rst is not None:
+            rst.params["reset_types"] = ["ObjectPartiallyAssembledEEGrasped"]
+            rst.params["probs"] = [1.0]

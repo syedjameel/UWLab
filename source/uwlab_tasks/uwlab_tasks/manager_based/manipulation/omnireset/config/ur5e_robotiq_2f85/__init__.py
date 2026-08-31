@@ -700,3 +700,16 @@ gym.register(
         "env_cfg_entry_point": f"{__name__}.ur10e_delto_cubestack_cfg:CubeStackObjectAnywhereEEGraspedThumbFixCfg"
     },
 )
+
+# Diagnostic task: near-goal resets only. Separates "insufficient compute" from "cannot learn".
+# See CubeStackNearGoalOnlyTrainCfg for why this is not the paper's method and must not be reported
+# as a replication of it.
+gym.register(
+    id="OmniReset-UR10eDelto-CubeStackNearGoal-RelCartesianOSC-State-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.ur10e_delto_cubestack_cfg:CubeStackNearGoalOnlyTrainCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_cfg:UR10eDelto_PPORunnerCfg",
+    },
+)
