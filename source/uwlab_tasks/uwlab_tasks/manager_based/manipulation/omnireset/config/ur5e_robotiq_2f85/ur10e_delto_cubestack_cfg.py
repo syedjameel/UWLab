@@ -260,7 +260,23 @@ LIFT_WEIGHT = 0.05
 # Velocity scale of the lift kernel. NOT dexlift's 0.2: see ``_apply_grasp_shaping``.
 LIFT_STD_MPS = 0.05
 FINGERTIP_DISTANCE_WEIGHT = 0.05
-FINGERTIP_DISTANCE_STD_M = 0.03
+# 0.06 m, NOT the 0.03 this started at -- corrected from the measured working range.
+#
+# `1 - tanh(d/std)` is flat beyond about 3*std, so at std 0.03 the term carried no gradient past
+# ~90 mm. Decoding the logged reward back to a distance on the four-family run showed exactly that:
+# mean fingertip-to-cube distance fell 106 mm -> 82 mm over the first nine iterations and then
+# stopped and drifted back to 85 mm, which is precisely where the term goes flat. The palm term
+# read 228 mm over the same window, so the hand genuinely spends its time out at that range and
+# the pull has to reach it.
+#
+#     std 0.03, 84 -> 83 mm    0.05 * sech^2(2.80)/0.03 * 0.001  = +2.5e-5 per step per mm
+#     std 0.06, 84 -> 83 mm    0.05 * sech^2(1.40)/0.06 * 0.001  = +1.8e-4 per step per mm
+#
+# and across the span that matters, 84 mm -> 20 mm, std 0.06 pays 0.028 per step against the
+# -2.8e-3 action_rate penalty, while still holding a usable 7.8e-3 over the last 20 -> 10 mm. This
+# is the same failure the goal-distance term had at std 1.0 against a 5 mm tolerance, mirrored: a
+# length scale chosen without reference to the distances the policy actually occupies.
+FINGERTIP_DISTANCE_STD_M = 0.06
 
 
 def _apply_fingertip_contact_sensors(cfg) -> None:
