@@ -137,6 +137,8 @@ def object_upward_velocity_bonus(
     object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
     unwanted_contact_names: tuple[str, ...] | None = None,
     max_unwanted_contact_force: float = 0.05,
+    one_sided: bool = False,
+    lift_ceiling_m: float | None = None,
 ) -> torch.Tensor:
     """Reward lifting the object while gripping it.
 
@@ -146,6 +148,22 @@ def object_upward_velocity_bonus(
     object: RigidObject = env.scene[object_cfg.name]
     vel_z = object.data.root_lin_vel_w[:, 2]
     reward = torch.tanh(vel_z / max(std, 1.0e-6))
+    # ONE-SIDED, AND ONLY WHILE THE OBJECT IS LOW.
+    #
+    # The signed form is right for a LIFT task and wrong for a STACK, whose final act is lowering the
+    # object onto the base: it pays to raise and charges to descend, so a policy holding a cube in
+    # the air is at a local optimum it cannot leave without paying. Rendered from a Stable-Grasp
+    # checkpoint, that is exactly what it does -- grip, lift, and hold at 172-191 mm against a seated
+    # height of 55 mm, never coming down, for every episode.
+    #
+    # `lift_ceiling_m` also stops the bonus once the object is clear of the table, so it funds the
+    # pick-up it was added for (the Reaching family, cube flat on a 21 mm table) without paying for
+    # altitude the task never needs. None of this changes the gate: it is still multiplied by the
+    # grip-contact term below, so it can only pay while the object is actually held.
+    if one_sided:
+        reward = reward.clamp(min=0.0)
+    if lift_ceiling_m is not None:
+        reward = reward * (object.data.root_pos_w[:, 2] < lift_ceiling_m).float()
     return (
         reward
         * contacts(

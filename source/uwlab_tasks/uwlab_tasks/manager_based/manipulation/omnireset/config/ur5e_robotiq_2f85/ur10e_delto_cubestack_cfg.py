@@ -358,6 +358,11 @@ def _apply_fingertip_contact_sensors(cfg) -> None:
         )
 
 
+# A 34 mm cube seated on a 34 mm cube has its centre at 55 mm; the table puts it at 21 mm. 90 mm is
+# clear of both with margin, so the bonus funds the pick-up and then stops mattering.
+LIFT_CEILING_M = 0.09
+
+
 def _apply_grasp_shaping(cfg) -> None:
     """Pay for closing the hand and for lifting what it closed on. Nothing else in this task does.
 
@@ -478,7 +483,19 @@ def _apply_grasp_shaping(cfg) -> None:
         weight=LIFT_WEIGHT,
         # The ported default is SceneEntityCfg("object"); OmniReset's manipulated body is
         # "insertive_object" and there is no entity named "object" in this scene at all.
-        params={**gate, "std": LIFT_STD_MPS, "object_cfg": SceneEntityCfg("insertive_object")},
+        params={
+            **gate,
+            "std": LIFT_STD_MPS,
+            "object_cfg": SceneEntityCfg("insertive_object"),
+            # See object_upward_velocity_bonus. The signed form pays to raise a held object and
+            # CHARGES to lower it, which on a stacking task penalises the last thing the task
+            # requires. Rendered from a Stable-Grasp checkpoint the policy grips, lifts, and holds at
+            # 172-191 mm against a 55 mm seated height for the whole episode -- a local optimum it
+            # cannot leave without paying. One-sided removes the charge; the ceiling stops the bonus
+            # once the cube is clear of the table, which is all it was ever needed for.
+            "one_sided": True,
+            "lift_ceiling_m": LIFT_CEILING_M,
+        },
     )
 
 
