@@ -106,10 +106,12 @@ metadata directly and never consults the command term. Record once, train twice.
 
 from __future__ import annotations
 
+from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.utils import configclass
 
 import uwlab_assets.robots.ur10e_delto as ur10e_delto
 
+from ... import mdp as task_mdp
 from .actions import Ur10eDeltoRelativeOSCAction, Ur10eDeltoRelativeOSCEvalAction
 from .delto_cfg import _apply_delto, _apply_delto_collision_stack_size, _apply_delto_dataset_dir
 from .partial_assemblies_cfg import PartialAssembliesCfg
@@ -136,6 +138,55 @@ ORIENTED_ORIENTATION_THRESHOLD = 0.05
 # euler_xy_distance = |wrap_to_pi(e_x)| + |wrap_to_pi(e_y)| <= 2*pi ~= 6.2832, so 7.0 is
 # unconditionally satisfied. See the module docstring for why this is not `math.inf`.
 ORIENTATION_FREE_THRESHOLD = 7.0
+
+# Shaping length scale for the added short-range goal-distance term. See
+# ``_apply_precision_shaping`` for the measurement that fixes it at 0.02 m.
+PRECISION_SHAPING_STD = 0.02
+PRECISION_SHAPING_WEIGHT = 0.1
+
+
+def _apply_precision_shaping(cfg, std: float = PRECISION_SHAPING_STD) -> None:
+    """Add a SHORT-RANGE goal-distance term, because the shipped one cannot see the last centimetre.
+
+    THE MEASUREMENT THAT MOTIVATES THIS. Two independent seeds of the near-goal-only task (42 and 7)
+    both drove end-of-episode success from ~1.5% to ~20% within 60 iterations and then held flat for
+    240 more, with median end-of-episode position error stuck near 16 mm against a 5 mm tolerance.
+    Neither actuation nor observability explains that floor: RelCartesianOSC's ``scale_xyz`` is
+    0.02 m and the controller realises ~4.7 mm of end-effector motion per unit action per 0.1 s
+    step with no clip or quantisation anywhere (``input_clip`` and ``clip_actions`` are both None),
+    while ``insertive_asset_in_receptive_asset_frame`` carries the exact relative pose and no
+    ObsTerm in the package declares a ``noise=`` term.
+
+    The reward does explain it. ``dense_success_reward`` is ``exp(-d/std)`` with ``std = 1.0`` m --
+    a shaping length scale 200x the 0.005 m tolerance -- so it spends 98% of its dynamic range
+    getting the cube from 1 m to 2 cm and 1% on the band where the task is decided:
+
+        closing 16 mm -> 5 mm      0.1 * (exp(-0.005) - exp(-0.016))  = +1.09e-4 per step
+        one step of action_rate    -1e-3 * 28 (measured)              = -2.80e-3 per step
+
+    The penalty paid every step is 26x the entire reward for closing the last 11 mm, and after GAE
+    (gamma 0.99, lam 0.95, effective horizon 16.8 steps) the advantage of permanently closing it is
+    1.8e-3 against 1.68 for crossing the binary gate. The policy stopped where the reward stopped
+    paying.
+
+    WHY ADD A TERM RATHER THAN RETUNE THE EXISTING ONE. Simply setting ``std = 0.02`` would fix the
+    endgame and destroy the approach: at the 94 mm mean distance these episodes actually spend most
+    of their time at, ``exp(-0.094/0.02)`` is 0.009, i.e. no transport gradient at all. That is
+    survivable for the near-goal family, which starts ~13 mm out, but not for the full four-family
+    mixture where the cube starts anywhere on the table. Keeping the 1.0 m term for transport and
+    adding a 0.02 m term for the endgame gives both, and leaves the shipped term untouched for every
+    other task in the package.
+
+    At ``std = 0.02`` the same 16 mm -> 5 mm step is worth ``0.1 * (exp(-0.25) - exp(-0.80))`` =
+    +3.3e-2 per step -- 30x the action-rate penalty rather than 1/26th of it.
+    """
+    params = {"std": std, "std_angle": std}
+    use_orientation = cfg.rewards.dense_success_reward.params.get("use_orientation")
+    if use_orientation is not None:
+        params["use_orientation"] = use_orientation
+    cfg.rewards.dense_success_reward_fine = RewTerm(
+        func=task_mdp.dense_success_reward, weight=PRECISION_SHAPING_WEIGHT, params=params
+    )
 
 
 def _apply_cube_dataset_dir(cfg) -> None:
@@ -230,6 +281,7 @@ class CubeStackTrainCfg(Ur10eDeltoRelCartesianOSCTrainCfg):
         _apply_grasp_matched_hand_actuator(self)
         _apply_hand_matched_mass_randomization(self)
         _apply_oriented(self)
+        _apply_precision_shaping(self)
 
 
 @configclass
@@ -240,6 +292,7 @@ class CubeStackEvalCfg(Ur10eDeltoRelCartesianOSCEvalCfg):
         _apply_grasp_matched_hand_actuator(self)
         _apply_hand_matched_mass_randomization(self)
         _apply_oriented(self)
+        _apply_precision_shaping(self)
 
 
 # ---------------------------------------------------------------------------------------
@@ -253,6 +306,7 @@ class CubeStackNoOrientTrainCfg(Ur10eDeltoRelCartesianOSCTrainCfg):
         _apply_grasp_matched_hand_actuator(self)
         _apply_hand_matched_mass_randomization(self)
         _apply_orientation_free(self)
+        _apply_precision_shaping(self)
 
 
 @configclass
@@ -263,6 +317,7 @@ class CubeStackNoOrientEvalCfg(Ur10eDeltoRelCartesianOSCEvalCfg):
         _apply_grasp_matched_hand_actuator(self)
         _apply_hand_matched_mass_randomization(self)
         _apply_orientation_free(self)
+        _apply_precision_shaping(self)
 
 
 # ---------------------------------------------------------------------------------------
