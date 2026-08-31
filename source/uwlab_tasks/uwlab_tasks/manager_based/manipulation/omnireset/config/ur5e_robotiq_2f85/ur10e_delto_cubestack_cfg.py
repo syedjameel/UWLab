@@ -259,6 +259,8 @@ GRASP_CONTACT_WEIGHT = 0.05
 LIFT_WEIGHT = 0.05
 # Velocity scale of the lift kernel. NOT dexlift's 0.2: see ``_apply_grasp_shaping``.
 LIFT_STD_MPS = 0.05
+FINGERTIP_DISTANCE_WEIGHT = 0.05
+FINGERTIP_DISTANCE_STD_M = 0.03
 
 
 def _apply_fingertip_contact_sensors(cfg) -> None:
@@ -422,6 +424,30 @@ def _apply_grasp_shaping(cfg) -> None:
         "thumb_contact_name": DELTO_THUMB_TIP_NAMES,
         "tip_contact_names": DELTO_TIP_NAMES,
     }
+    # THE DENSE TERM THAT LEADS TO CONTACT. The three contact-gated terms below pay only once
+    # contact already exists, so on their own they are a reward for an outcome with nothing leading
+    # to it. Measured on the four-family run ten iterations after they were switched on:
+    # any_finger_contact logged 2.1e-4 and grasp_contact 4e-5, against an action_rate penalty of
+    # -2.8e-2 -- real and rising, so the sensors read, but three orders of magnitude below the noise
+    # they had to be discovered in.
+    #
+    # ee_asset_distance does not lead there either: it reads ONE body, the palm rl_dg_mount, so it
+    # is fully satisfied by parking the palm at the cube with the hand wide open -- which is exactly
+    # what the recordings show the policy doing.
+    #
+    #     0.05 * (1 - tanh(0.010/0.03))  -  0.05 * (1 - tanh(0.030/0.03))  =  +2.2e-2 per step
+    #
+    # for closing the fingertips from 30 mm to 10 mm, i.e. ~8x the action_rate penalty, on the same
+    # yardstick every other weight here is sized against.
+    cfg.rewards.fingertip_object_distance = RewTerm(
+        func=task_mdp.fingertip_object_distance_tanh,
+        weight=FINGERTIP_DISTANCE_WEIGHT,
+        params={
+            "asset_cfg": SceneEntityCfg("robot", body_names=list(DELTO_ALL_TIP_NAMES)),
+            "object_cfg": SceneEntityCfg("insertive_object"),
+            "std": FINGERTIP_DISTANCE_STD_M,
+        },
+    )
     cfg.rewards.any_finger_contact = RewTerm(
         func=task_mdp.any_contact,
         weight=ANY_CONTACT_WEIGHT,

@@ -157,3 +157,36 @@ def object_upward_velocity_bonus(
             max_unwanted_contact_force,
         ).float()
     )
+
+
+def fingertip_object_distance_tanh(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg,
+    object_cfg: SceneEntityCfg,
+    std: float,
+) -> torch.Tensor:
+    """Reward bringing the FINGERTIPS to the object. ``1 - tanh(mean_tip_distance / std)``.
+
+    WHY THIS IS NEEDED ALONGSIDE THE CONTACT TERMS. ``any_contact`` and ``contacts`` pay only once
+    contact already exists, so they are a reward for an outcome with nothing leading to it. Measured
+    on the four-family run ten iterations after they were switched on: ``any_finger_contact`` logged
+    2.1e-4 and ``grasp_contact`` 4e-5, against an ``action_rate`` penalty of -2.8e-2. The signal was
+    real -- it was rising, so the sensors read -- but three orders of magnitude below the noise it
+    had to be found in, because nothing pulled the fingers towards the cube in the first place.
+
+    ``ee_asset_distance`` does not fill that gap: it reads the pose of ONE body, the palm
+    ``rl_dg_mount``, so it is satisfied by parking the palm at the cube with the hand wide open.
+    That is exactly the behaviour the recordings show -- the arm descends, the palm arrives
+    accurately, and the fingers never close. Distance from the FINGERTIPS is the quantity that
+    changes when they do.
+
+    Mean over the five tips rather than the minimum: the minimum is maximised by touching the cube
+    with one finger, which is the degenerate behaviour ``any_finger_contact`` is already deliberately
+    under-weighted against. The mean falls only when the hand closes around the object.
+    """
+    robot: RigidObject = env.scene[asset_cfg.name]
+    obj: RigidObject = env.scene[object_cfg.name]
+    tips = robot.data.body_pos_w[:, asset_cfg.body_ids]            # (N, n_tips, 3)
+    target = obj.data.root_pos_w.unsqueeze(1)                      # (N, 1, 3)
+    mean_dist = torch.norm(tips - target, dim=-1).mean(dim=1)
+    return 1.0 - torch.tanh(mean_dist / std)
