@@ -69,6 +69,28 @@ class ResetStatesSceneCfg(InteractiveSceneCfg):
         init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, 0.0), rot=(1.0, 0.0, 0.0, 0.0)),
     )
 
+    # PICK SITE (jig-removal v2): the bottom enclosure with the PCB baked in at its seat, as one
+    # KINEMATIC body. The jig always starts SEATED on this and the policy lifts it off, so this
+    # stack must never move -- kinematic also guarantees the board cannot be knocked out of its
+    # seat. It is NOT the receptive object here (the Pedestal is); it is a static prop whose pose
+    # the seated-start event composes against, so it carries no observation term.
+    # TRAP (guide Appendix B): kinematic in sim means the REAL stack must be physically anchored,
+    # or the policy -- which learned it can lean on an immovable fixture -- will drag it.
+    enclosure_pcb: RigidObjectCfg = RigidObjectCfg(
+        prim_path="{ENV_REGEX_NS}/EnclosurePcb",
+        spawn=sim_utils.UsdFileCfg(
+            usd_path=f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/EnclosurePcb/enclosure_pcb.usd",
+            scale=(1, 1, 1),
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
+            mass_props=sim_utils.MassPropertiesCfg(mass=0.5),
+        ),
+        # pos MUST be the origin: reset_root_states_uniform treats its pose_range as a DELTA
+        # from this default root state, so any non-zero value here silently shifts the whole
+        # randomisation band (measured: pos.x=0.55 pushed the 0.46-0.70 band to 1.04-1.22).
+        # Height comes from use_bottom_offset against ur5_metal_support, not from here.
+        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, 0.0), rot=(1.0, 0.0, 0.0, 0.0)),
+    )
+
     # Environment -- the REAL lab table (see rl_state_cfg.py for the full rationale;
     # this block is duplicated there -- keep both in sync). Asset frame == robot base
     # frame; work surface at +0.004; reset_robot_pose jitters robot+support+table
@@ -203,6 +225,35 @@ class ResetStatesBaseEventCfg:
             },
             "velocity_range": {},
             "asset_cfgs": {"receptive_object": SceneEntityCfg("receptive_object")},
+            "offset_asset_cfg": SceneEntityCfg("ur5_metal_support"),
+            "use_bottom_offset": True,
+        },
+    )
+
+    # PICK SITE placement (jig-removal v2). Stock reset_root_states_uniform, same band the
+    # insertive object used to get -- on the real rig the fixture is what moves around, so it
+    # keeps the wide range while the target plate stays in a small spot near the table end.
+    # Declared AFTER the receptive so both are placed before any insertive/EE term; the
+    # seated-start event composes the jig against this asset's CURRENT pose.
+    # No-op for every other task: those never reference enclosure_pcb, and the prop sits inert.
+    reset_enclosure_pcb_pose = EventTerm(
+        func=task_mdp.reset_root_states_uniform,
+        mode="reset",
+        params={
+            "pose_range": {
+                # x_max 0.65 (not the jig task's 0.70): with the jig's 104 mm half-diagonal at
+                # free yaw the stack reaches x 0.754, and the Pedestal's near edge sits exactly
+                # there. Measured at yaw 30 deg -- the near-worst case -- the gap is 1 mm.
+                # x_min 0.46 is hard: green mat starts at 0.35 + the same 104 mm.
+                "x": (0.46, 0.65),
+                "y": (-0.24, 0.24),
+                "z": (0.0, 0.0),
+                "roll": (0.0, 0.0),
+                "pitch": (0.0, 0.0),
+                "yaw": (-np.pi, np.pi),
+            },
+            "velocity_range": {},
+            "asset_cfgs": {"enclosure_pcb": SceneEntityCfg("enclosure_pcb")},
             "offset_asset_cfg": SceneEntityCfg("ur5_metal_support"),
             "use_bottom_offset": True,
         },
@@ -640,6 +691,17 @@ variants = {
         "openbox": make_receptive_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/OpenBox/open_box.usd"),
         # Local dev asset (bottom enclosure, 156.6x121.6x22.6 mm shell; kinematic, open side up).
         "bottomenclosure": make_receptive_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/BottomEnclosure/bottom_enclosure.usd"),
+        # Jig-removal v2 target: the elevated white plate the jig is placed ONTO. Its
+        # assembled_offset is on the TOP face, so success requires a genuine lift -- a jig
+        # slid along the mat lands a plate-thickness low and fails on geometry. Replaces
+        # removal-v1's flat marker + 50 mm threshold, which the policy satisfied by shoving.
+        # Jig-removal v2 target: the elevated white plate the jig is placed ONTO. Its
+        # assembled_offset is on the TOP face, so success requires a genuine lift -- a jig slid
+        # along the mat lands a plate-thickness low and fails on geometry.
+        # The plate's collider MUST be a boundingCube, not the add_box default convexHull:
+        # PhysX shrinks convex hulls when cooking and this 180x180x10 mm slab (18:1) degenerates
+        # to NO CONTACTS -- a jig set on it free-falls straight through. See build_pedestal.
+        "pedestal": make_receptive_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/Pedestal/pedestal.usd"),
         # Local dev asset (box with seated PCB; lid task receptive, mating point at the top rim).
         "boxwithpcb": make_receptive_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/BoxWithPcb/box_with_pcb.usd"),
     },

@@ -124,7 +124,7 @@ def add_trimesh(stage, prim_path, mesh: trimesh.Trimesh, *, collision: bool,
 _JIG_BOXES_MM = []
 _STEP = 5.0     # mouth height = pillar engagement depth (sets the seat)
 _MOUTH = 5.5    # half-width of the lower mouth (11 mm)
-_POCKET = 2.5   # half-width of the upper pocket (5 mm)
+# (the 5 mm upper pocket is gone -- see the REMOVAL-TASK SIMPLIFICATION note below)
 # The enclosure has 4 corner POSTS at (+-71, +-54), r~3.4, tops ~1 mm below the pillar
 # tops -- the real jig clears them via hollow window corners. The box ring must carve the
 # same clearances or the ring lands on the posts 4.3 mm proud of the true seat (measured).
@@ -132,14 +132,25 @@ _POCKET = 2.5   # half-width of the upper pocket (5 mm)
 # are TIERED with a step at z ~10.5 mm:
 #   long walls: 14 mm thick below the step (inner edge y 50.75), 12 mm above (inner 52.5)
 #   end walls: 11.35 mm below (inner edge x 70.65), 9.5 mm above (inner 72.5)
+# REMOVAL-TASK SIMPLIFICATION (46 -> 20 boxes). The jig is never INSERTED here -- it starts
+# seated and is lifted off -- so the collider only has to (a) reproduce the 17.6 mm seat and
+# (b) not interpenetrate the enclosure. Measured, in the enclosure frame: the pillars top out
+# at 22.55 and the post towers at 21.60, while the seated jig's bottom sits at 17.60. So the
+# tallest thing that ever enters the jig reaches jig z = 22.55 - 17.60 = 4.95 mm -- BELOW the
+# z=5 step. Everything above z=5 is therefore unreachable by the enclosure and is collapsed to
+# one solid slab per tier. What survives: the 11 mm mouths (z 0-5, they set the seat by jamming
+# the pillar at the step) and the corner clearances (z 0-5, so the posts pass under).
+# Dropped: the 5 mm pockets and the 16 x-cheeks -- those carve 2-axis INSERTION registration
+# above z=5, which a removal task never uses. A 7.2 mm pillar could not pass a 5 mm pocket
+# anyway, so solid-above-the-step seats identically.
 for sy in (+1, -1):  # long walls
     # lower tier z 0-9 (14 mm thick): outer sub-band full length; inner sub-band shortened
     # to x +-66 so the (+-71, +-54) posts pass under at the corners
     _JIG_BOXES_MM.append((0.0, sy * 61.75, 4.5, 72.0, 2.75, 4.5))       # outer y 59..64.5
     _JIG_BOXES_MM.append((0.0, sy * 54.875, 4.5, 66.0, 4.125, 4.5))     # inner y 50.75..59
-    for sxa, sxb in ((-72.0, -25.0), (25.0, 72.0)):                     # upper tier z 9-24 (12 mm)
-        _JIG_BOXES_MM.append(((sxa + sxb) / 2, sy * 58.5, 16.5, (sxb - sxa) / 2, 6.0, 7.5))
-for sx in (+1, -1):  # end walls with two-stage pillar sockets at +-32 and post-cleared corners
+    # upper tier z 9-24 (12 mm), FULL length -- jig2 (2026-08-14) closed the side slots.
+    _JIG_BOXES_MM.append((0.0, sy * 58.5, 16.5, 72.0, 6.0, 7.5))
+for sx in (+1, -1):  # end walls: pillar mouths + post clearance below z=5, solid above
     xlo = sx * 76.325   # lower/mid tier center (x 70.65..82, 11.35 mm thick)
     xup = sx * 77.25    # upper tier center (x 72.5..82, 9.5 mm thick)
     # mouth tier z 0-STEP: mouths 11 mm at +-32; corner segments y +-[50, 64.5] narrowed to
@@ -148,19 +159,10 @@ for sx in (+1, -1):  # end walls with two-stage pillar sockets at +-32 and post-
         _JIG_BOXES_MM.append((xlo, (ya + yb) / 2, _STEP / 2, 5.675, (yb - ya) / 2, _STEP / 2))
     for sy in (+1, -1):
         _JIG_BOXES_MM.append((sx * 78.5, sy * 57.25, _STEP / 2, 3.5, 7.25, _STEP / 2))
-    # mid tier z STEP-10.5 (still 11.35 mm) with 5 mm pockets at +-32
-    for ya, yb in ((-64.5, -32 - _POCKET), (-32 + _POCKET, 32 - _POCKET), (32 + _POCKET, 64.5)):
-        _JIG_BOXES_MM.append((xlo, (ya + yb) / 2, (10.5 + _STEP) / 2, 5.675, (yb - ya) / 2, (10.5 - _STEP) / 2))
-    # upper tier z 10.5-24 (9.5 mm) with 5 mm pockets at +-32
-    for ya, yb in ((-64.5, -32 - _POCKET), (-32 + _POCKET, 32 - _POCKET), (32 + _POCKET, 64.5)):
-        _JIG_BOXES_MM.append((xup, (ya + yb) / 2, (24 + 10.5) / 2, 4.75, (yb - ya) / 2, (24 - 10.5) / 2))
-    # x-cheeks: close the pockets in x (5x5 mm, centered on the pillar at x=+-76 like the
-    # real cone) -> 2-axis registration. Mid tier reaches in to 70.65, upper to 72.5.
-    for sy in (+1, -1):
-        _JIG_BOXES_MM.append((sx * 72.075, sy * 32.0, (10.5 + _STEP) / 2, 1.425, _POCKET, (10.5 - _STEP) / 2))
-        _JIG_BOXES_MM.append((sx * 80.25, sy * 32.0, (10.5 + _STEP) / 2, 1.75, _POCKET, (10.5 - _STEP) / 2))
-        _JIG_BOXES_MM.append((sx * 73.0, sy * 32.0, (24 + 10.5) / 2, 0.5, _POCKET, (24 - 10.5) / 2))
-        _JIG_BOXES_MM.append((sx * 80.25, sy * 32.0, (24 + 10.5) / 2, 1.75, _POCKET, (24 - 10.5) / 2))
+    # mid tier z STEP-10.5 (11.35 mm thick), SOLID full length -- the pillar jams at the step
+    _JIG_BOXES_MM.append((xlo, 0.0, (10.5 + _STEP) / 2, 5.675, 64.5, (10.5 - _STEP) / 2))
+    # upper tier z 10.5-24 (9.5 mm thick), SOLID full length
+    _JIG_BOXES_MM.append((xup, 0.0, (24 + 10.5) / 2, 4.75, 64.5, (24 - 10.5) / 2))
 
 
 # ---------------------------------------------------------------------------------------
@@ -248,9 +250,14 @@ _JIG_INTERIOR_BOXES_V2B_MM = _JIG_INTERIOR_BOXES_MM[1:]          # upper tier on
 # near-zero-friction material (see _add_interior_blocker): the jaws can still be BLOCKED by
 # the blocker, but cannot HOLD it, so any residual exposed face affords no grasp. Legitimate
 # straddles grip the outer walls at +-64.5 and never touch the blocker, so they are unaffected.
-_NOTCH_X = 30.0          # blocker stays below the notch wall-top inboard of this
+# JIG2 UPDATE (2026-09-03): the notch is GONE. jig2 closed the long-wall side slots, so the
+# walls are full height at every x and the |x| < 30 exclusion that shaped v2c's high slabs no
+# longer has anything to justify it. Left in place it is not a conservative leftover -- it is a
+# 60 mm wide open channel into the jig's middle, i.e. exactly the volume the blocker exists to
+# deny, and the one-sided rim pinch returns through it. The high slab is now FULL WIDTH.
+# _NOTCH_X is retired; nothing references it.
 _WALL_TOP = 23.5         # measured full-wall height
-_NOTCH_TOP = 8.5         # measured notch (bottom-strip) height
+_NOTCH_TOP = 8.5         # height of the low/high split (was the notch top; now just the tier line)
 #
 # The LOW slab is INSET to x +-68 / y +-48 rather than run flush to the wall faces. Flush
 # (+-70.5 / +-50.75) leaves only 0.75 mm to the enclosure's post towers and starts FOULING them
@@ -262,13 +269,11 @@ _NOTCH_TOP = 8.5         # measured notch (bottom-strip) height
 # v2: there the problem was material standing in OPEN AIR, not a slot.)
 _JIG_INTERIOR_BOXES_V2C_MM = [
     (0.0, 0.0, _NOTCH_TOP / 2, 68.0, 48.0, _NOTCH_TOP / 2),      # low slab, whole interior, inset
+    # high slab z 8.5..23.5, FULL width -- flush to the upper inner wall faces (x 72.5, y 52.5),
+    # so it is enclosed on all four sides and its only free face is the top, recessed 0.5 mm
+    # below the 24 mm wall top (the jaw pad is 28 mm thick and cannot enter that).
+    (0.0, 0.0, (_WALL_TOP + _NOTCH_TOP) / 2, 72.5, 52.5, (_WALL_TOP - _NOTCH_TOP) / 2),
 ]
-for _sx in (+1, -1):     # high slabs, only where the long wall is full height
-    _x0, _x1 = _sx * _NOTCH_X, _sx * 72.5
-    _JIG_INTERIOR_BOXES_V2C_MM.append(
-        ((_x0 + _x1) / 2, 0.0, (_WALL_TOP + _NOTCH_TOP) / 2,
-         abs(_x1 - _x0) / 2, 52.5, (_WALL_TOP - _NOTCH_TOP) / 2)
-    )
 _INTERIOR_DENSITY = 1e-9  # kg/m^3; non-zero so UsdPhysics honours it, small enough to vanish
 
 
@@ -383,6 +388,139 @@ def build(stl_path, usd_path, root_name, *, y_up=False, color, metadata_extra=No
     return mesh
 
 
+def build_pedestal(out_usd, *, side_mm=180.0, thickness_mm=10.0):
+    """Author Pedestal: the ELEVATED PLATE the jig is placed onto (jig-removal v2 receptive).
+
+    This is what makes removal-v2 work where v1 failed. v1's target was a flat world-fixed
+    marker with a 50 mm position threshold, so "jig slid across the mat to the spot" satisfied
+    success and the policy learned to shove instead of lift. Here the target is a physical
+    plate: ``assembled_offset`` sits on its TOP face, so success literally requires the jig's
+    bottom to be at plate-top height. A slid jig is a full plate-thickness low and fails on
+    geometry -- no reward shaping, no new terms, stock frame-coincidence.
+
+    SQUARE by request, and it must be LARGER than the jig's 164 x 129 mm outer footprint:
+    anything smaller drops inside the jig's window and collides with the interior blocker
+    instead of supporting the jig on its wall ring.
+
+    SIZE = 180 mm, cut down from the real 300 mm plate. Measured reason: with the fixture band
+    ending at x 0.65 and the jig's 104 mm half-diagonal at free yaw, nothing may occupy
+    x < 0.754, so the plate's centre is forced to 0.754 + half_side. At 300 mm that is x 0.904
+    and the SIDE camera sees only 51% of the plate; at 180 mm the centre is 0.844 and the side
+    camera sees 84%. Neither size puts the centre inside the FRONT camera (which stops at
+    x 0.82) -- that is lost to the fixture's own footprint, not to the plate size. Placement is
+    carried by the side + wrist cameras. 180 mm still supports the jig with margin: 8 mm per
+    side in x, 25 mm in y, against a 5 mm success threshold.
+
+    Real plate is 5 mm; sim uses 10 mm. 5 mm is a weak barrier -- pushing horizontally, the
+    contact force sits below the jig's 12 mm COM, so the jig can tip up over a 5 mm edge. 10 mm
+    removes that. Close the sim2real gap by STACKING two 5 mm plates on the real rig.
+
+    Yaw is gated the stock way (``success_thresholds.yaw`` + ``yaw_symmetry``), exactly as
+    BottomEnclosure does -- metadata only, no machinery touched.
+    """
+    half = side_mm / 2000.0
+    hz = thickness_mm / 2000.0
+    if os.path.exists(out_usd):
+        os.remove(out_usd)
+    stage, _, mat = create_stage(out_usd, root_name="Pedestal")
+    # one visual + one collider box -- the whole asset costs a single collision shape
+    add_box(stage, "/Pedestal/visuals/plate", center=(0.0, 0.0, 0.0),
+            half_extents=(half, half, hz), collision=False,
+            color=(0.92, 0.92, 0.92))          # real plate is white
+    col = add_box(stage, "/Pedestal/collisions/plate", center=(0.0, 0.0, 0.0),
+                  half_extents=(half, half, hz), collision=True, material_path=mat)
+    # THIN-COLLIDER FIX (measured). PhysX shrinks a convex hull inward by the CONTACT OFFSET
+    # when cooking it. The default offset (~0.02 m) exceeds this plate's 5 mm half-thickness,
+    # so the cooked hull degenerates and generates NO CONTACTS AT ALL: a jig placed on the
+    # plate free-falls straight through it, the mat and the table (measured -- free-fall rate
+    # matched g exactly). Rebuilding the same plate 40 mm thick made it hold perfectly, which
+    # is what identified the offset as the cause rather than the asset or the placement.
+    # Nothing else in this project hit it: the enclosure's pillars, which are what the jig
+    # actually rests on, are ~7 mm cubes, not wide thin slabs.
+    prim = col.GetPrim()
+    UsdPhysics.MeshCollisionAPI(prim).CreateApproximationAttr(UsdPhysics.Tokens.boundingCube)
+    stage.GetRootLayer().Save()
+    write_metadata(out_usd, {
+        # the jig's assembled_offset is its own bottom face, so mating it to the plate TOP
+        # means "jig standing on the plate".
+        "assembled_offset": {"pos": [0.0, 0.0, round(hz, 6)], "quat": [1.0, 0.0, 0.0, 0.0]},
+        "bottom_offset": {"pos": [0.0, 0.0, round(-hz, 6)], "quat": [1.0, 0.0, 0.0, 0.0]},
+        "success_thresholds": {"position": 0.005, "orientation": 0.025, "yaw": 0.35, "yaw_symmetry": 2},
+    })
+    print(f"  [pedestal] {out_usd}")
+    print(f"    {side_mm:.0f} x {side_mm:.0f} x {thickness_mm:.0f} mm, 1 collider box; "
+          f"top face (= jig seat) at z={hz*1000:.1f} mm above its root")
+
+
+def build_enclosure_pcb(out_usd, *, pcb_seat_mm=13.60):
+    """Author EnclosurePcb: bottom enclosure with the PCB already seated, as ONE static body.
+
+    Removal-v2 starts from the assembled stack and lifts the JIG off, leaving the board behind.
+    That leftover is baked into a single body so the board cannot be knocked out of its seat --
+    a deliberate simplification, chosen over a dynamic PCB.
+
+    NOTE the role change vs removal-v1: there this asset was the RECEPTIVE object and success
+    was retargeted away from it onto a marker. Here the Pedestal is the receptive object and
+    this is a plain static prop, so its ``assembled_offset`` is used only to seat the jig on it
+    at reset, and its ``success_thresholds`` are never read.
+
+    Heights, mm above the enclosure's bottom face -- measured, not assumed:
+      PCB bottom  13.60   (16/16 drops, spread 0.77 mm)
+      jig bottom  17.60   (the seat this stack presents to the jig)
+    """
+    enc = trimesh.load(f"{_LOCAL}/BottomEnclosure/bottom_enclosure.stl", force="mesh")
+    enc.apply_scale(0.001)
+    enc.apply_transform(trimesh.transformations.rotation_matrix(np.pi / 2.0, [1, 0, 0]))
+    enc.apply_translation(-enc.bounds.mean(axis=0))
+
+    pcb = trimesh.load(f"{_LOCAL}/EnclosurePcb/pcb_decimated.stl", force="mesh")
+    pcb.apply_scale(0.001)
+    pcb.apply_translation(-pcb.bounds.mean(axis=0))
+    pcb.apply_translation([0.0, 0.0, enc.bounds[0][2] + pcb_seat_mm / 1000.0 - pcb.bounds[0][2]])
+
+    lo = np.minimum(enc.bounds[0], pcb.bounds[0])
+    hi = np.maximum(enc.bounds[1], pcb.bounds[1])
+    shift = -(lo + hi) / 2.0
+    enc.apply_translation(shift)
+    pcb.apply_translation(shift)
+    dz = float(shift[2])
+    half_h = float(hi[2] - lo[2]) / 2.0
+    enc_bottom = -half_h
+
+    if os.path.exists(out_usd):
+        os.remove(out_usd)
+    stage, _, mat = create_stage(out_usd, root_name="EnclosurePcb")
+    add_trimesh(stage, "/EnclosurePcb/visuals/enclosure", enc, collision=False,
+                color=(0.02, 0.02, 0.022))     # real enclosure: black
+    add_trimesh(stage, "/EnclosurePcb/visuals/pcb", pcb, collision=False,
+                color=(0.20, 0.55, 0.30))      # board: green
+
+    tbl, bottom_mm = _BOX_TABLES["BottomEnclosure"]
+    n = 0
+    for cx, cy, cz, hx, hy, hz_ in tbl:
+        add_box(stage, f"/EnclosurePcb/collisions/box_{n:02d}",
+                center=(cx / 1000.0, cy / 1000.0, (cz - bottom_mm) / 1000.0 + dz),
+                half_extents=(hx / 1000.0, hy / 1000.0, hz_ / 1000.0),
+                collision=True, material_path=mat)
+        n += 1
+    add_box(stage, f"/EnclosurePcb/collisions/box_{n:02d}",
+            center=(0.0, 0.0, enc_bottom + (pcb_seat_mm + 1.5) / 1000.0),
+            half_extents=(0.070, 0.050, 0.0015), collision=True, material_path=mat)
+    n += 1
+    stage.GetRootLayer().Save()
+
+    jig_seat_z = enc_bottom + 17.6 / 1000.0
+    write_metadata(out_usd, {
+        "assembled_offset": {"pos": [0.0, 0.0, round(jig_seat_z, 6)], "quat": [1.0, 0.0, 0.0, 0.0]},
+        "bottom_offset": {"pos": [0.0, 0.0, round(enc_bottom, 6)], "quat": [1.0, 0.0, 0.0, 0.0]},
+        "success_thresholds": {"position": 0.005, "orientation": 0.025, "yaw": 0.35, "yaw_symmetry": 2},
+    })
+    print(f"  [enclosure+pcb] {out_usd}")
+    print(f"    height {2*half_h*1000:.2f} mm; enclosure bottom {enc_bottom*1000:.2f} mm; "
+          f"{n} collider boxes")
+    print(f"    PCB seated {pcb_seat_mm:.2f} mm up; jig seats at {(jig_seat_z-enc_bottom)*1000:.2f} mm")
+
+
 def _reveal_colliders(usd_paths):
     """Debug: make every collision prim visible (red) so colliders can be eyeballed in the GUI."""
     from pxr import UsdGeom as _UsdGeom
@@ -430,7 +568,37 @@ def main() -> None:
                              "Leaves Jig/jig.usd and the enclosure untouched (v1 keeps training / "
                              "collecting against them); the v2 task pairs jigv2 with the SAME "
                              "bottomenclosure. See _JIG_INTERIOR_BOXES_MM.")
+    parser.add_argument("--pedestal", action="store_true",
+                        help="Build ONLY the Pedestal (Pedestal/pedestal.usd): the elevated white "
+                             "plate the jig is placed onto in removal-v2. Its assembled_offset is "
+                             "on the TOP face, so success requires a real lift -- sliding the jig "
+                             "along the mat lands a plate-thickness low and fails.")
+    parser.add_argument("--pedestal-side-mm", type=float, default=180.0,
+                        help="Plate side (default 180, cut from the real 300 mm stock). Must "
+                             "exceed the jig's 164 mm footprint; see build_pedestal for why "
+                             "bigger is worse here.")
+    parser.add_argument("--pedestal-thickness-mm", type=float, default=10.0,
+                        help="Sim plate thickness (default 10). The real plate is 5 mm; stack two "
+                             "to match. 5 mm alone is tippable -- see build_pedestal.")
+    parser.add_argument("--enclosure-pcb", action="store_true",
+                        help="Build ONLY EnclosurePcb (EnclosurePcb/enclosure_pcb.usd): the bottom "
+                             "enclosure with the PCB baked in at its seat, as one static body. In "
+                             "removal-v2 this is the PICK site the jig starts seated on.")
     args = parser.parse_args()
+
+    if args.pedestal:
+        build_pedestal(f"{_LOCAL}/Pedestal/pedestal.usd",
+                       side_mm=args.pedestal_side_mm,
+                       thickness_mm=args.pedestal_thickness_mm)
+        if args.show_colliders:
+            _reveal_colliders([f"{_LOCAL}/Pedestal/pedestal.usd"])
+        return
+
+    if args.enclosure_pcb:
+        build_enclosure_pcb(f"{_LOCAL}/EnclosurePcb/enclosure_pcb.usd")
+        if args.show_colliders:
+            _reveal_colliders([f"{_LOCAL}/EnclosurePcb/enclosure_pcb.usd"])
+        return
 
     if args.v2_jig or args.v2b_jig or args.v2c_jig:
         out = (f"{_LOCAL}/JigV2c/jig_v2c.usd" if args.v2c_jig else

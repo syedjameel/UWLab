@@ -37,7 +37,7 @@ from uwlab_assets.robots.ur5e_robotiq_gripper import EXPLICIT_UR5E_ROBOTIQ_2F85
 
 from ... import mdp as task_mdp
 from .actions import Ur5eRobotiq2f85SysidOSCAction
-from .rl_state_cfg import RlStateSceneCfg
+from .rl_state_cfg import RlStateSceneCfg, variants
 
 # Same sim dt as sysid / finetune (500 Hz)
 CAMERA_ALIGN_SIM_DT = 1.0 / 500.0
@@ -198,6 +198,12 @@ class CameraAlignEnvCfg(ManagerBasedRLEnvCfg):
     observations: CameraAlignObservationsCfg = CameraAlignObservationsCfg()
     rewards: CameraAlignRewardsCfg = CameraAlignRewardsCfg()
     terminations: CameraAlignTerminationsCfg = CameraAlignTerminationsCfg()
+
+    # Same variant table every other env cfg carries. Without it an override like
+    # `env.scene.insertive_object=jigv2c` is assigned as a raw STRING and the env fails with
+    # "Incorrect type under namespace: /scene/insertive_object". Additive: the defaults are
+    # unchanged, this only makes the align/snapshot env usable for any object pair.
+    variants = variants
 
     def __post_init__(self) -> None:
         self.decimation = 1

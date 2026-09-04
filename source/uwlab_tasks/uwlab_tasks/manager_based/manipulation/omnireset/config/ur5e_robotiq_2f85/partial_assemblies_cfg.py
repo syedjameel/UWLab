@@ -277,6 +277,17 @@ variants = {
         "openbox": make_receptive_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/OpenBox/open_box.usd"),
         # Local dev asset (bottom enclosure, 156.6x121.6x22.6 mm shell; kinematic, open side up).
         "bottomenclosure": make_receptive_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/BottomEnclosure/bottom_enclosure.usd"),
+        # Jig-removal v2 target: the elevated white plate the jig is placed ONTO. Its
+        # assembled_offset is on the TOP face, so success requires a genuine lift -- a jig
+        # slid along the mat lands a plate-thickness low and fails on geometry. Replaces
+        # removal-v1's flat marker + 50 mm threshold, which the policy satisfied by shoving.
+        # Jig-removal v2 target: the elevated white plate the jig is placed ONTO. Its
+        # assembled_offset is on the TOP face, so success requires a genuine lift -- a jig slid
+        # along the mat lands a plate-thickness low and fails on geometry.
+        # The plate's collider MUST be a boundingCube, not the add_box default convexHull:
+        # PhysX shrinks convex hulls when cooking and this 180x180x10 mm slab (18:1) degenerates
+        # to NO CONTACTS -- a jig set on it free-falls straight through. See build_pedestal.
+        "pedestal": make_receptive_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/Pedestal/pedestal.usd"),
         # Local dev asset (box with seated PCB; lid task receptive, mating point at the top rim).
         "boxwithpcb": make_receptive_object(f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Custom/BoxWithPcb/box_with_pcb.usd"),
     },
