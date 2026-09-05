@@ -133,3 +133,47 @@ Both are `.pt` files in the authors' own format. No code or config semantics cha
   by exactly 1.0x the threshold — no margin — and the jig can tip up over a 5 mm edge.
 * Seated-vs-mat mix in training is a `probs` value, not baked in. Suggested start: mat 15-20%.
 * The mat set shares the fixture band, so some jigs land ON the fixture. Realistic for a drop.
+
+---
+
+# v3 CORRECTION (2026-09-05) — back to the authors' FOUR reset types
+
+**v2's Stage-1 failed.** After 1708 iterations: task_0 (seated deployment start) **0.0061**,
+task_1 (mat) 0.0090 — both effectively zero — while every already-grasped task trained normally:
+task_2 0.72, task_3 0.77, task_4 0.52. Transport and placement were fine; **grasp DISCOVERY was
+dead.**
+
+## Cause — two mistakes, both in how v2 was run, not in the assets
+
+**1. A fifth reset type was invented.** v2 made the seated start its own type
+(`ObjectPartiallyAssembledEEAnywhere`) and passed an explicit 5-way `reset_types`/`probs`
+override. The authors use FOUR (`rl_state_cfg.py` default: AnywhereEEAnywhere,
+RestingEEGrasped, AnywhereEEGrasped, PartiallyAssembledEEGrasped, `probs [0.25]*4`), and the
+jig-removal v1 line kept four by MERGING the seated states into C1.
+
+**2. That fifth type cannot be seeded.** `reset_end_effector_pregrasp_seeds` — the documented
+positive counterpart to the interior blocker (`V2_STABLE_GRASP_PLAN.md` §5 trio) — exists ONLY on
+`ObjectAnywhereEEAnywhereEventCfg`. Putting the deployment start on a `PartiallyAssembled` config
+placed it on the one EEAnywhere path with no seeding term. Blocker denies the rim pinch, nothing
+offers the straddle, so there is no route to a first grasp. This reproduces the plan's own record
+of blocker-without-seeds: **task_0 0.003 at iteration 1000.**
+
+## v3 fix — no new code, no new deviation
+
+* **Authors' four types, taken from the CONFIG DEFAULT.** Never pass `reset_types`/`probs`.
+* **Seated states MERGED into C1** (`merge_seated_into_c1.py`), and the 5th file DELETED so it
+  cannot be loaded as a task. This is v1's pattern.
+* **C1 recorded with `seed_prob=0.25`** — a stock parameter of a term already present on this
+  branch lineage, and the intended counterpart to the blocker.
+
+Assets, config and bug fixes are unchanged from v2; every deviation listed above still stands and
+no new one is added. The 5-way `probs` override is REMOVED.
+
+## Also corrected in v3
+
+* **Near-goal band ±35 mm → ±8 mm.** v1 used ±35 mm against a **50 mm** success gate; reusing it
+  against v2's **5 mm** gate left C4 states a median 30.1 mm from success, so task_4 could not act
+  as a near-goal bootstrap. ±8 mm / 0–12 mm gives a 10.2 mm median (p10 7.9 mm).
+* **`--num_envs 12288`, not 16384.** PhysX caps materials at 65536 — a hard 16-bit limit that no
+  `$BIGBUF` setting touches. This scene has 4 materials/env (jig 2 including the blocker,
+  enclosure_pcb 1, pedestal 1); 16384 × 4 = 65536 hits it exactly and the run hangs at startup.

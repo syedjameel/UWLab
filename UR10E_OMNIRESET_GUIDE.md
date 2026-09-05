@@ -469,19 +469,34 @@ BIGBUF="env.sim.physx.gpu_found_lost_pairs_capacity=8388608 \
 
 **Commit conventions:** no Claude co-author; push only to the forks (`syedjameel/UWLab`, `syedjameel/diffusion_policy`), never upstream.
 
-## Appendix K — Jig-REMOVAL v2 deltas (branch `omnireset/jig-removal-v2`)
+## Appendix K — Jig-REMOVAL v3 deltas (branch `omnireset/jig-removal-v3`)
 
 The jig starts SEATED on the enclosure+PCB stack and must be LIFTED onto an elevated plate.
-Full rationale + measurements: `JIG_REMOVAL_V2_DEVIATION_LEDGER.md`.
+Rationale + measurements: `JIG_REMOVAL_V2_DEVIATION_LEDGER.md`.
 
-**Shell vars (replace the pcb/openbox ones):**
+**Uses the AUTHORS' FOUR reset types, via the config DEFAULT -- never override
+`reset_types`/`probs`:**
+```
+ObjectAnywhereEEAnywhere / ObjectRestingEEGrasped / ObjectAnywhereEEGrasped /
+ObjectPartiallyAssembledEEGrasped        probs [0.25]*4
+```
+The seated deployment states are RECORDED separately and then **MERGED INTO C1**, exactly as the
+jig-removal v1 line did. They are NOT a fifth task.
+
+> **Why this matters (v2 failed here).** v2 made the seated set its own 5th reset type. That put
+> the deployment start on `ObjectPartiallyAssembledEEAnywhere`, which is the ONE EEAnywhere config
+> with **no `reset_end_effector_pregrasp_seeds` term**. With the interior blocker denying the
+> one-sided rim pinch and no seeds offering the straddle, task_0 had no route to grasp discovery:
+> **0.0061 success after 1708 iterations**, reproducing the documented v2 Stage-1 failure
+> (`V2_STABLE_GRASP_PLAN.md`: 0.003 @ iter 1000). Everything starting already-grasped trained
+> fine (0.72 / 0.77 / 0.52), which is what proves it was DISCOVERY, not transport or placement.
+
+**Shell vars:**
 ```bash
 DM=./Datasets_jigrem_v2/OmniReset          # everything except the seated input
 DS=./Datasets_jigrem_v2_seat/OmniReset     # authored SEATED partial assemblies
 R=$DM/Resets/JigV2c__Pedestal
 OBJ="env.scene.insertive_object=jigv2c env.scene.receptive_object=pedestal"
-# Plate band: small spot at the table end. YAW PINNED AT 0 -- a featureless white square gives the
-# student no yaw cue, so a randomised plate yaw makes the stock yaw gate unlearnable from vision.
 PBAND="env.events.reset_receptive_object_pose.params.pose_range.x=[0.845,0.865] \
   env.events.reset_receptive_object_pose.params.pose_range.y=[-0.03,0.03] \
   env.events.reset_receptive_object_pose.params.pose_range.yaw=[0.0,0.0]"
@@ -490,93 +505,59 @@ BIGBUF="env.sim.physx.gpu_found_lost_pairs_capacity=8388608 \
   env.sim.physx.gpu_max_rigid_patch_count=8388608 \
   env.sim.physx.gpu_collision_stack_size=2147483648"
 ```
-The fixture band (x 0.46-0.65) is in the config; the PLATE band is NOT, because
-`reset_receptive_object_pose` is shared with the jig-onto-enclosure task. **Always pass `$PBAND`.**
+Table pillars are ALREADY off -- do NOT re-run §2d's pillar step. Always pass `$PBAND`: the plate
+band is not in the config, because `reset_receptive_object_pose` is shared with the jig task.
 
-**K1. Assets.** Table pillars are ALREADY off — do NOT re-run §2d's pillar step. Build:
+**K1. Assets** (`build_jig_enclosure_usds.py`): default, `--v2c-jig`, `--enclosure-pcb`,
+`--pedestal`; then `make_seated_partial_assembly.py --out $DS` and
+`--mode neargoal --receptive Pedestal --lateral-mm 8 --height-mm 12 --out $DM`.
+
+**K2. Grasps**, then the four sets + the seated input. **C1 MUST carry the pre-grasp seeds** --
+this is the positive half of the blocker's trio and the whole reason v2 failed without it:
 ```bash
-./uwlab.sh -p scripts_v2/tools/build_jig_enclosure_usds.py               # jig + enclosure
-./uwlab.sh -p scripts_v2/tools/build_jig_enclosure_usds.py --v2c-jig     # blocked jig (insertive)
-./uwlab.sh -p scripts_v2/tools/build_jig_enclosure_usds.py --enclosure-pcb
-./uwlab.sh -p scripts_v2/tools/build_jig_enclosure_usds.py --pedestal    # 180x180x10 white plate
-python3 scripts_v2/tools/conversions/make_seated_partial_assembly.py --out $DS
-python3 scripts_v2/tools/conversions/make_seated_partial_assembly.py --mode neargoal \
-  --receptive Pedestal --out $DM
-```
+# C1 -- 25% of envs start at a recorded straddle pose with the jaws OPEN
+CUDA_VISIBLE_DEVICES=1 ./uwlab.sh -p scripts_v2/tools/record_reset_states.py \
+  --task OmniReset-UR10eLinearGripper-ObjectAnywhereEEAnywhere-v0 \
+  --num_envs 8192 --num_reset_states 10000 --headless --dataset_dir $DM $OBJ $PBAND $BIGBUF \
+  env.events.reset_end_effector_pregrasp_seeds.params.seed_prob=0.25 \
+  env.events.reset_end_effector_pregrasp_seeds.params.dataset_dir=$DM
+python3 scripts_v2/tools/conversions/filter_reset_states.py --in-place \
+  --input $R/resets_ObjectAnywhereEEAnywhere.pt --require-upright 20
 
-**K2. Grasps** (`env.scene.object=jigv2c`), then the five reset sets IN ORDER. Both
-PartiallyAssembled steps need `assembly_success_prob=0.0`: a seated jig is ~300 mm from the plate
-and 0/256 authored near-goal poses fall inside the 5 mm + yaw gate, so the default 0.5 demands
-impossible states and the recorder FREEZES.
-
-```bash
-./uwlab.sh -p scripts_v2/tools/record_grasps.py --task OmniReset-LinearGripper-GraspSampling-v0 \
-  --num_envs 8192 --num_grasps 1000 --headless --dataset_dir $DM env.scene.object=jigv2c $BIGBUF
-
-# 1. SEATED (the deployment start) -- retargeted at the enclosure prop
-./uwlab.sh -p scripts_v2/tools/record_reset_states.py \
+# SEATED (deployment start) -- recorded as PartiallyAssembledEEAnywhere, then MERGED into C1.
+# prob=0.0 is required: a seated jig is ~300 mm from the plate and can never be "assembled",
+# so the default 0.5 demands impossible states and the recorder FREEZES.
+CUDA_VISIBLE_DEVICES=1 ./uwlab.sh -p scripts_v2/tools/record_reset_states.py \
   --task OmniReset-UR10eLinearGripper-ObjectPartiallyAssembledEEAnywhere-v0 \
   --reset_type ObjectPartiallyAssembledEEAnywhere \
   --num_envs 8192 --num_reset_states 10000 --headless --dataset_dir $DM $OBJ $PBAND $BIGBUF \
   env.terminations.success.params.assembly_success_prob=0.0 \
   env.events.reset_insertive_object_pose_from_partial_assembly_dataset.params.receptive_object_cfg.name=enclosure_pcb \
   env.events.reset_insertive_object_pose_from_partial_assembly_dataset.params.dataset_dir=$DS
+python3 scripts_v2/tools/conversions/merge_seated_into_c1.py --dataset_dir $DM   # then DELETE the 5th file
 
-# 2. MAT (recovery: jig dropped)
-./uwlab.sh -p scripts_v2/tools/record_reset_states.py \
-  --task OmniReset-UR10eLinearGripper-ObjectAnywhereEEAnywhere-v0 \
-  --num_envs 8192 --num_reset_states 10000 --headless --dataset_dir $DM $OBJ $PBAND $BIGBUF
-python3 scripts_v2/tools/conversions/filter_reset_states.py --in-place \
-  --input $R/resets_ObjectAnywhereEEAnywhere.pt --require-upright 20
-
-# 3. C2 -- draws from BOTH starts, seated-weighted
-./uwlab.sh -p scripts_v2/tools/record_reset_states.py \
-  --task OmniReset-UR10eLinearGripper-ObjectRestingEEGrasped-v0 \
-  --num_envs 8192 --num_reset_states 10000 --headless --dataset_dir $DM $OBJ $PBAND $BIGBUF \
-  env.events.reset_insertive_object_pose_from_reset_states.params.dataset_dir=$DM \
-  "env.events.reset_insertive_object_pose_from_reset_states.params.reset_types=[ObjectPartiallyAssembledEEAnywhere,ObjectAnywhereEEAnywhere]" \
-  "env.events.reset_insertive_object_pose_from_reset_states.params.probs=[0.7,0.3]" \
-  env.events.reset_end_effector_pose_from_grasp_dataset.params.dataset_dir=$DM
-
-# 4. C3
-./uwlab.sh -p scripts_v2/tools/record_reset_states.py \
-  --task OmniReset-UR10eLinearGripper-ObjectAnywhereEEGrasped-v0 \
-  --num_envs 8192 --num_reset_states 10000 --headless --dataset_dir $DM $OBJ $PBAND $BIGBUF \
-  env.events.reset_end_effector_pose_from_grasp_dataset.params.dataset_dir=$DM
-
-# 5. C4 -- receptive IS the plate, so NO retarget. ~24% acceptance; 3-5k is minutes.
-./uwlab.sh -p scripts_v2/tools/record_reset_states.py \
-  --task OmniReset-UR10eLinearGripper-ObjectPartiallyAssembledEEGrasped-v0 \
-  --num_envs 8192 --num_reset_states 5000 --headless --dataset_dir $DM $OBJ $PBAND $BIGBUF \
-  env.terminations.success.params.assembly_success_prob=0.0 \
-  env.events.reset_insertive_object_pose_from_partial_assembly_dataset.params.dataset_dir=$DM \
-  env.events.reset_end_effector_pose_from_grasp_dataset.params.dataset_dir=$DM
+# C2 / C3 / C4 -- as before; C4 uses assembly_success_prob=0.0 (0/256 near-goal poses are assembled)
 ```
-Verify by FILE after each (`ls -la $R/resets_<TYPE>.pt`) -- `uwlab.sh` returns 0 even when python dies.
+**Delete `resets_ObjectPartiallyAssembledEEAnywhere.pt` after merging** so nothing can pick it up
+as a fifth task.
 
-**K3. Stage-1.** FIVE reset types now, so `probs` must be given explicitly. Mat is a recovery
-fallback, not the task -- start it low and raise it only if drops hurt:
+**K3. Stage-1 -- NO reset_types/probs override:**
 ```bash
-./uwlab.sh -p scripts/reinforcement_learning/rsl_rl/train.py \
+CUDA_VISIBLE_DEVICES=1 ./uwlab.sh -p scripts/reinforcement_learning/rsl_rl/train.py \
   --task OmniReset-UR10eLinearGripper-RelCartesianOSC-State-v0 \
-  --num_envs 16384 --headless --logger tensorboard $OBJ $BIGBUF \
-  env.events.reset_from_reset_states.params.dataset_dir=$DM \
-  "env.events.reset_from_reset_states.params.reset_types=[ObjectPartiallyAssembledEEAnywhere,ObjectAnywhereEEAnywhere,ObjectRestingEEGrasped,ObjectAnywhereEEGrasped,ObjectPartiallyAssembledEEGrasped]" \
-  "env.events.reset_from_reset_states.params.probs=[0.30,0.15,0.20,0.20,0.15]"
+  --num_envs 12288 --headless --logger tensorboard $OBJ $BIGBUF \
+  env.events.reset_from_reset_states.params.dataset_dir=$DM
 ```
-No `parking_marker` overrides -- v2 needs none, success is stock frame-coincidence against the plate.
+`--num_envs 12288`, NOT 16384: PhysX caps materials at 65536 (a hard 16-bit limit -- no
+`$BIGBUF` knob touches it), and this scene has 4 materials/env (jig 2 incl. the blocker,
+enclosure_pcb 1, pedestal 1). 16384 x 4 = 65536 hits it exactly and the run hangs.
 
-**K4. Stage-2 finetune (§6b):** `--num_envs 4096`, `$BIGBUF`, `agent.algorithm.entropy_coef=0.001`
-(deviation J2), plus `$OBJ` and the same `dataset_dir`/`reset_types`/`probs`.
-
-**K5. RGB collection (§8):** override the hardcoded `Datasets_ur10e` with
-`env.events.reset_from_reset_states.params.dataset_dir=$DM` on both the export and `collect_demos`.
-Output to `datasets/ur10e_jigrem_v2/`. RTX box only. Trap A.4's pillared-table flip does NOT apply
-here -- this line trains pillar-free throughout; leave `table_dims.yaml` at `enabled: false`.
-
-**K6. Traps specific to this task.**
-* A wide THIN collider must use `boundingCube`, never `convexHull` -- see ledger B3. The plate
+**K4. Traps.**
+* A wide THIN collider needs `boundingCube`, never `convexHull` -- see ledger B3. The plate
   silently generated NO contacts and the jig fell through it, the mat and the table.
-* The plate centre sits beyond the FRONT camera's reach (x 0.82); placement runs on side + wrist.
-* The enclosure is KINEMATIC -- the REAL stack must be physically anchored (guide Appendix B).
+* The near-goal band must be scaled to the SUCCESS THRESHOLD. v1 used +-35 mm against a 50 mm
+  gate; reusing it against v2's 5 mm gate put C4 states a median 30 mm from success and task_4
+  stayed flat. +-8 mm / 0-12 mm gives a 10.2 mm median.
+* The plate centre is beyond the FRONT camera (x 0.82); placement runs on side + wrist.
+* The enclosure is KINEMATIC -- the REAL stack must be anchored (guide Appendix B).
 * Real plate is 5 mm, sim is 10 mm: stack two plates.
