@@ -177,3 +177,42 @@ no new one is added. The 5-way `probs` override is REMOVED.
 * **`--num_envs 12288`, not 16384.** PhysX caps materials at 65536 — a hard 16-bit limit that no
   `$BIGBUF` setting touches. This scene has 4 materials/env (jig 2 including the blocker,
   enclosure_pcb 1, pedestal 1); 16384 × 4 = 65536 hits it exactly and the run hangs at startup.
+
+---
+
+# v3b — FLIPPED GRASPS (2026-09-06)
+
+**Measured defect.** The grasp sampler emits only ONE of the two physically-identical gripper
+orientations. A top-down straddle on a rectangular part is 2-fold symmetric about the approach
+axis, so rotating the gripper 180 deg about its own +Z gives the same jaws on the same walls. All
+**8191/8191** recorded grasps had the gripper's +Y toward the jig's +x (0.0% the other way).
+
+**Why it matters.** The jig spawns at free yaw, so the wrist must rotate to match it. With one
+branch only, that rotation runs the full circle and hits the +-180 deg wrist limit. Across the
+four v3 reset sets (60953 states):
+
+| set | wrist >90 deg from home | >150 deg | AT the +-180 limit |
+|---|---|---|---|
+| C1 (merged) | 47.7% | 14.2% | 0.7% |
+| C2 | 49.9% | 16.1% | 0.6% |
+| C3 | 48.7% | 15.6% | 0.7% |
+| **C4 (placement)** | **56.7%** | **41.0%** | **2.7%** |
+| all | **49.3%** | — | — |
+
+Half of all states need the wrist more than 90 deg from home, and in the placement phase 2.7% sit
+AT the limit where it cannot rotate further. With both branches the policy can always take the one
+within 90 deg. Nothing rewards wrist economy directly, but `action_magnitude` and `action_rate`
+are penalised, so the cheaper branch is what PPO should favour.
+
+**Fix.** `flip_grasps.py` appends the analytic twin of every grasp: position UNCHANGED (rotating
+about the approach axis does not move the EE origin), orientation `q -> q (x) q_z180`, jaw
+positions unchanged. Verified: approach axis preserved to 0.0e+00, +Y reversed to 1.1e-06.
+
+**Not a deviation** — it adds the grasps the sampler should have produced; it changes no code path,
+threshold or config. But it forces a full redo: C1 seeds / C2 / C3 / C4 bake absolute joint angles
+into the reset states, so they cannot be flipped retrospectively, and Stage-1 must be retrained.
+
+**Note:** this changes PICK orientations as well as placement. The two cannot be separated — once
+grasped the jig is rigid in the jaws, so the placement wrist angle is just the pick angle plus the
+rotation that brings the jig to the plate's yaw. The flip shifts both ends by 180 deg; the grasp
+geometry (which walls, what span) is identical.
