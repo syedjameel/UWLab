@@ -94,6 +94,12 @@ class GraspSamplingEventCfg:
             "lateral_sigma": 0.0,
             "visualize_grasps": False,
             "visualization_scale": 0.01,
+            # Mount-frame vector to the grasp centre, overriding the gripper metadata's
+            # grasp_center_offset when set. None => metadata, i.e. today's behaviour for every
+            # gripper. It has to be declared here even though events.py falls back correctly,
+            # because update_class_from_dict raises KeyError on any params key absent from the
+            # default cfg, so a Hydra override can only touch a key that already exists.
+            "grasp_center_offset": None,
         },
     )
 

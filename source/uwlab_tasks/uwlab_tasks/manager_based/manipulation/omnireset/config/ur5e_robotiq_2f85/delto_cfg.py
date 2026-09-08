@@ -76,12 +76,14 @@ The arm-carrying DELTO task classes live in ``ur10e_delto_cfg.py``.
 from __future__ import annotations
 
 import math
+import os as _os
 
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.utils import configclass
 
 import uwlab_assets.robots.ur10e_delto as ur10e_delto
 from uwlab.envs.mdp.full_actuation import assert_action_cfg_fully_actuates
+from uwlab_assets.robots.ur10e_delto import actions as ur10e_delto_actions
 from uwlab_assets.robots.ur10e_delto.actions import DELTO_HAND_JOINT_NAMES
 
 from ...mdp.utils import read_metadata_from_usd_directory
@@ -656,3 +658,19 @@ class DeltoGraspSamplingCfg(Robotiq2f85GraspSamplingCfg):
         # scripted_gripper.py's own comment on scripted_gripper_deadband_rad for the mechanism and
         # why this must not become the shared default.
         self.scripted_gripper_deadband_rad = 0.0
+
+        # TWO-FINGER PINCH, opt-in per environment. The default five-finger SCRIPTED_CLOSE is a
+        # fist whose two pads finish 51.03 mm apart against a 34 mm cube; measured in a hand-only
+        # bench it does not retain the part. The pinch posture pair and the derivation behind it
+        # are in uwlab_assets.robots.ur10e_delto.actions.
+        #
+        # The grasp centre MUST move with the posture. The sampler places the object at
+        # grasp_center_offset, and metadata.yaml records that for the fist -- 35 mm from where the
+        # pinch's pads actually meet. Leaving it would put every candidate object where the old
+        # closure used to grip, which is the exact failure that once cost 6144 attempts and
+        # produced 0 successes with all 25 hand bodies reading 0.000 N.
+        if bool(int(_os.environ.get("UWLAB_DELTO_PINCH", "0"))):
+            self.scripted_gripper_pinch_posture = True
+            self.events.grasp_sampling.params["grasp_center_offset"] = (
+                ur10e_delto_actions.DELTO_PINCH_GRASP_CENTER_OFFSET
+            )

@@ -134,6 +134,90 @@ DELTO_HAND_SCRIPTED_CLOSE_JOINT_POS = {
 }
 
 
+# ---------------------------------------------------------------------------------------
+# TWO-FINGER PINCH -- thumb pad (rl_dg_1_tip) against index pad (rl_dg_2_tip).
+# ---------------------------------------------------------------------------------------
+# WHY THESE EXIST. ``DELTO_HAND_SCRIPTED_CLOSE_JOINT_POS`` above is a FIST: measured in sim,
+# it finishes with the two pads 51.03 mm apart, against a 34 mm cube, while every finger curls
+# toward the same point. What it does to a cube placed at ``grasp_center_offset`` is enclose it,
+# and in a hand-only bench it does not retain it. ``DELTO_TUCKED_HELD_FINGER_JOINT_POS`` does not
+# help: tucking fingers 3/4/5 changes the pad separation by 0.00 mm, because the two pads are what
+# is too far apart.
+#
+# HOW THEY WERE DERIVED, and it is not a hand-tuned posture. Cross-entropy optimisation over all
+# twenty joints (``cube-stack/pinch/pinchpose.py``), using the simulator itself as the forward-
+# kinematics oracle, against three requirements:
+#
+#   1. pad separation = 30.01 mm closed / 50.00 mm pre-grasp -- inside and clear of a 34 mm cube;
+#   2. EVERY other hand body stays at least 36 mm from the grasp point. This is the requirement
+#      that makes it a pinch rather than a fist: a 34 mm cube has a 29.4 mm half-diagonal, so
+#      nothing but the two pads may come within reach of it. Without this constraint the
+#      optimiser returns fist-like postures that score well on separation and then carry the
+#      cube on the curled fingers -- measured at thumb 2.22 N, index 0.00 N, fingers 3/4/5
+#      9.97 N, i.e. a scoop that passes any distance-based "is it held" test;
+#   3. the grasp point does not move between the two postures (0.00 mm), so closing squeezes
+#      the cube rather than sweeping sideways across it and knocking it away.
+#
+# Achieved: 30.01 mm closed, nearest non-pad body 39.9 mm, grasp point drift 0.00 mm.
+#
+# THE GRASP CENTRE MOVES. midpoint(rl_dg_1_tip, rl_dg_2_tip) at this posture is
+# (93.7, 29.9, 163.5) mm in the rl_dg_mount frame, about 35 mm from the
+# (63.7, 46.5, 150.0) that ``DeltoHand/metadata.yaml`` records for the fist. Anything that places
+# the hand on an object -- the grasp sampler, and every replay of a recorded grasp -- must be
+# re-anchored to the new value before it is used with this posture. Getting that wrong has a
+# precedent in this repository: a stale grasp centre cost 6144 sampling attempts and 0 successes,
+# with all 25 hand bodies reading 0.000 N because the hand never touched the object.
+DELTO_HAND_PINCH_CLOSE_JOINT_POS = {
+    "rj_dg_1_1": 0.589583,
+    "rj_dg_1_2": -1.047965,
+    "rj_dg_1_3": 0.414695,
+    "rj_dg_1_4": 0.696997,
+    "rj_dg_2_1": -0.169758,
+    "rj_dg_2_2": 0.752549,
+    "rj_dg_2_3": 0.707686,
+    "rj_dg_2_4": 1.088130,
+    "rj_dg_3_1": 0.132568,
+    "rj_dg_3_2": 0.481960,
+    "rj_dg_3_3": 0.307158,
+    "rj_dg_3_4": 0.490087,
+    "rj_dg_4_1": 0.112808,
+    "rj_dg_4_2": 1.278689,
+    "rj_dg_4_3": 0.678111,
+    "rj_dg_4_4": 0.769012,
+    "rj_dg_5_1": 0.668765,
+    "rj_dg_5_2": 0.880600,
+    "rj_dg_5_3": 0.853594,
+    "rj_dg_5_4": 0.929085,
+}
+
+DELTO_HAND_PINCH_OPEN_JOINT_POS = {
+    "rj_dg_1_1": 0.538261,
+    "rj_dg_1_2": -1.179347,
+    "rj_dg_1_3": 0.303013,
+    "rj_dg_1_4": 0.834549,
+    "rj_dg_2_1": -0.201122,
+    "rj_dg_2_2": 0.640040,
+    "rj_dg_2_3": 0.647027,
+    "rj_dg_2_4": 1.289860,
+    "rj_dg_3_1": 0.235683,
+    "rj_dg_3_2": 0.697010,
+    "rj_dg_3_3": 0.404253,
+    "rj_dg_3_4": 0.553278,
+    "rj_dg_4_1": 0.139532,
+    "rj_dg_4_2": 1.192424,
+    "rj_dg_4_3": 0.651707,
+    "rj_dg_4_4": 0.805332,
+    "rj_dg_5_1": 0.626350,
+    "rj_dg_5_2": 0.931250,
+    "rj_dg_5_3": 0.746876,
+    "rj_dg_5_4": 0.927472,
+}
+
+# midpoint(rl_dg_1_tip, rl_dg_2_tip) at DELTO_HAND_PINCH_CLOSE_JOINT_POS, in the rl_dg_mount
+# frame, in metres -- the pinch's replacement for metadata.yaml's ``grasp_center_offset``.
+DELTO_PINCH_GRASP_CENTER_OFFSET = (0.093671, 0.029915, 0.163504)
+
+
 @configclass
 class DeltoFullHandAction:
     """Hand-only action group for the grasp-sampling env, which has no arm in the scene.

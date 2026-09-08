@@ -48,6 +48,8 @@ from isaaclab.envs.mdp.actions.binary_joint_actions import BinaryJointAction
 
 from uwlab_assets.robots.ur10e_delto.actions import (
     DELTO_HAND_OPEN_JOINT_POS,
+    DELTO_HAND_PINCH_CLOSE_JOINT_POS,
+    DELTO_HAND_PINCH_OPEN_JOINT_POS,
     DELTO_HAND_SCRIPTED_CLOSE_JOINT_POS,
 )
 
@@ -61,6 +63,19 @@ from uwlab_assets.robots.ur10e_delto.actions import (
 _PER_JOINT_POSTURES: dict[str, tuple[float, float]] = {
     name: (float(DELTO_HAND_OPEN_JOINT_POS[name]), float(DELTO_HAND_SCRIPTED_CLOSE_JOINT_POS[name]))
     for name in DELTO_HAND_SCRIPTED_CLOSE_JOINT_POS
+}
+
+# The same mapping for a TWO-FINGER PINCH: thumb pad against index pad, every other body clear of
+# the object. Both columns differ from the table above, not just the closed one -- the pre-grasp
+# has to be the pinch's own open posture, because the hand's default OPEN is a splay that puts
+# fingers 3/4/5 straight into the workspace and does not sit on the pinch's approach at all.
+#
+# Selected per environment by ``env.cfg.scripted_gripper_pinch_posture``, following the same
+# pattern as ``scripted_gripper_deadband_rad`` below: absent on every cfg that does not opt in, so
+# every existing caller, gripper and task keeps exactly the postures it has today.
+_PER_JOINT_PINCH_POSTURES: dict[str, tuple[float, float]] = {
+    name: (float(DELTO_HAND_PINCH_OPEN_JOINT_POS[name]), float(DELTO_HAND_PINCH_CLOSE_JOINT_POS[name]))
+    for name in DELTO_HAND_PINCH_CLOSE_JOINT_POS
 }
 
 # Position deadband for the per-joint servo below (bead UWLab-z9j.11 follow-on). Without one,
@@ -104,15 +119,17 @@ def _clip_bounds(term, num_joints: int, device) -> tuple[torch.Tensor, torch.Ten
     return -inf, inf
 
 
-def _per_joint_command(term, close: bool, device, deadband_rad: float = _POSITION_DEADBAND_RAD) -> torch.Tensor:
+def _per_joint_command(term, close: bool, device, deadband_rad: float = _POSITION_DEADBAND_RAD,
+                       pinch: bool = False) -> torch.Tensor:
     """Servo command driving every joint of ``term`` toward its open or closed posture.
 
     ``deadband_rad`` defaults to the shared ``_POSITION_DEADBAND_RAD`` -- every caller that doesn't
     pass its own value gets today's behaviour unchanged. See ``scripted_gripper_actions`` for where
     a caller-specific value comes from and why it must not be the module-level constant itself.
     """
+    postures = _PER_JOINT_PINCH_POSTURES if pinch else _PER_JOINT_POSTURES
     joint_names: list[str] = list(getattr(term, "_joint_names", []))
-    unknown = [name for name in joint_names if name not in _PER_JOINT_POSTURES]
+    unknown = [name for name in joint_names if name not in postures]
     if unknown:
         raise ValueError(
             f"No scripted open/closed posture is declared for gripper joint(s) {unknown}, which the"
@@ -123,7 +140,7 @@ def _per_joint_command(term, close: bool, device, deadband_rad: float = _POSITIO
             " zero as 'hold the measured position', so every recorded grasp would be an open hand."
         )
     index = 1 if close else 0
-    target = torch.tensor([_PER_JOINT_POSTURES[name][index] for name in joint_names], device=device)
+    target = torch.tensor([postures[name][index] for name in joint_names], device=device)
     measured = term._asset.data.joint_pos[:, term._joint_ids]
     scale = _term_scale(term, len(joint_names), device)
     lo, hi = _clip_bounds(term, len(joint_names), device)
@@ -162,6 +179,10 @@ def scripted_gripper_actions(env, close: bool) -> torch.Tensor:
     # Absent on every cfg except DeltoGraspSamplingCfg (which sets it explicitly), so every other
     # caller/gripper/task falls back to the same _POSITION_DEADBAND_RAD every prior caller used.
     deadband_rad = getattr(env.cfg, "scripted_gripper_deadband_rad", _POSITION_DEADBAND_RAD)
+    # Opt-in, resolved the same way and for the same reason: this helper is shared by all three
+    # offline recorders across every gripper, so the choice belongs to the caller's cfg rather
+    # than to a module constant. Default False => today's five-finger postures, unchanged.
+    pinch = bool(getattr(env.cfg, "scripted_gripper_pinch_posture", False))
     actions = torch.zeros(env.num_envs, env.action_manager.total_action_dim, device=env.device)
     offset = 0
     found = False
@@ -174,7 +195,9 @@ def scripted_gripper_actions(env, close: bool) -> torch.Tensor:
             actions[:, offset : offset + width] = -1.0 if close else 1.0
             found = True
         elif joint_names and width == len(joint_names) and joint_names[0] in _PER_JOINT_POSTURES:
-            actions[:, offset : offset + width] = _per_joint_command(term, close, env.device, deadband_rad)
+            actions[:, offset : offset + width] = _per_joint_command(
+                term, close, env.device, deadband_rad, pinch=pinch
+            )
             found = True
         offset += width
     if not found:

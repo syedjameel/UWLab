@@ -81,7 +81,14 @@ class grasp_sampling_event(ManagerTermBase):
         # lateral component that no scalar can represent (the DELTO is ~60 mm off if collapsed to
         # one). This is deliberately opt-in so every existing gripper retains byte-for-byte pose
         # generation.
-        grasp_center_offset = metadata.get("grasp_center_offset")
+        # A cfg-level override takes precedence over the metadata file. metadata.yaml is keyed by
+        # the GRIPPER's USD directory and is therefore shared by every object this sampler touches,
+        # so a posture-specific grasp centre cannot live there without changing deltoblock and
+        # everything else at the same time. The DELTO pinch posture needs exactly that: its grasp
+        # point (midpoint of the two pads with the fingers EXTENDED) sits ~35 mm from the one the
+        # file records for the fist. Mirrors the per-object override precedent in
+        # grasp_sampling_cfg.make_object.
+        grasp_center_offset = cfg.params.get("grasp_center_offset") or metadata.get("grasp_center_offset")
         self.grasp_center_offset = None if grasp_center_offset is None else np.asarray(grasp_center_offset, dtype=float)
         if self.grasp_center_offset is not None and self.grasp_center_offset.shape != (3,):
             raise ValueError("grasp_center_offset must contain exactly three mount-frame components")
