@@ -3433,7 +3433,7 @@ class obs_noise_curriculum(ManagerTermBase):
     """Curriculum that gradually increases uniform noise on observation terms.
 
     Monitors success rate and linearly ramps the half-range on the specified
-    observation terms' ``AdditiveUniformNoiseCfg`` from ``initial_half_range``
+    observation terms' ``UniformNoiseCfg`` from ``initial_half_range``
     to ``target_half_range`` as progress goes from 0 to 1.  At full progress
     the noise is U(-target_half_range, +target_half_range).
     """
@@ -3464,7 +3464,7 @@ class obs_noise_curriculum(ManagerTermBase):
             cfg = name_to_cfg[name]
             if cfg.noise is None:
                 raise ValueError(
-                    f"Obs term '{name}' has no noise config. Set noise=AdditiveUniformNoiseCfg(n_min=0.0, n_max=0.0)."
+                    f"Obs term '{name}' has no noise config. Set noise=UniformNoiseCfg(n_min=0.0, n_max=0.0)."
                 )
             self._obs_term_cfgs.append(cfg)
 

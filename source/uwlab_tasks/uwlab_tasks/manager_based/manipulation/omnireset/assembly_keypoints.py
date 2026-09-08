@@ -25,7 +25,10 @@ class Offset:
         return self.pos + self.quat
 
     def apply(self, root: RigidObject | Articulation) -> tuple[torch.Tensor, torch.Tensor]:
+        # ISAAC SIM 6 PORT: asset data is a warp-backed ProxyArray whose .device is a warp
+        # Device, which torch.Tensor.to() rejects. .torch gives the real tensor.
         data = root.data.root_pos_w
+        data = getattr(data, "torch", data)
         pos_w, quat_w = math_utils.combine_frame_transforms(
             root.data.root_pos_w,
             root.data.root_quat_w,

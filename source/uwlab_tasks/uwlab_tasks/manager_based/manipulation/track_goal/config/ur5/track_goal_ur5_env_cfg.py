@@ -34,7 +34,7 @@ class TrackGoalUr5EnvCfg(track_goal_env.TrackGoalEnv):
         self.viewer.eye = (3.0, 3.0, 1.0)
 
         # Contact and solver settings
-        self.sim.physx.solver_type = 1
+        self.sim.physics.solver_type = 1
         # Render settings
         self.sim.render.enable_dlssg = True
         self.sim.render.enable_ambient_occlusion = True

@@ -193,9 +193,9 @@ class TrackGoalEnv(ManagerBasedRLEnvCfg):
         self.episode_length_s = 50
         # simulation settings
         self.sim.dt = 0.02 / self.decimation
-        self.sim.physx.gpu_found_lost_aggregate_pairs_capacity = 1024 * 1024 * 4
-        self.sim.physx.gpu_total_aggregate_pairs_capacity = 16 * 1024
-        self.sim.physx.gpu_max_rigid_patch_count = 5 * 2**16
+        self.sim.physics.gpu_found_lost_aggregate_pairs_capacity = 1024 * 1024 * 4
+        self.sim.physics.gpu_total_aggregate_pairs_capacity = 16 * 1024
+        self.sim.physics.gpu_max_rigid_patch_count = 5 * 2**16
 
         self.sim.render.enable_ambient_occlusion = True
         self.sim.render.enable_reflections = True

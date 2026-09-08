@@ -623,7 +623,7 @@ class TableLegGraspLiftEnvCfg(UR10eDeltoMixinCfg, dexsuite.DexsuiteLiftEnvCfg):
         # creates substantially more narrow-phase work than the primitive Dexsuite
         # objects.  The 64 MiB PhysX default overflows at only 256 environments and
         # drops contacts, invalidating both learning and evaluation.
-        self.sim.physx.gpu_collision_stack_size = 2**31
+        self.sim.physics.gpu_collision_stack_size = 2**31
 
         # Disable generic object scaling/mass ADR: this task uses one exact measured asset.
         self.events.randomize_object_scale = None

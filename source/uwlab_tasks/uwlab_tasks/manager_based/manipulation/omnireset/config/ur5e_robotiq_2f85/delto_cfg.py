@@ -319,7 +319,7 @@ def _apply_delto_collision_stack_size(cfg) -> None:
     ``ur10e_delto_cfg.py``) is called ad hoc from the one config that needs it.
 
     ``Ur5eRobotiq2f85RlStateCfg.__post_init__`` (rl_state_cfg.py:748) sets
-    ``sim.physx.gpu_collision_stack_size = 2**31`` (2 GiB) for every gripper that base serves --
+    ``sim.physics.gpu_collision_stack_size = 2**31`` (2 GiB) for every gripper that base serves --
     DELTO included, on EITHER arm, via ``_apply_delto`` -- but that value was only ever proven
     sufficient for dexlift's plant and task, never for insertion's. Both certified dexlift runs
     (2026-08-16) use 4026531840 (3.75 GiB, env.yaml:48) instead: the MAXIMUM LEGAL value, since the
@@ -357,7 +357,22 @@ def _apply_delto_collision_stack_size(cfg) -> None:
     untouched -- every DELTO class (reset-state, RL-state, and grasp sampling) opts in explicitly by
     calling this function instead.
     """
-    cfg.sim.physx.gpu_collision_stack_size = 4026531840
+    # ISAAC SIM 6 PORT: 4026531840 (3.75 GiB) no longer ALLOCATES on a 16 GB card. Isaac Sim 6.0
+    # holds materially more VRAM than 5.1 did, and PhysX then fails with
+    #   "PxgCudaDeviceMemoryAllocator failed to allocate memory 4026531840 bytes"
+    # after which every GPU kernel it launches fails and the articulation/rigid views return
+    # nothing ("Failed to get DOF velocities from backend") -- an allocation failure that surfaces
+    # as an unrelated-looking init error.
+    #
+    # This stays as large as will actually fit, because UNDER-sizing does not crash either: PhysX
+    # logs "Contacts have been dropped" and silently continues with degraded contact reporting,
+    # which is exactly what a grasping task must not have. Override on a larger GPU via
+    # UWLAB_GPU_COLLISION_STACK_SIZE, and grep runs for "Contacts have been dropped".
+    import os as _os
+
+    cfg.sim.physics.gpu_collision_stack_size = int(
+        _os.environ.get("UWLAB_GPU_COLLISION_STACK_SIZE", 2**31)
+    )
 
 
 def _apply_delto_dataset_dir(cfg, dataset_dir: str) -> None:

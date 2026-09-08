@@ -879,18 +879,18 @@ class Ur5eRobotiq2f85RlStateCfg(ManagerBasedRLEnvCfg):
         self.sim.dt = 1 / 120.0
 
         # Contact and solver settings
-        self.sim.physx.solver_type = 1
-        self.sim.physx.max_position_iteration_count = 192
-        self.sim.physx.max_velocity_iteration_count = 1
-        self.sim.physx.bounce_threshold_velocity = 0.02
-        self.sim.physx.friction_offset_threshold = 0.01
-        self.sim.physx.friction_correlation_distance = 0.0005
+        self.sim.physics.solver_type = 1
+        self.sim.physics.max_position_iteration_count = 192
+        self.sim.physics.max_velocity_iteration_count = 1
+        self.sim.physics.bounce_threshold_velocity = 0.02
+        self.sim.physics.friction_offset_threshold = 0.01
+        self.sim.physics.friction_correlation_distance = 0.0005
 
-        self.sim.physx.gpu_found_lost_aggregate_pairs_capacity = 1024 * 1024 * 4
-        self.sim.physx.gpu_total_aggregate_pairs_capacity = 2**23
-        self.sim.physx.gpu_max_rigid_contact_count = 2**23
-        self.sim.physx.gpu_max_rigid_patch_count = 2**23
-        self.sim.physx.gpu_collision_stack_size = 2**31
+        self.sim.physics.gpu_found_lost_aggregate_pairs_capacity = 1024 * 1024 * 4
+        self.sim.physics.gpu_total_aggregate_pairs_capacity = 2**23
+        self.sim.physics.gpu_max_rigid_contact_count = 2**23
+        self.sim.physics.gpu_max_rigid_patch_count = 2**23
+        self.sim.physics.gpu_collision_stack_size = 2**31
 
         # Render settings
         self.sim.render.enable_dlssg = True

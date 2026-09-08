@@ -1519,7 +1519,7 @@ def _assert_root_pin_is_a_pin(env_cfg) -> None:
 def _assert_adr_noise_bounds_are_ranges(curriculum) -> None:
     """Fail construction if any ADR noise term ramps ``n_min`` and ``n_max`` to the SAME value.
 
-    ``AdditiveUniformNoiseCfg`` computes ``data + rand() * (n_max - n_min) + n_min``. Equal bounds
+    ``UniformNoiseCfg`` computes ``data + rand() * (n_max - n_min) + n_min``. Equal bounds
     therefore collapse the width to zero and the term stops being noise: it becomes a constant
     BIAS of that value, applied to every element of the observation, every step, forever. Nothing
     upstream checks this, and it is invisible in a config diff -- which is exactly how
@@ -2186,7 +2186,7 @@ class Ur5eDeltoMixinCfg:
         # So if the demand ever exceeds ~4 GiB, the buffer CANNOT absorb it and the only honest
         # remedies are fewer environments (the demand scales with them) or simpler hand colliders.
         # Shrinking this back and living with dropped contacts is not one of them.
-        self.sim.physx.gpu_collision_stack_size = 4026531840
+        self.sim.physics.gpu_collision_stack_size = 4026531840
 
         # -- contact patch budget, taken from the ORIGINAL DexSuite rather than left at the default.
         # dexsuite_env_cfg.py:516 in IsaacLabDexterous (the codebase that measurably reached 88% on
@@ -2194,7 +2194,7 @@ class Ur5eDeltoMixinCfg:
         # It is the same class of omission as the collision stack above: a five-fingered hand
         # generates far more contact patches than the default was chosen for, and running out of
         # patches degrades contact reporting rather than raising an error.
-        self.sim.physx.gpu_max_rigid_patch_count = 4 * 5 * 2**15
+        self.sim.physics.gpu_max_rigid_patch_count = 4 * 5 * 2**15
 
         # -- terminations: drop the abnormal-velocity cut and its penalty. See the function.
         _drop_unreachable_abnormal_robot_cut(self)
