@@ -98,7 +98,14 @@ class grasp_sampling_event(ManagerTermBase):
         # OPEN posture, one entry per driver joint. A parallel jaw declares the legacy scalar
         # finger_open_joint_angle (-> {"finger_joint": value}); a multi-finger hand declares the
         # finger_open_joint_angles mapping. See mdp/gripper_metadata.py.
-        self.gripper_joint_reset_config = read_gripper_open_posture(metadata)
+        # The OPEN posture the sampler places the hand in before closing. A cfg override is
+        # needed alongside grasp_center_offset and for the same reason: the pinch's pre-grasp is
+        # a different hand shape entirely, and placing the metadata splay at the pinch's grasp
+        # point buries fingers 3/4/5 in the object -- the placement gate then rejects every
+        # candidate (measured: 61440/61440).
+        self.gripper_joint_reset_config = (
+            dict(cfg.params.get("gripper_open_joint_pos") or {}) or read_gripper_open_posture(metadata)
+        )
         # Grasp candidate generation mode. "antipodal" (default, 2F-85) samples mesh antipodal
         # pairs. "topdown" makes the gripper approach straight DOWN onto the (fixed) object and
         # sample full yaw + small roll/pitch tilt -- required for a gripper whose approach axis is
@@ -182,6 +189,11 @@ class grasp_sampling_event(ManagerTermBase):
         grasp_topdown_position_fraction: float = 0.3,
         grasp_topdown_height_fraction: float = 0.2,
         grasp_topdown_yaw_deg: float = 0.0,
+        # Same reason as the four above: resolved once in __init__ into
+        # self.grasp_center_offset, but the EventManager validates cfg.params against THIS
+        # signature and unpacks them as kwargs, so the key has to be declared here as well.
+        grasp_center_offset: tuple[float, float, float] | None = None,
+        gripper_open_joint_pos: dict | None = None,
     ) -> None:
         """Execute grasp sampling event - sample from pre-computed candidates."""
         # Get the gripper into the posture in which candidates will be placed before deriving the

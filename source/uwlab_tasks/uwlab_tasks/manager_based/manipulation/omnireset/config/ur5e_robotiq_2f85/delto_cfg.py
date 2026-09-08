@@ -674,3 +674,9 @@ class DeltoGraspSamplingCfg(Robotiq2f85GraspSamplingCfg):
             self.events.grasp_sampling.params["grasp_center_offset"] = (
                 ur10e_delto_actions.DELTO_PINCH_GRASP_CENTER_OFFSET
             )
+            # The pre-grasp must move with the grasp centre too. Placing the metadata splay at
+            # the pinch's grasp point puts fingers 3/4/5 inside the object and the placement
+            # gate rejects every candidate -- measured, 61440 of 61440.
+            self.events.grasp_sampling.params["gripper_open_joint_pos"] = dict(
+                ur10e_delto_actions.DELTO_HAND_PINCH_OPEN_JOINT_POS
+            )

@@ -100,6 +100,9 @@ class GraspSamplingEventCfg:
             # because update_class_from_dict raises KeyError on any params key absent from the
             # default cfg, so a Hydra override can only touch a key that already exists.
             "grasp_center_offset": None,
+            # Open posture to place the hand in, overriding the gripper metadata's
+            # finger_open_joint_angles. None => metadata, i.e. unchanged for every gripper.
+            "gripper_open_joint_pos": None,
         },
     )
 
