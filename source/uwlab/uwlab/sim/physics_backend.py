@@ -45,6 +45,7 @@ __all__ = [
     "is_newton",
     "is_physx",
     "apply_physx_tuning",
+    "set_gravity",
     "dropped_settings",
     "report_dropped",
 ]
@@ -130,3 +131,34 @@ def report_dropped(logger=print) -> None:
     )
     for key in sorted(_dropped):
         logger(f"    {key} = {_dropped[key]!r}")
+
+
+def set_gravity(vec) -> None:
+    """Set world gravity on whichever backend is live.
+
+    UWLab's OmniReset grasp sampler toggles gravity mid-episode (off while the grasp
+    is established, on at t=10 s, then a mass-scaled shake), and did it through the
+    PhysX tensor API: ``SimulationContext.instance().physics_sim_view.set_gravity(...)``.
+    On Newton ``physics_sim_view`` is a list, so that call raises AttributeError.
+
+    Newton keeps gravity on the Model (``NewtonManager._model.set_gravity``), so this
+    routes to whichever one is live.
+
+    Args:
+        vec: (x, y, z) in m/s^2.
+    """
+    vec = tuple(float(v) for v in vec)
+    if is_newton():
+        from isaaclab_newton.physics.newton_manager import NewtonManager
+
+        model = getattr(NewtonManager, "_model", None)
+        if model is None:
+            raise RuntimeError("Newton model not initialised; cannot set gravity yet.")
+        model.set_gravity(vec)
+        return
+
+    import carb
+
+    from isaaclab.sim import SimulationContext
+
+    SimulationContext.instance().physics_sim_view.set_gravity(carb.Float3(*vec))

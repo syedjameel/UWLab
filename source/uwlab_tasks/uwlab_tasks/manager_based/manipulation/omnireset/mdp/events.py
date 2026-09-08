@@ -18,6 +18,8 @@ import trimesh.transformations as tra
 from collections.abc import Mapping, Sequence
 
 import carb
+
+from uwlab.sim import physics_backend as _physics_backend
 import isaaclab.sim as sim_utils
 import isaaclab.utils.math as math_utils
 import omni.usd
@@ -919,11 +921,14 @@ class global_physics_control_event(ManagerTermBase):
         # set deliberately. Scaling by mass applies comparable stress across objects of different sizes,
         # which the flat value provably does not; that is a MORE meaningful validation, not a laxer one.
         self.force_torque_scale_by_mass = cfg.params.get("force_torque_scale_by_mass", False)
+        # PhysX-only handle; kept for the PhysX path. Gravity now goes through
+        # uwlab.sim.physics_backend so it works on Newton too (where physics_sim_view
+        # is a list and has no set_gravity).
         self.physics_sim_view = sim_utils.SimulationContext.instance().physics_sim_view
 
     def reset(self, env_ids: torch.Tensor | None = None) -> None:
         """Called when environments reset - disable gravity for positioning."""
-        self.physics_sim_view.set_gravity(carb.Float3(0.0, 0.0, 0.0))
+        _physics_backend.set_gravity((0.0, 0.0, 0.0))
         self.gravity_enabled = False
 
     def __call__(
@@ -947,10 +952,10 @@ class global_physics_control_event(ManagerTermBase):
         ).any()
 
         if should_enable_gravity and not self.gravity_enabled:
-            self.physics_sim_view.set_gravity(carb.Float3(0.0, 0.0, -9.81))
+            _physics_backend.set_gravity((0.0, 0.0, -9.81))
             self.gravity_enabled = True
         elif not should_enable_gravity and self.gravity_enabled:
-            self.physics_sim_view.set_gravity(carb.Float3(0.0, 0.0, 0.0))
+            _physics_backend.set_gravity((0.0, 0.0, 0.0))
             self.gravity_enabled = False
         else:
             pass
