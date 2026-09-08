@@ -370,8 +370,14 @@ def _apply_delto_collision_stack_size(cfg) -> None:
     # UWLAB_GPU_COLLISION_STACK_SIZE, and grep runs for "Contacts have been dropped".
     import os as _os
 
-    cfg.sim.physics.gpu_collision_stack_size = int(
-        _os.environ.get("UWLAB_GPU_COLLISION_STACK_SIZE", 2**31)
+    from uwlab.sim.physics_backend import apply_physx_tuning
+
+    # Routed through apply_physx_tuning so that on the Newton backend this is RECORDED as
+    # dropped rather than silently written onto a config Newton never reads. NewtonCfg
+    # tolerates unknown attributes, so a plain assignment here would look like it worked.
+    apply_physx_tuning(
+        cfg,
+        gpu_collision_stack_size=int(_os.environ.get("UWLAB_GPU_COLLISION_STACK_SIZE", 2**31)),
     )
 
 
