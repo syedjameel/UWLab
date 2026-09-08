@@ -103,6 +103,10 @@ class GraspSamplingEventCfg:
             # Open posture to place the hand in, overriding the gripper metadata's
             # finger_open_joint_angles. None => metadata, i.e. unchanged for every gripper.
             "gripper_open_joint_pos": None,
+            # Direction vectors, overriding the gripper metadata's. None => metadata.
+            "gripper_approach_direction": None,
+            "grasp_align_axis": None,
+            "orientation_sample_axis": None,
         },
     )
 

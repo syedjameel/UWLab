@@ -680,3 +680,13 @@ class DeltoGraspSamplingCfg(Robotiq2f85GraspSamplingCfg):
             self.events.grasp_sampling.params["gripper_open_joint_pos"] = dict(
                 ur10e_delto_actions.DELTO_HAND_PINCH_OPEN_JOINT_POS
             )
+            # And the direction vectors, which metadata also records for the fist.
+            # grasp_align_axis is the CLOSING axis -- the sampler lines it up with the object's
+            # width so the pads reach opposite faces. Derived by FK at the pinch posture
+            # (cube-stack/pinch/pinchaxes.py); the sign follows metadata's convention, which is
+            # tip1 - tip2 (verified: recomputing the FIST's axis this way reproduces
+            # metadata's to a dot product of -0.982, and its grasp centre exactly).
+            self.events.grasp_sampling.params["grasp_align_axis"] = (0.253221, -0.236808, -0.937977)
+            self.events.grasp_sampling.params["orientation_sample_axis"] = (0.253221, -0.236808, -0.937977)
+            self.events.grasp_sampling.params["gripper_approach_direction"] = (
+                0.703686, 0.224826, 0.674002)

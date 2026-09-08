@@ -92,9 +92,18 @@ class grasp_sampling_event(ManagerTermBase):
         self.grasp_center_offset = None if grasp_center_offset is None else np.asarray(grasp_center_offset, dtype=float)
         if self.grasp_center_offset is not None and self.grasp_center_offset.shape != (3,):
             raise ValueError("grasp_center_offset must contain exactly three mount-frame components")
-        self.gripper_approach_direction = tuple(metadata.get("gripper_approach_direction"))
-        self.grasp_align_axis = tuple(metadata.get("grasp_align_axis"))
-        self.orientation_sample_axis = tuple(metadata.get("orientation_sample_axis"))
+        # The three direction vectors are overridable for the same reason grasp_center_offset
+        # is: metadata records them for ONE posture (the fist), and grasp_align_axis is the
+        # CLOSING axis the sampler lines up with the object's width. Point it wrong and the
+        # hand is rotated so a pad enters the part rather than straddling it -- measured with
+        # the pinch's centre but the fist's axes, the placement gate rejected 61440/61440 with
+        # rl_dg_2_tip 14.44 mm INSIDE the cube.
+        self.gripper_approach_direction = tuple(
+            cfg.params.get("gripper_approach_direction") or metadata.get("gripper_approach_direction"))
+        self.grasp_align_axis = tuple(
+            cfg.params.get("grasp_align_axis") or metadata.get("grasp_align_axis"))
+        self.orientation_sample_axis = tuple(
+            cfg.params.get("orientation_sample_axis") or metadata.get("orientation_sample_axis"))
         # OPEN posture, one entry per driver joint. A parallel jaw declares the legacy scalar
         # finger_open_joint_angle (-> {"finger_joint": value}); a multi-finger hand declares the
         # finger_open_joint_angles mapping. See mdp/gripper_metadata.py.
@@ -194,6 +203,9 @@ class grasp_sampling_event(ManagerTermBase):
         # signature and unpacks them as kwargs, so the key has to be declared here as well.
         grasp_center_offset: tuple[float, float, float] | None = None,
         gripper_open_joint_pos: dict | None = None,
+        gripper_approach_direction: tuple[float, float, float] | None = None,
+        grasp_align_axis: tuple[float, float, float] | None = None,
+        orientation_sample_axis: tuple[float, float, float] | None = None,
     ) -> None:
         """Execute grasp sampling event - sample from pre-computed candidates."""
         # Get the gripper into the posture in which candidates will be placed before deriving the
