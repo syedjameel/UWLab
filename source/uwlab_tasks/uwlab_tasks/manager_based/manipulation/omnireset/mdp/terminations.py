@@ -114,6 +114,42 @@ def _check_obb_overlap(centroids_a, axes_a, half_extents_a, centroids_b, axes_b,
     return overlap_results
 
 
+def _pad_geometry_note(gripper_asset, object_asset) -> str:
+    """Where the object actually sits relative to the two pinch pads, env 0.
+
+    A posture can hold a cube placed exactly between its pads and still record nothing here if the
+    sampler puts the cube somewhere else: the candidate transform is built from a SCALAR standoff
+    (``offset @ approach``), not from the offset vector, so the lateral component of
+    ``grasp_center_offset`` need not survive. This prints the two pad distances and the object
+    height so that is a measurement rather than an inference.
+    """
+    try:
+        names = list(gripper_asset.body_names)
+        pads = [n for n in ("rl_dg_1_tip", "rl_dg_2_tip") if n in names]
+        if len(pads) != 2:
+            return ""
+        bp = gripper_asset.data.body_pos_w
+        bp = getattr(bp, "torch", bp)
+        op = object_asset.data.root_pos_w
+        op = getattr(op, "torch", op)
+        d = [float((bp[0, names.index(n)] - op[0]).norm()) * 1000.0 for n in pads]
+        aperture = float((bp[0, names.index(pads[0])] - bp[0, names.index(pads[1])]).norm()) * 1000.0
+        note = (f"  | pads {d[0]:.0f}/{d[1]:.0f} mm from object, jaw {aperture:.0f} mm, "
+                f"object z {float(op[0, 2]):.3f} m")
+        # WHICH joints are stuck, not just that the jaw stopped. A hand that freezes part-closed
+        # does so at specific joints, and the per-joint error says which -- the repo's own account
+        # of this failure (delto_cfg.py:469) is about exactly one such joint.
+        jn = list(gripper_asset.data.joint_names)
+        q = getattr(gripper_asset.data.joint_pos, "torch", gripper_asset.data.joint_pos)
+        tgt = getattr(gripper_asset.data.joint_pos_target, "torch", gripper_asset.data.joint_pos_target)
+        err = (tgt[0] - q[0]).abs()
+        worst = err.argsort(descending=True)[:4]
+        note += "  stuck: " + ", ".join(f"{jn[int(i)]} {float(err[int(i)]):.3f}" for i in worst)
+        return note
+    except Exception as exc:  # diagnostics must never break a run
+        return f"  | pad geometry unavailable: {exc}"
+
+
 class check_grasp_success(ManagerTermBase):
     """Check if grasp is successful based on object stability, gripper closure, and collision detection."""
 
@@ -240,7 +276,8 @@ class check_grasp_success(ManagerTermBase):
                 f"coll_free={int(collision_free.sum())} "
                 f"timeout={int(time_out.sum())} "
                 f"(len {int(env.episode_length_buf.max())}/{int(env.max_episode_length)}) "
-                f"-> success={int(grasp_success.sum())}",
+                f"-> success={int(grasp_success.sum())}"
+                + _pad_geometry_note(gripper_asset, object_asset),
                 flush=True,
             )
 

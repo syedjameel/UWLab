@@ -583,7 +583,7 @@ class CubeStackObjectRestingEEGraspedCfg(Ur10eDeltoObjectRestingEEGraspedResetSt
             # gripper points downward. metadata's value is the fist's, and with the pinch it
             # rejected two thirds of otherwise-valid states (orient_down 41/128).
             self.terminations.success.params["gripper_approach_direction"] = (
-                0.683342, 0.225664, 0.694348)
+                0.650066, 0.243572, 0.719783)
         _apply_cube_objects(self)
         _apply_cube_dataset_dir(self)
         _apply_grasp_matched_hand_actuator(self)
@@ -609,7 +609,7 @@ class CubeStackObjectAnywhereEEGraspedCfg(Ur10eDeltoObjectAnywhereEEGraspedReset
             # gripper points downward. metadata's value is the fist's, and with the pinch it
             # rejected two thirds of otherwise-valid states (orient_down 41/128).
             self.terminations.success.params["gripper_approach_direction"] = (
-                0.683342, 0.225664, 0.694348)
+                0.650066, 0.243572, 0.719783)
         _apply_cube_objects(self)
         _apply_cube_dataset_dir(self)
         _apply_grasp_matched_hand_actuator(self)
@@ -649,7 +649,7 @@ class CubeStackObjectPartiallyAssembledEEGraspedCfg(Ur10eDeltoObjectPartiallyAss
             # gripper points downward. metadata's value is the fist's, and with the pinch it
             # rejected two thirds of otherwise-valid states (orient_down 41/128).
             self.terminations.success.params["gripper_approach_direction"] = (
-                0.683342, 0.225664, 0.694348)
+                0.650066, 0.243572, 0.719783)
         _apply_cube_objects(self)
         _apply_cube_dataset_dir(self)
         _apply_grasp_matched_hand_actuator(self)

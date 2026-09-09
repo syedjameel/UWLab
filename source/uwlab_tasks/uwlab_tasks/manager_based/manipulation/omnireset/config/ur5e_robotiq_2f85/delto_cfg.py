@@ -644,6 +644,12 @@ class DeltoGraspSamplingCfg(Robotiq2f85GraspSamplingCfg):
         # maximum travel (0.1 rad) matches the commanded delta exactly, so there is nothing left to
         # oscillate about even before the deadband intervenes.
         _sampler_hand_stiffness = dict(ur10e_delto.DELTO_HAND_ACTUATOR.stiffness)
+        # An ASYMMETRIC value here (delto_cfg.py:487 names it as the untested next step) was tried
+        # against the pinch and does NOT move the stall: at 20x the jaw still freezes at 63 mm
+        # against a commanded 30.8 mm. Neither does raising effort_limit_sim to 0.3 N.m. The joints
+        # that pin at the relative action's full 0.1 rad error are rj_dg_1_1/1_2/2_1/2_2 -- the
+        # PROXIMAL joints of the two pinch fingers -- and they stop with torque headroom, which
+        # points at something blocking them rather than at a gain.
         _sampler_hand_stiffness["rj_dg_1_4"] = 1.698  # 10x the authored 0.1698
         _sampler_hand_stiffness["rj_dg_5_4"] = 1.694  # 10x the authored 0.1694
         self.scene.robot.actuators = {
@@ -671,6 +677,26 @@ class DeltoGraspSamplingCfg(Robotiq2f85GraspSamplingCfg):
         # produced 0 successes with all 25 hand bodies reading 0.000 N.
         if bool(int(_os.environ.get("UWLAB_DELTO_PINCH", "0"))):
             self.scripted_gripper_pinch_posture = True
+            # THE PINCH CLOSES AT THE AUTHORED SPEED, not the throttled one above. The 1.0 rad/s
+            # limit was tuned for the five-finger fist, where it breaks a limit cycle; for a
+            # two-finger pinch it is the difference between capturing a free cube and never
+            # touching it. Measured on the hand-only bench with every other sampler condition
+            # matched (free cube under gravity, approach pointing down, the sampler's own segment-4
+            # stiffness, the same step close scripted_gripper_actions commands):
+            #
+            #     velocity_limit_sim 1.0  ->   0.0% held   (the sampler's setting: 0/64 every batch)
+            #     velocity_limit_sim 3.0  ->  40.6% held, 20.3% true pinch   (the authored value)
+            #     velocity_limit_sim 6.0  ->  14.8% held
+            #
+            # Non-monotonic, peaking at the authored value, which is the same shape the stiffness
+            # override above reports (20x worse than 10x). Scoped to the pinch so the five-finger
+            # path keeps the setting it was tuned with.
+            self.scene.robot.actuators = {
+                **self.scene.robot.actuators,
+                "hand": self.scene.robot.actuators["hand"].replace(
+                    velocity_limit_sim={r"rj_dg_[1-5]_[1-4]": 3.0},
+                ),
+            }
             self.events.grasp_sampling.params["grasp_center_offset"] = (
                 ur10e_delto_actions.DELTO_PINCH_GRASP_CENTER_OFFSET
             )
@@ -686,6 +712,6 @@ class DeltoGraspSamplingCfg(Robotiq2f85GraspSamplingCfg):
             # (cube-stack/pinch/pinchaxes.py); the sign follows metadata's convention, which is
             # tip1 - tip2 (verified: recomputing the FIST's axis this way reproduces
             # metadata's to a dot product of -0.982, and its grasp centre exactly).
-            self.events.grasp_sampling.params["grasp_align_axis"] = (-0.715103, 0.515643, 0.471954)
-            self.events.grasp_sampling.params["orientation_sample_axis"] = (-0.715103, 0.515643, 0.471954)
-            self.events.grasp_sampling.params["gripper_approach_direction"] = (0.683342, 0.225664, 0.694348)
+            self.events.grasp_sampling.params["grasp_align_axis"] = (-0.621889, -0.267982, 0.735826)
+            self.events.grasp_sampling.params["orientation_sample_axis"] = (-0.621889, -0.267982, 0.735826)
+            self.events.grasp_sampling.params["gripper_approach_direction"] = (0.650066, 0.243572, 0.719783)
