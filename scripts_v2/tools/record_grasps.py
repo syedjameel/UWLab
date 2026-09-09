@@ -148,6 +148,38 @@ def main(env_cfg, agent_cfg) -> None:
     # episode. Candidate counts reported as "consumed" are cumulative ATTEMPTS (dones), not pool
     # depletion -- the same candidate can be (and typically will be) redrawn.
     max_episode_length = env.max_episode_length
+
+    # HOLD THE OBJECT WHILE THE HAND CLOSES, opt-in via UWLAB_GRASP_HOLD_STEPS.
+    #
+    # The sampler places the object in mid-air and lets it fall from the first step. A five-finger
+    # fist copes -- it closes into a cage and gravity pulls the part into it, which is why the
+    # shipped configuration works at all. Two opposed pads cannot: the cube leaves the gap before
+    # they meet. Measured, the pinch scores 0 in 192 attempts at every pre-grasp width from 50 mm
+    # to 94 mm and with every gain tried, while the fist scores ~5% in the same scene. Pinning the
+    # object for the first few control steps asks the question a grasp bank is actually for --
+    # which hand poses HOLD this part -- rather than whether the hand can catch it falling.
+    #
+    # RESULT, so this is not re-derived: pinning the cube for 25 control steps does NOT make the
+    # pinch score. It stays at 0 in 192 attempts. So capture is not the blocker either -- the hand
+    # closes on a stationary cube and still does not retain it, while the same posture reads 69.9%
+    # held in the hand-only bench under matched gravity, orientation, actuator gains and close
+    # schedule. That divergence is the open question; this flag is kept because it is what ruled
+    # capture out.
+    #
+    # Episodes desync across environments, so the pose is captured per-env at the start of each.
+    _hold_steps = int(os.environ.get("UWLAB_GRASP_HOLD_STEPS", "0"))
+    _obj = env.scene["object"]
+
+    def _t(x):
+        return getattr(x, "torch", x)
+
+    def _obj_pose():
+        return torch.cat([_t(_obj.data.root_pos_w), _t(_obj.data.root_quat_w)], dim=-1)
+
+    _hold_pose = _obj_pose().clone()
+    if _hold_steps:
+        print(f"[grasp record] HOLD: pinning the object for the first {_hold_steps} control steps"
+              " of each episode", flush=True)
     total_candidate_pool = len(env.grasp_candidates) if hasattr(env, "grasp_candidates") else None
     coarse_interval = 30  # env-steps; within the 30-60 range requested
 
@@ -175,6 +207,19 @@ def main(env_cfg, agent_cfg) -> None:
         # toward a measured closed posture by NAME, so it must be recomputed every step.
         actions = task_mdp.scripted_gripper_actions(env, close=True)
         _, _, terminated, truncated, _ = env.step(actions)
+        if _hold_steps:
+            _blen = env.episode_length_buf
+            _fresh = _blen <= 1
+            if bool(_fresh.any()):
+                _hold_pose[_fresh] = _obj_pose()[_fresh].clone()
+            _mask = _blen < _hold_steps
+            if bool(_mask.any()):
+                _pose = _obj_pose().clone()
+                _pose[_mask] = _hold_pose[_mask]
+                _obj.write_root_pose_to_sim(_pose)
+                _vel = _t(_obj.data.root_vel_w).clone()
+                _vel[_mask] = 0.0
+                _obj.write_root_velocity_to_sim(_vel)
         dones = terminated | truncated
         env_step_index += 1
 
