@@ -37,6 +37,7 @@ FOUR CONFIGURATION FACTS THIS SCENE NEEDS, each of which cost a debugging round 
 from __future__ import annotations
 
 import argparse
+import os
 import time
 from pathlib import Path
 
@@ -51,6 +52,19 @@ parser.add_argument("--receptive-variant", default="onelegfixture")
 parser.add_argument("--out", type=Path, default=Path("artifacts/reset_viewport"))
 parser.add_argument("--count", type=int, default=6)
 parser.add_argument("--settle-steps", type=int, default=20)
+parser.add_argument("--video", type=Path, default=None,
+                    help="write an mp4 of the settle itself, one frame every --video-every physics"
+                         " steps, concatenated over the selected states. Stills show where a state"
+                         " ENDED; only the video shows whether the hand held the object or the"
+                         " object fell out of an open hand, which is the distinction this whole"
+                         " exercise turns on.")
+parser.add_argument("--allow-no-dataset-dir", action="store_true",
+                    help="permit a task whose events take no dataset_dir (ObjectAnywhereEEAnywhere)")
+parser.add_argument("--video-every", type=int, default=4)
+parser.add_argument("--video-fps", type=int, default=25)
+parser.add_argument("--video-settle-steps", type=int, default=0,
+                    help="settle steps to film (0 = --settle-steps). The measurement window is"
+                         " deliberately short; a watchable clip usually wants longer.")
 parser.add_argument("--width", type=int, default=960)
 parser.add_argument("--height", type=int, default=720)
 parser.add_argument("--drop-terminations", nargs="*", default=["success"])
@@ -168,11 +182,28 @@ if args.engagement_json is not None:
 
 target = obj_pose[sel, :3].mean(dim=0).tolist()
 eye = [target[0] - 0.55, target[1] + 0.45, target[2] + 0.40]
+# The default standoff was chosen for the leg+fixture scene. A 34 mm cube at 0.81 m fills a few
+# dozen pixels, and the frames come back showing bare tabletop -- numbers without a picture, which
+# is how the last round of this went wrong. Allow an explicit override.
+if os.environ.get("UWLAB_VIEW_EYE"):
+    eye = [float(v) for v in os.environ["UWLAB_VIEW_EYE"].split(",")]
+if os.environ.get("UWLAB_VIEW_AT"):
+    target = [float(v) for v in os.environ["UWLAB_VIEW_AT"].split(",")]
 print(f"[view] viewer eye={[round(v,3) for v in eye]} lookat={[round(v,3) for v in target]}", flush=True)
 
 t0 = time.time()
 app = AppLauncher(args).app
 print(f"[view] app up {time.time()-t0:.1f}s", flush=True)
+
+# Isaac Sim 6 shim: uwlab.envs.real_rl_env imports ``isaacsim.core.utils``, which does not exist
+# in Isaac Sim 6, and uwlab_tasks' package walk imports it transitively. Must run after the app
+# starts and before any uwlab import -- the same two lines record_grasps.py and
+# record_reset_states.py already carry. Without it this script cannot start under Isaac Sim 6,
+# which is why a hand-written replay scene got used in its place and quietly drifted from the
+# real one.
+import uwlab_is6_bridge  # noqa: E402
+
+uwlab_is6_bridge.apply()
 
 import gymnasium as gym  # noqa: E402
 import isaaclab.utils.math as math_utils  # noqa: E402
@@ -238,13 +269,22 @@ for name, term in vars(cfg.events).items():
     if term is not None and getattr(term, "params", None) and "dataset_dir" in term.params:
         term.params["dataset_dir"] = args.dataset_dir
         patched += 1
-if patched == 0:
+if patched == 0 and not args.allow_no_dataset_dir:
     raise SystemExit("[view] REFUSING: no event term takes dataset_dir; the override would be a silent no-op")
+if patched == 0:
+    # ObjectAnywhereEEAnywhere reads no grasp or reset bank at all, so it legitimately has no
+    # dataset_dir-bearing event term. The refusal above is right for every OTHER family, where a
+    # silently ignored --dataset-dir would render one bank while claiming another.
+    print("[view] no dataset_dir event term (expected for ObjectAnywhereEEAnywhere)", flush=True)
 print(f"[view] dataset_dir -> {args.dataset_dir} ({patched} term(s))", flush=True)
 
 cfg.scene.num_envs = 1
 cfg.sim.render_interval = 1
-cfg.sim.physx.gpu_collision_stack_size = 256 * 1024 * 1024
+# Isaac Sim 6 renamed this block: SimulationCfg.physx -> SimulationCfg.physics. This repo's own
+# rl_state_cfg.py:893 already writes the new name; only the older tool scripts still say physx.
+# Resolve it rather than assuming, so this keeps working on either.
+_physics_cfg = getattr(cfg.sim, "physics", None) or cfg.sim.physx
+_physics_cfg.gpu_collision_stack_size = 256 * 1024 * 1024
 # IN-DOMAIN LIGHTING. reset_states_cfg's dome light is 10000.0; the training scene the states are
 # consumed in (rl_state_cfg) uses 1000.0. Rendering at 10x training brightness is both unreadable
 # and not what the policy ever sees.
@@ -475,6 +515,8 @@ if args.assembled_control:
         print("[view] WARNING: the assembled control does NOT land on its own seat within 0.1mm/0.05deg"
               " -- the metadata offsets or the Offset algebra disagree with each other", flush=True)
 
+VIDEO_FRAMES: list = []
+
 for ordinal, idx in enumerate(sel, start=1):
     # REPEAT THE SETTLE. PhysX runs on GPU with no seed set, so one settle of one state is a single
     # draw from a distribution, not a measurement: the same six states re-run gave 9.0 -> 25.3 mm,
@@ -482,14 +524,65 @@ for ordinal, idx in enumerate(sel, start=1):
     # thresholds, so a one-shot verdict is a coin flip wearing a label. Report median and range.
     drifts = []
     gaps = []
-    for _rep in range(max(1, args.repeats)):
+    n_reps = max(1, args.repeats)
+    for _rep in range(n_reps):
         write_state(idx)
         gaps.append(target_gap_rad())
         before = scene_obj.data.root_pos_w.clone()
-        for _ in range(args.settle_steps):
+        # Film the LAST repeat only. Filming every repeat would trip the drift measurement into a
+        # different code path (render=True) for some reps and not others, and the repeats exist
+        # precisely because this settle is stochastic -- they must all run identically.
+        filming = args.video is not None and _rep == n_reps - 1
+        if filming and ordinal == 1 and _rep == n_reps - 1:
+            _rb = env.scene["robot"]
+            _bn2 = list(_rb.data.body_names)
+            _bp2 = getattr(_rb.data.body_pos_w, "torch", _rb.data.body_pos_w)
+            for _b2 in ("base_link", "wrist_3_link", "rl_dg_mount"):
+                if _b2 in _bn2:
+                    _p2 = _bp2[0, _bn2.index(_b2)]
+                    print(f"[view] BODY {_b2:14s} ({_p2[0]:+.3f}, {_p2[1]:+.3f}, {_p2[2]:+.3f}) m",
+                          flush=True)
+            _op = scene_obj.data.root_pos_w[0]
+            print(f"[view] BODY insertive_object ({_op[0]:+.3f}, {_op[1]:+.3f}, {_op[2]:+.3f}) m",
+                  flush=True)
+        if filming:
+            # Aim BEFORE the settle, at where this state STARTS. The gallery's per-state aim runs
+            # after the settle and so cannot frame the settle itself -- which is the whole point
+            # of the video: a state that begins in the hand and ends on the table has to be in
+            # frame at both ends. Standoff is generous for the same reason.
+            _o = scene_obj.data.root_pos_w[0].tolist()
+            # Direction matters more than distance here. The gallery's own 3q offset is
+            # (-d, +0.8d, +0.55d), which on THIS scene points the camera straight into the table
+            # and the robot column -- every frame came back as bare tabletop. Viewed from +x/-y
+            # instead, the hand, both cubes and the work surface are all in shot.
+            _d = 1.0 + 0.6 * max(0.0, _o[2] - 0.02)
+            env.sim.set_camera_view(
+                (_o[0] + 0.30 * _d, _o[1] - 0.46 * _d, _o[2] + 0.34 * _d),
+                (_o[0] - 0.10, _o[1], max(0.02, _o[2] - 0.02)))
+            # WARM-UP. set_camera_view does not land in the rendered image until the viewport has
+            # ticked: the first frames after aiming come back from the PREVIOUS pose. The stills
+            # path never noticed because it renders twice per state anyway. Two discarded renders
+            # is what it takes here -- checked by looking at the frames, not by assuming.
+            env.render()
+            env.render()
+        # The MEASUREMENT window stays exactly args.settle_steps, always. Filming may run longer,
+        # but the drift is sampled at the same step count in every repeat -- otherwise the filmed
+        # repeat would contribute a drift drawn from a different window and quietly bias the
+        # median this script reports.
+        n_steps = max(args.settle_steps, args.video_settle_steps if filming else 0)
+        drift_this_rep = None
+        for _st in range(n_steps):
             env.sim.step(render=False)
             env.scene.update(env.physics_dt)
-        drifts.append(float((scene_obj.data.root_pos_w - before).norm(dim=-1).item()) * 1000.0)
+            if _st + 1 == args.settle_steps:
+                drift_this_rep = float((scene_obj.data.root_pos_w - before).norm(dim=-1).item()) * 1000.0
+            if filming and _st % max(1, args.video_every) == 0:
+                _f = np.asarray(env.render())[:, :, :3]
+                VIDEO_FRAMES.append(_burn_text(_f, [f"state {ordinal}  idx {idx}",
+                                                    f"settle step {_st}/{n_steps}"]))
+        if drift_this_rep is None:
+            drift_this_rep = float((scene_obj.data.root_pos_w - before).norm(dim=-1).item()) * 1000.0
+        drifts.append(drift_this_rep)
     drifts_sorted = sorted(drifts)
     drift_mm = drifts_sorted[len(drifts_sorted) // 2]
     drift_lo, drift_hi = drifts_sorted[0], drifts_sorted[-1]
@@ -734,6 +827,18 @@ if ENGAGEMENT:
     )
     print(f"[view] IN BORE {n_in_bore}/{len(rows)}  (pre-measured, radial clearance "
           f"{args.radial_clearance_mm} mm, engaged span {args.engaged_span_mm} mm)", flush=True)
+if args.video is not None:
+    if VIDEO_FRAMES:
+        import imageio.v3 as _iio
+
+        args.video.parent.mkdir(parents=True, exist_ok=True)
+        _iio.imwrite(str(args.video), VIDEO_FRAMES, fps=args.video_fps)
+        print(f"[view] WROTE {args.video}  ({len(VIDEO_FRAMES)} frames)", flush=True)
+    else:
+        # Loud, not silent. An empty video file is indistinguishable from a state that never
+        # moved, and this script exists to tell those apart.
+        print("[view] WARNING: --video requested but no frames captured", flush=True)
+
 print("[view] RENDER_OK", flush=True)
 
 # EXIT HARD. Isaac's shutdown path hangs on this codebase routinely -- both processes in the
