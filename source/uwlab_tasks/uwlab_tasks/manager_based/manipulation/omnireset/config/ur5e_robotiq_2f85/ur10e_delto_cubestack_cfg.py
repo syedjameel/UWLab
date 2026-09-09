@@ -130,6 +130,8 @@ metadata directly and never consults the command term. Record once, train twice.
 
 from __future__ import annotations
 
+import os as _os
+
 from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.sensors import ContactSensorCfg
@@ -562,6 +564,15 @@ class CubeStackObjectRestingEEGraspedCfg(Ur10eDeltoObjectRestingEEGraspedResetSt
 
     def __post_init__(self):
         super().__post_init__()
+        # TWO-FINGER PINCH, same opt-in flag the sampler uses. This is load-bearing and not a
+        # duplicate of the sampler's setting: reset_end_effector_from_grasp_dataset seeds the
+        # recorded grasp posture ONCE at reset, but record_reset_states.py then re-issues
+        # scripted_gripper_actions_for(close=True) on EVERY subsequent step to hold the grasp
+        # while the sampler shakes it. Without the flag here that per-step servo drives fingers
+        # 3/4/5 back toward the five-finger DELTO_HAND_SCRIPTED_CLOSE_JOINT_POS, fighting the
+        # pinch the dataset just seeded and recording something that is neither.
+        if bool(int(_os.environ.get("UWLAB_DELTO_PINCH", "0"))):
+            self.scripted_gripper_pinch_posture = True
         _apply_cube_objects(self)
         _apply_cube_dataset_dir(self)
         _apply_grasp_matched_hand_actuator(self)
@@ -574,6 +585,15 @@ class CubeStackObjectAnywhereEEGraspedCfg(Ur10eDeltoObjectAnywhereEEGraspedReset
 
     def __post_init__(self):
         super().__post_init__()
+        # TWO-FINGER PINCH, same opt-in flag the sampler uses. This is load-bearing and not a
+        # duplicate of the sampler's setting: reset_end_effector_from_grasp_dataset seeds the
+        # recorded grasp posture ONCE at reset, but record_reset_states.py then re-issues
+        # scripted_gripper_actions_for(close=True) on EVERY subsequent step to hold the grasp
+        # while the sampler shakes it. Without the flag here that per-step servo drives fingers
+        # 3/4/5 back toward the five-finger DELTO_HAND_SCRIPTED_CLOSE_JOINT_POS, fighting the
+        # pinch the dataset just seeded and recording something that is neither.
+        if bool(int(_os.environ.get("UWLAB_DELTO_PINCH", "0"))):
+            self.scripted_gripper_pinch_posture = True
         _apply_cube_objects(self)
         _apply_cube_dataset_dir(self)
         _apply_grasp_matched_hand_actuator(self)
@@ -600,6 +620,15 @@ class CubeStackObjectPartiallyAssembledEEGraspedCfg(Ur10eDeltoObjectPartiallyAss
 
     def __post_init__(self):
         super().__post_init__()
+        # TWO-FINGER PINCH, same opt-in flag the sampler uses. This is load-bearing and not a
+        # duplicate of the sampler's setting: reset_end_effector_from_grasp_dataset seeds the
+        # recorded grasp posture ONCE at reset, but record_reset_states.py then re-issues
+        # scripted_gripper_actions_for(close=True) on EVERY subsequent step to hold the grasp
+        # while the sampler shakes it. Without the flag here that per-step servo drives fingers
+        # 3/4/5 back toward the five-finger DELTO_HAND_SCRIPTED_CLOSE_JOINT_POS, fighting the
+        # pinch the dataset just seeded and recording something that is neither.
+        if bool(int(_os.environ.get("UWLAB_DELTO_PINCH", "0"))):
+            self.scripted_gripper_pinch_posture = True
         _apply_cube_objects(self)
         _apply_cube_dataset_dir(self)
         _apply_grasp_matched_hand_actuator(self)

@@ -44,6 +44,13 @@ args_cli, remaining_args = parser.parse_known_args()
 app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app
 
+# ISAAC SIM 6 PORT: register the deprecated isaacsim.core.utils ext path and wrap
+# Isaac Lab's jit-scripted math helpers so they accept warp ProxyArray asset data.
+# Must run after the app starts and before any uwlab import. Same two lines
+# record_grasps.py already carries -- this script simply had not been run under Isaac Sim 6 yet.
+import uwlab_is6_bridge  # noqa: E402
+uwlab_is6_bridge.apply()
+
 """Rest everything else."""
 
 import gymnasium as gym
