@@ -303,6 +303,13 @@ if getattr(cfg.scene, "sky_light", None) is not None and hasattr(cfg.scene.sky_l
 else:
     print("[view] WARNING: no scene.sky_light to dim; frames may stay overexposed", flush=True)
 
+# ViewerCfg.origin_type decides what eye/lookat are RELATIVE to: "world", "env", "asset_root" or
+# "asset_body". Anything but "world" silently offsets every camera position, which is exactly the
+# shape of the framing failures here -- each attempt landed a fixed distance off, under the table.
+print(f"[view] viewer origin_type={cfg.viewer.origin_type} asset_name={cfg.viewer.asset_name} "
+      f"env_index={cfg.viewer.env_index}", flush=True)
+cfg.viewer.origin_type = "world"
+cfg.viewer.asset_name = None
 cfg.viewer.eye = tuple(eye)
 cfg.viewer.lookat = tuple(target)
 cfg.viewer.resolution = (args.width, args.height)
@@ -405,6 +412,59 @@ if fixture is not None:
     fx_pos = fixture.data.root_pos_w[0:1].clone()
     fx_quat = fixture.data.root_quat_w[0:1].clone()
 
+if os.environ.get("UWLAB_SCENE_DEBUG"):
+    # Where things actually are in WORLD coordinates. The camera is placed with origin_type
+    # "world", so aiming it from recorded root poses (which are env-local) points it at the wrong
+    # place the moment the scene has a non-zero env origin or a table whose prim sits elsewhere.
+    print("[scene] env_origins[0] =", [round(v, 4) for v in env.scene.env_origins[0].tolist()], flush=True)
+    _rb = env.scene["robot"]
+    _bp = _rb.data.body_pos_w
+    _bp = getattr(_bp, "torch", _bp)
+    for _i, _bn in enumerate(_rb.body_names):
+        print(f"[scene] body {_bn} = {[round(v, 4) for v in _bp[0, _i].tolist()]}", flush=True)
+    for _n in ("robot",):
+        _a = env.scene[_n]
+        print(f"[scene] {_n}.root_pos_w = {[round(v, 4) for v in _a.data.root_pos_w[0].tolist()]}"
+              f"  quat = {[round(v, 4) for v in _a.data.root_quat_w[0].tolist()]}", flush=True)
+    for _n in env.scene.rigid_objects.keys():
+        _a = env.scene[_n]
+        print(f"[scene] {_n}.root_pos_w = {[round(v, 4) for v in _a.data.root_pos_w[0].tolist()]}"
+              f"  quat = {[round(v, 4) for v in _a.data.root_quat_w[0].tolist()]}", flush=True)
+    try:
+        import isaacsim.core.utils.bounds as _bu
+        _cache = _bu.create_bbox_cache()
+        for _path in ("/World/envs/env_0/Table", "/World/envs/env_0/table",
+                      "/World/envs/env_0/Robot", "/World/envs/env_0/InsertiveObject"):
+            try:
+                _r = _bu.compute_aabb(_cache, prim_path=_path)
+                print(f"[scene] aabb {_path} = {[round(float(v), 4) for v in _r]}", flush=True)
+            except Exception as _e:
+                print(f"[scene] aabb {_path} -> {_e}", flush=True)
+    except Exception as _e:
+        print("[scene] bbox cache unavailable:", _e, flush=True)
+    from pxr import Usd as _Usd, UsdGeom as _UsdGeom
+    _stage = env.sim.stage if hasattr(env.sim, "stage") else None
+    if _stage is not None:
+        for _path in ("/World/envs/env_0", "/World/envs/env_0/Table",
+                      "/World/envs/env_0/Table/visuals", "/World/envs/env_0/Robot",
+                      "/World/envs/env_0/UR5MetalSupport", "/World/GroundPlane"):
+            _pr = _stage.GetPrimAtPath(_path)
+            if not _pr:
+                print(f"[scene] xform {_path} -> missing", flush=True)
+                continue
+            _x = _UsdGeom.Xformable(_pr)
+            _m = _x.ComputeLocalToWorldTransform(_Usd.TimeCode.Default())
+            _t = _m.ExtractTranslation()
+            _r = _m.ExtractRotationQuat()
+            print(f"[scene] xform {_path} t=({_t[0]:.4f},{_t[1]:.4f},{_t[2]:.4f}) "
+                  f"q=({_r.GetReal():.4f},{_r.GetImaginary()[0]:.4f},{_r.GetImaginary()[1]:.4f},"
+                  f"{_r.GetImaginary()[2]:.4f})", flush=True)
+    if _stage is not None:
+        for _pr in _Usd.PrimRange(_stage.GetPrimAtPath("/World/envs/env_0")):
+            _d = str(_pr.GetPath()).count("/")
+            if _d <= 5:
+                print("[scene] prim", _pr.GetPath(), _pr.GetTypeName(), flush=True)
+
 SEAT_W = None
 if args.bore_seat is not None:
     assert fixture is not None, "[view] REFUSING: --bore-seat given but no receptive_object in scene"
@@ -470,8 +530,30 @@ def settle_step() -> None:
         robot.set_joint_position_target(HOLD_Q[:, _arm_ids], joint_ids=_arm_ids)
 
 
+# UWLAB_DEFAULT_POSE ignores the bank's robot state and shows the scene AS CONFIGURED -- the
+# default joint posture at the default root pose. Banks recorded before the (x,y,z,w) quaternion
+# fix hold joint angles that only made sense with the arm mounted upside down; replaying those
+# says nothing about whether the scene itself is right. This does.
+DEFAULT_POSE = bool(os.environ.get("UWLAB_DEFAULT_POSE"))
+
+
 def write_state(idx: int) -> None:
     """Write one stored state verbatim: robot root + all 26 joints + every rigid object pose."""
+    if DEFAULT_POSE:
+        robot.write_root_pose_to_sim(robot.data.default_root_state[:, :7].clone())
+        robot.write_root_velocity_to_sim(torch.zeros_like(robot.data.default_root_state[:, 7:13]))
+        _dq = robot.data.default_joint_pos.clone()
+        _dq = getattr(_dq, "torch", _dq)
+        robot.write_joint_state_to_sim(_dq, torch.zeros_like(_dq))
+        robot.set_joint_position_target(_dq)
+        for key in state["rigid_object"]:
+            if key in env.scene.rigid_objects:
+                _a = env.scene[key]
+                _ds = _a.data.default_root_state.clone()
+                _ds = getattr(_ds, "torch", _ds)
+                _a.write_root_pose_to_sim(_ds[:, :7])
+                _a.write_root_velocity_to_sim(torch.zeros_like(_ds[:, 7:13]))
+        return
     robot.write_root_pose_to_sim(state["articulation"]["robot"]["root_pose"][idx].unsqueeze(0).to(env.device))
     robot.write_root_velocity_to_sim(state["articulation"]["robot"]["root_velocity"][idx].unsqueeze(0).to(env.device))
     robot.write_joint_state_to_sim(

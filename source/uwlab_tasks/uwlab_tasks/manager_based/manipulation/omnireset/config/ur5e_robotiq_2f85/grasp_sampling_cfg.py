@@ -42,7 +42,7 @@ class GraspSamplingSceneCfg(InteractiveSceneCfg):
             # assume very light
             mass_props=sim_utils.MassPropertiesCfg(mass=0.001),
         ),
-        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, OBJECT_SPAWN_HEIGHT), rot=(1.0, 0.0, 0.0, 0.0)),
+        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, OBJECT_SPAWN_HEIGHT), rot=(0.0, 0.0, 0.0, 1.0)),
     )
 
     # Environment
@@ -191,7 +191,7 @@ def make_object(usd_path: str, override_mass: bool = True, mass: float = 0.001, 
             ),
             mass_props=sim_utils.MassPropertiesCfg(mass=mass) if override_mass else None,
         ),
-        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, 1.0), rot=(1.0, 0.0, 0.0, 0.0)),
+        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, 1.0), rot=(0.0, 0.0, 0.0, 1.0)),
     )
 
 

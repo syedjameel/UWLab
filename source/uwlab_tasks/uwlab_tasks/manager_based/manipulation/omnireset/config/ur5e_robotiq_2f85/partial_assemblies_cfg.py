@@ -232,7 +232,7 @@ class PartialAssembliesSceneCfg(InteractiveSceneCfg):
             # assume very light
             mass_props=sim_utils.MassPropertiesCfg(mass=0.001),
         ),
-        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, OBJECT_SPAWN_HEIGHT * 2), rot=(1.0, 0.0, 0.0, 0.0)),
+        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, OBJECT_SPAWN_HEIGHT * 2), rot=(0.0, 0.0, 0.0, 1.0)),
     )
 
     receptive_object: RigidObjectCfg = RigidObjectCfg(
@@ -249,7 +249,7 @@ class PartialAssembliesSceneCfg(InteractiveSceneCfg):
             # since kinematic_enabled=True, mass does not matter
             mass_props=sim_utils.MassPropertiesCfg(mass=0.5),
         ),
-        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, OBJECT_SPAWN_HEIGHT), rot=(1.0, 0.0, 0.0, 0.0)),
+        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, OBJECT_SPAWN_HEIGHT), rot=(0.0, 0.0, 0.0, 1.0)),
     )
 
     # Environment
@@ -412,7 +412,7 @@ def make_insertive_object(usd_path: str, override_mass: bool = True, mass: float
             ),
             mass_props=sim_utils.MassPropertiesCfg(mass=mass) if override_mass else None,
         ),
-        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, OBJECT_SPAWN_HEIGHT * 2), rot=(1.0, 0.0, 0.0, 0.0)),
+        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, OBJECT_SPAWN_HEIGHT * 2), rot=(0.0, 0.0, 0.0, 1.0)),
     )
 
 
@@ -445,7 +445,7 @@ def make_receptive_object(usd_path: str, disable_articulation_root: bool = False
                 else None
             ),
         ),
-        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, OBJECT_SPAWN_HEIGHT), rot=(1.0, 0.0, 0.0, 0.0)),
+        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, OBJECT_SPAWN_HEIGHT), rot=(0.0, 0.0, 0.0, 1.0)),
     )
 
 

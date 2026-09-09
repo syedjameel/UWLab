@@ -49,7 +49,7 @@ class ResetStatesSceneCfg(InteractiveSceneCfg):
             # assume very light
             mass_props=sim_utils.MassPropertiesCfg(mass=0.001),
         ),
-        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, 0.0), rot=(1.0, 0.0, 0.0, 0.0)),
+        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, 0.0), rot=(0.0, 0.0, 0.0, 1.0)),
     )
 
     receptive_object: RigidObjectCfg = RigidObjectCfg(
@@ -67,16 +67,23 @@ class ResetStatesSceneCfg(InteractiveSceneCfg):
             # since kinematic_enabled=True, mass does not matter
             mass_props=sim_utils.MassPropertiesCfg(mass=0.5),
         ),
-        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, 0.0), rot=(1.0, 0.0, 0.0, 0.0)),
+        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, 0.0), rot=(0.0, 0.0, 0.0, 1.0)),
     )
 
+    # QUATERNION ORDER: ``init_state.rot`` is (x, y, z, w) under Isaac Lab 3.0, NOT the (w, x, y, z)
+    # this repo was written against -- see ``isaaclab/assets/asset_base_cfg.py`` (rot default is
+    # ``(0, 0, 0, 1)``) and ``isaaclab/sim/utils/transforms.py`` ("orientation is (x, y, z, w)").
+    # Identity is therefore ``(0, 0, 0, 1)``. Left as ``(1, 0, 0, 0)`` it reads as w=0, x=1 -- a 180
+    # degree rotation about X -- which spawned this table, the robot and the mount plate UPSIDE
+    # DOWN: the cabinet stood 676 mm above the work surface instead of hanging below it, the arm's
+    # shoulder sat at z = -0.19 under the tabletop, and the cubes poked out through the underside.
     # Environment -- the REAL lab table (see rl_state_cfg.py for the full rationale;
     # this block is duplicated there -- keep both in sync). Asset frame == robot base
     # frame; work surface at +0.004; reset_robot_pose jitters robot+support+table
     # TOGETHER (rigid assembly -- the base is bolted to this table).
     table = RigidObjectCfg(
         prim_path="{ENV_REGEX_NS}/Table",
-        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, 0.0), rot=(1.0, 0.0, 0.0, 0.0)),
+        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, 0.0), rot=(0.0, 0.0, 0.0, 1.0)),
         spawn=sim_utils.UsdFileCfg(
             usd_path=f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Mounts/CustomLabTable/custom_lab_table.usd",
             rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
@@ -86,7 +93,7 @@ class ResetStatesSceneCfg(InteractiveSceneCfg):
     # Flush proxy plate (placement datum): ROOT z = work surface (+0.004).
     ur5_metal_support = RigidObjectCfg(
         prim_path="{ENV_REGEX_NS}/UR5MetalSupport",
-        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0, 0.004), rot=(1.0, 0.0, 0.0, 0.0)),
+        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0, 0.004), rot=(0.0, 0.0, 0.0, 1.0)),
         spawn=sim_utils.UsdFileCfg(
             usd_path=f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Mounts/CustomLabTable/custom_mount_plate.usd",
             rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
@@ -532,7 +539,7 @@ def make_insertive_object(usd_path: str, override_mass: bool = True, mass: float
             ),
             mass_props=sim_utils.MassPropertiesCfg(mass=mass) if override_mass else None,
         ),
-        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, 0.0), rot=(1.0, 0.0, 0.0, 0.0)),
+        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, 0.0), rot=(0.0, 0.0, 0.0, 1.0)),
     )
 
 
@@ -567,7 +574,7 @@ def make_receptive_object(usd_path: str, disable_articulation_root: bool = False
                 else None
             ),
         ),
-        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, 0.0), rot=(1.0, 0.0, 0.0, 0.0)),
+        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, 0.0), rot=(0.0, 0.0, 0.0, 1.0)),
     )
 
 

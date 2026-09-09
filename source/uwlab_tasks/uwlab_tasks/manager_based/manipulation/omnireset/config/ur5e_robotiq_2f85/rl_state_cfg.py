@@ -52,7 +52,7 @@ class RlStateSceneCfg(InteractiveSceneCfg):
             ),
             mass_props=sim_utils.MassPropertiesCfg(mass=0.02),
         ),
-        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, 0.0), rot=(1.0, 0.0, 0.0, 0.0)),
+        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, 0.0), rot=(0.0, 0.0, 0.0, 1.0)),
     )
 
     receptive_object: RigidObjectCfg = RigidObjectCfg(
@@ -68,7 +68,7 @@ class RlStateSceneCfg(InteractiveSceneCfg):
             ),
             mass_props=sim_utils.MassPropertiesCfg(mass=0.5),
         ),
-        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, 0.0), rot=(1.0, 0.0, 0.0, 0.0)),
+        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, 0.0), rot=(0.0, 0.0, 0.0, 1.0)),
     )
 
     # Environment -- the REAL lab table (procedurally generated from measured dims; see
@@ -78,7 +78,7 @@ class RlStateSceneCfg(InteractiveSceneCfg):
     # robot+support+table TOGETHER (the base is bolted to this table -- rigid assembly).
     table = RigidObjectCfg(
         prim_path="{ENV_REGEX_NS}/Table",
-        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, 0.0), rot=(1.0, 0.0, 0.0, 0.0)),
+        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, 0.0), rot=(0.0, 0.0, 0.0, 1.0)),
         spawn=sim_utils.UsdFileCfg(
             usd_path=f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Mounts/CustomLabTable/custom_lab_table.usd",
             rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
@@ -90,7 +90,7 @@ class RlStateSceneCfg(InteractiveSceneCfg):
     # the object-reset placement datum (authors' convention: plate root z == mat-top).
     ur5_metal_support = RigidObjectCfg(
         prim_path="{ENV_REGEX_NS}/UR5MetalSupport",
-        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0, 0.004), rot=(1.0, 0.0, 0.0, 0.0)),
+        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0, 0.004), rot=(0.0, 0.0, 0.0, 1.0)),
         spawn=sim_utils.UsdFileCfg(
             usd_path=f"{UWLAB_LOCAL_ASSETS_DIR}/Props/Mounts/CustomLabTable/custom_mount_plate.usd",
             rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
@@ -734,7 +734,7 @@ def make_insertive_object(usd_path: str, override_mass: bool = True, mass: float
             ),
             mass_props=sim_utils.MassPropertiesCfg(mass=mass) if override_mass else None,
         ),
-        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, 0.0), rot=(1.0, 0.0, 0.0, 0.0)),
+        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, 0.0), rot=(0.0, 0.0, 0.0, 1.0)),
     )
 
 
@@ -767,7 +767,7 @@ def make_receptive_object(usd_path: str, disable_articulation_root: bool = False
                 else None
             ),
         ),
-        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, 0.0), rot=(1.0, 0.0, 0.0, 0.0)),
+        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, 0.0), rot=(0.0, 0.0, 0.0, 1.0)),
     )
 
 
