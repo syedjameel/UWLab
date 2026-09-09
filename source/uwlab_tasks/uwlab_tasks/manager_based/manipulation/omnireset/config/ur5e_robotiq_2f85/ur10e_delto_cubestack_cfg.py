@@ -579,6 +579,11 @@ class CubeStackObjectRestingEEGraspedCfg(Ur10eDeltoObjectRestingEEGraspedResetSt
         # pinch the dataset just seeded and recording something that is neither.
         if bool(int(_os.environ.get("UWLAB_DELTO_PINCH", "0"))):
             self.scripted_gripper_pinch_posture = True
+            # The success check rotates this LOCAL axis into the world to decide whether the
+            # gripper points downward. metadata's value is the fist's, and with the pinch it
+            # rejected two thirds of otherwise-valid states (orient_down 41/128).
+            self.terminations.success.params["gripper_approach_direction"] = (
+                0.725311, 0.288772, 0.624928)
         _apply_cube_objects(self)
         _apply_cube_dataset_dir(self)
         _apply_grasp_matched_hand_actuator(self)
@@ -600,6 +605,11 @@ class CubeStackObjectAnywhereEEGraspedCfg(Ur10eDeltoObjectAnywhereEEGraspedReset
         # pinch the dataset just seeded and recording something that is neither.
         if bool(int(_os.environ.get("UWLAB_DELTO_PINCH", "0"))):
             self.scripted_gripper_pinch_posture = True
+            # The success check rotates this LOCAL axis into the world to decide whether the
+            # gripper points downward. metadata's value is the fist's, and with the pinch it
+            # rejected two thirds of otherwise-valid states (orient_down 41/128).
+            self.terminations.success.params["gripper_approach_direction"] = (
+                0.725311, 0.288772, 0.624928)
         _apply_cube_objects(self)
         _apply_cube_dataset_dir(self)
         _apply_grasp_matched_hand_actuator(self)
@@ -635,6 +645,11 @@ class CubeStackObjectPartiallyAssembledEEGraspedCfg(Ur10eDeltoObjectPartiallyAss
         # pinch the dataset just seeded and recording something that is neither.
         if bool(int(_os.environ.get("UWLAB_DELTO_PINCH", "0"))):
             self.scripted_gripper_pinch_posture = True
+            # The success check rotates this LOCAL axis into the world to decide whether the
+            # gripper points downward. metadata's value is the fist's, and with the pinch it
+            # rejected two thirds of otherwise-valid states (orient_down 41/128).
+            self.terminations.success.params["gripper_approach_direction"] = (
+                0.725311, 0.288772, 0.624928)
         _apply_cube_objects(self)
         _apply_cube_dataset_dir(self)
         _apply_grasp_matched_hand_actuator(self)
