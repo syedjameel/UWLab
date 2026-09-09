@@ -60,6 +60,14 @@ parser.add_argument("--video", type=Path, default=None,
                          " exercise turns on.")
 parser.add_argument("--allow-no-dataset-dir", action="store_true",
                     help="permit a task whose events take no dataset_dir (ObjectAnywhereEEAnywhere)")
+parser.add_argument("--video-freeze", type=int, default=0,
+                    help="frames to hold each state AT t=0, re-writing it every frame so nothing "
+                         "drifts. This is the reset state as recorded. The settle that follows is "
+                         "a different question and is labelled as such in the frame.")
+parser.add_argument("--no-hold-arm", action="store_true",
+                    help="leave the arm at its shipped zero PD gains (it will free-fall)")
+parser.add_argument("--arm-stiffness", type=float, default=8000.0)
+parser.add_argument("--arm-damping", type=float, default=400.0)
 parser.add_argument("--video-every", type=int, default=4)
 parser.add_argument("--video-fps", type=int, default=25)
 parser.add_argument("--video-settle-steps", type=int, default=0,
@@ -301,7 +309,70 @@ cfg.viewer.resolution = (args.width, args.height)
 cfg.viewer.origin_type = "world"
 
 t = time.time()
+# DROP THE ARM ACTION TERM.
+#
+# Measured, replaying a written bank state three ways:
+#   raw sim.step            arm holds (0.22 rad) but the HAND explodes (1.7-4.7 rad) -- nothing
+#                           drives the fingers, whose scripted term lives in the action manager.
+#   env.step(zero action)   hand holds beautifully (0.09 rad) but the ARM swings 2.8-3.2 rad --
+#                           the IK term recomputes a target from a pose that is stale immediately
+#                           after a teleport and overwrites the recorded joint targets.
+# Neither is usable. Removing the arm's term gives both: the hand keeps its action term, and the
+# arm keeps the joint position targets write_state() set, held by the PD gains the actuator now
+# has. The arm is scenery in a reset-state gallery; the hand and the object are the subject.
+if not args.no_hold_arm:
+    for _an, _at in list(vars(cfg.actions).items()):
+        if _at is None:
+            continue
+        _cn = type(_at).__name__
+        if "InverseKinematics" in _cn or "Cartesian" in _cn or "OperationalSpace" in _cn:
+            setattr(cfg.actions, _an, None)
+            print(f"[view] dropped arm action term '{_an}' ({_cn}) -- see comment", flush=True)
+
 env = gym.make(args.task, cfg=cfg, render_mode="rgb_array").unwrapped
+# See settle_step(): the arm carries zero PD gains and is driven entirely by its OSC action term,
+# so the replay has to go through env.step() with an action rather than through env.sim.step().
+ZERO_ACTION = torch.zeros((env.num_envs, env.action_manager.total_action_dim), device=env.device)
+
+# HOLD THE ARM. The arm is ImplicitActuatorCfg(stiffness=0, damping=0) -- deliberately, because
+# the task drives it with an operational-space controller that applies EFFORTS. A replay has no
+# policy, so nothing supplies those efforts and the arm free-falls: measured from a written bank
+# state, the pose is exact at t=0 and 0.22-0.61 rad off five physics steps later, with the cube on
+# the floor by step 80. Everything read out of such a replay -- "the hand is not holding the cube"
+# included -- is a property of the falling arm, not of the bank.
+#
+# For a reset-state gallery the arm is scenery: the question is whether the HAND holds the object.
+# So the arm is pinned with a stiff PD for replay only. This is not what training does, and it is
+# stated in the frame captions rather than left implicit. Effort limits still apply, so it cannot
+# produce torques the real arm could not.
+# TABLE PLACEMENT. Measured world bounds of /World/envs/env_0/Table are z[-0.004, +0.676], i.e.
+# the asset's origin is at its FEET and its top face is 676 mm ABOVE the origin. The scene configs
+# spawn it at (0,0,0), which lifts the whole table 676 mm: the work surface ends up at +0.676, the
+# cubes (stored at z = 0.021) sit INSIDE the table volume, and the robot -- whose own bounds are
+# z[-0.275, 0.000] -- hangs underneath it. That is the "cubes inside the table, arm under the
+# table" every render of this scene has shown.
+#
+# The intended geometry is stated by the configs themselves: work surface at +0.004, robot base
+# bolted to it at z = 0, and a 34 mm cube resting on it at 0.004 + 0.017 = 0.021 -- exactly the z
+# the banks store. Dropping the table so its TOP lands at +0.004 satisfies all three at once.
+TABLE_DZ = float(os.environ.get("UWLAB_TABLE_Z", "0") or 0)
+if TABLE_DZ:
+    print(f"[view] table + support will be shifted {TABLE_DZ:+.3f} m in z after every state write",
+          flush=True)
+
+_arm_ids, _arm_names = env.scene["robot"].find_joints(["shoulder.*", "elbow.*", "wrist.*"])
+if not args.no_hold_arm:
+    _n_env, _n_j = env.num_envs, len(_arm_ids)
+    env.scene["robot"].write_joint_stiffness_to_sim(
+        torch.full((_n_env, _n_j), args.arm_stiffness, device=env.device), joint_ids=_arm_ids)
+    env.scene["robot"].write_joint_damping_to_sim(
+        torch.full((_n_env, _n_j), args.arm_damping, device=env.device), joint_ids=_arm_ids)
+    print(f"[view] arm PD pinned for replay: {len(_arm_ids)} joints, "
+          f"stiffness={args.arm_stiffness}, damping={args.arm_damping} "
+          f"(shipped value is 0/0 -- the arm is OSC effort-driven and a replay has no policy)",
+          flush=True)
+print(f"[view] action dim {env.action_manager.total_action_dim}; stepping through the action "
+      f"pipeline (the arm has zero PD gains and is OSC-driven)", flush=True)
 print(f"[view] gym.make {time.time()-t:.1f}s", flush=True)
 t = time.time()
 env.reset()
@@ -364,6 +435,41 @@ def _burn_text(img: np.ndarray, lines: list[str]) -> np.ndarray:
     for i, line in enumerate(lines):
         draw.text((pad, pad + i * line_h), line, font=_FONT, fill=(255, 255, 80, 255))
     return np.asarray(pil)
+HOLD_Q = None
+
+
+def settle_step() -> None:
+    """Advance one control step THROUGH THE ACTION PIPELINE, not through raw physics.
+
+    This robot's arm actuator ships with stiffness = 0 and damping = 0 (measured: all six joints).
+    That is deliberate -- the arm is torque-controlled by an OSC action term, which computes and
+    applies the joint efforts every control step, gravity compensation included. Stepping
+    ``env.sim`` directly bypasses the action manager, so nothing drives the arm at all and it free
+    falls. Measured with a bank state written: the pose is exact at t=0, then within FIVE physics
+    steps the arm is 0.22-0.61 rad off, the hand is 1.7-3.0 rad off, and by step 80 the cube has
+    fallen to floor level. Every "the hand is not holding the cube" reading taken that way is an
+    artefact of the replay, not a property of the bank.
+
+    A zero action is the right one to send: both action terms in this task are RELATIVE, so zero
+    means "hold the current target" rather than "go limp" or "go to some default".
+    """
+    # Step through the action manager either way. With the arm's OSC term dropped above, the
+    # only term left is the hand's, which is exactly what has to run: the fingers are servoed by
+    # it, and the arm keeps the joint targets write_state() wrote, held by the actuator's PD.
+    env.step(ZERO_ACTION)
+    if not args.no_hold_arm and HOLD_Q is not None:
+        # Pin the arm KINEMATICALLY at the recorded pose. PD targets alone lose: the hand's
+        # scripted term writes a command spanning all 26 joints, so whatever the arm target is set
+        # to gets overwritten before physics runs -- measured, the arm still drifted 2.1-2.3 rad
+        # with the OSC term already removed and stiffness at 2000. Writing the arm's joint STATE
+        # back each control step makes it an anchor, which is what it should be here: the question
+        # this gallery answers is whether the HAND holds the object, and an arm wandering off
+        # under no policy only obscures it. Stated in the caption, not hidden.
+        robot.write_joint_state_to_sim(
+            HOLD_Q[:, _arm_ids], torch.zeros_like(HOLD_Q[:, _arm_ids]), joint_ids=_arm_ids)
+        robot.set_joint_position_target(HOLD_Q[:, _arm_ids], joint_ids=_arm_ids)
+
+
 def write_state(idx: int) -> None:
     """Write one stored state verbatim: robot root + all 26 joints + every rigid object pose."""
     robot.write_root_pose_to_sim(state["articulation"]["robot"]["root_pose"][idx].unsqueeze(0).to(env.device))
@@ -377,6 +483,17 @@ def write_state(idx: int) -> None:
             asset = env.scene[key]
             asset.write_root_pose_to_sim(state["rigid_object"][key]["root_pose"][idx].unsqueeze(0).to(env.device))
             asset.write_root_velocity_to_sim(state["rigid_object"][key]["root_velocity"][idx].unsqueeze(0).to(env.device))
+    # The table's own pose is stored in the bank, so it is re-written above on every state and any
+    # correction applied once at startup is undone here. Re-apply after the bank write, not before.
+    if TABLE_DZ:
+        for _nm in ("table", "ur5_metal_support"):
+            if _nm in env.scene.rigid_objects:
+                _a = env.scene[_nm]
+                _pq = _a.data.root_state_w[:, :7].clone()
+                _pq[:, 2] += TABLE_DZ
+                _a.write_root_pose_to_sim(_pq)
+                _a.write_root_velocity_to_sim(torch.zeros((env.num_envs, 6), device=env.device))
+
     # COMMAND THE POSTURE, DO NOT ONLY PLACE IT.
     #
     # write_joint_state_to_sim writes q and qdot. It does NOT touch the actuators' position
@@ -386,6 +503,8 @@ def write_state(idx: int) -> None:
     # release, not a property of the reset state. Setting the target to the recorded q makes the
     # controller HOLD the grasp, which is what the stored state actually represents.
     q = state["articulation"]["robot"]["joint_position"][idx].unsqueeze(0).to(env.device)
+    global HOLD_Q
+    HOLD_Q = q
     if not args.no_hold_targets:
         if HAS_STORED_TARGETS:
             pt = state["articulation"]["robot"]["joint_position_target"][idx].unsqueeze(0).to(env.device)
@@ -394,6 +513,10 @@ def write_state(idx: int) -> None:
             robot.set_joint_velocity_target(vt)
         else:
             robot.set_joint_position_target(q)
+    if not args.no_hold_arm:
+        # The OSC term overwrites arm targets every control step, so the arm target has to be
+        # (re)asserted here AND after each action step -- see settle_step.
+        robot.set_joint_position_target(q[:, _arm_ids], joint_ids=_arm_ids)
     env.scene.write_data_to_sim()
     env.sim.forward()
 
@@ -533,6 +656,84 @@ for ordinal, idx in enumerate(sel, start=1):
         # different code path (render=True) for some reps and not others, and the repeats exist
         # precisely because this settle is stochastic -- they must all run identically.
         filming = args.video is not None and _rep == n_reps - 1
+        if os.environ.get("UWLAB_STATE_PROBE") and _rep == n_reps - 1:
+            # Does the state SURVIVE being written? Three separate questions, each a different
+            # failure: (a) is the arm at the stored joint angles the instant after the write,
+            # (b) does it stay there while physics runs, (c) is the cube intersecting the table
+            # at t=0. A camera cannot distinguish these; a render that looks wrong could be any
+            # of them, or none.
+            _q0 = state["articulation"]["robot"]["joint_position"][idx].to(env.device)
+            _rb = env.scene["robot"]
+            _names = list(_rb.data.joint_names)
+            _arm = [k for k, nm in enumerate(_names) if not nm.startswith("rj_dg_")]
+            _hand = [k for k, nm in enumerate(_names) if nm.startswith("rj_dg_")]
+
+            def _err(tag):
+                _qn = getattr(_rb.data.joint_pos, "torch", _rb.data.joint_pos)[0]
+                d = (_qn - _q0).abs()
+                _op = scene_obj.data.root_pos_w[0]
+                print(f"[probe] {tag:>10s}  arm |dq| max={d[_arm].max():.4f} mean={d[_arm].mean():.4f} rad"
+                      f"   hand |dq| max={d[_hand].max():.4f} rad"
+                      f"   cube z={_op[2]:+.4f} m", flush=True)
+
+            _st = getattr(_rb.data.joint_stiffness, "torch", _rb.data.joint_stiffness)[0]
+            _dp = getattr(_rb.data.joint_damping, "torch", _rb.data.joint_damping)[0]
+            print(f"[probe] GAINS arm  stiffness={[round(float(_st[k]),2) for k in _arm]}", flush=True)
+            print(f"[probe] GAINS arm  damping  ={[round(float(_dp[k]),2) for k in _arm]}", flush=True)
+            print(f"[probe] GAINS hand stiffness min={_st[_hand].min():.3f} max={_st[_hand].max():.3f}"
+                  f"  damping min={_dp[_hand].min():.4f} max={_dp[_hand].max():.4f}", flush=True)
+            # WHERE IS THE TABLE, ACTUALLY? Every camera guess so far has been argued from
+            # renders. This asks USD for the world-space bounds of the prims themselves, which
+            # settles both "is the cube inside the table" and where a camera has to stand.
+            try:
+                from pxr import Usd, UsdGeom
+                _stage = env.sim.stage
+                _cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(),
+                                           [UsdGeom.Tokens.default_, UsdGeom.Tokens.render])
+                for _path in ("/World/envs/env_0/Table", "/World/envs/env_0/Robot",
+                              "/World/envs/env_0/InsertiveObject", "/World/envs/env_0/ReceptiveObject",
+                              "/World/GroundPlane"):
+                    _pr = _stage.GetPrimAtPath(_path)
+                    if not _pr or not _pr.IsValid():
+                        print(f"[bbox] {_path}: MISSING", flush=True)
+                        continue
+                    _r = _cache.ComputeWorldBound(_pr).ComputeAlignedRange()
+                    if _r.IsEmpty():
+                        print(f"[bbox] {_path}: empty", flush=True)
+                        continue
+                    _mn, _mx = _r.GetMin(), _r.GetMax()
+                    print(f"[bbox] {_path:36s} x[{_mn[0]:+.3f},{_mx[0]:+.3f}] "
+                          f"y[{_mn[1]:+.3f},{_mx[1]:+.3f}] z[{_mn[2]:+.3f},{_mx[2]:+.3f}]", flush=True)
+                # The repo's dexlift notes say this asset's top slab face is at z = 0.000 with
+                # collisions at z[-0.030, 0.000]. The aggregate bound above says otherwise, so
+                # ask the sub-prims and the transform directly before believing either.
+                for _sub in ("/World/envs/env_0/Table/custom_lab_table/collisions/top_slab",
+                             "/World/envs/env_0/Table/custom_lab_table/visuals/table_frame",
+                             "/World/envs/env_0/Table/custom_lab_table"):
+                    _sp = _stage.GetPrimAtPath(_sub)
+                    if not _sp or not _sp.IsValid():
+                        print(f"[bbox] sub {_sub}: MISSING", flush=True)
+                        continue
+                    _sr = _cache.ComputeWorldBound(_sp).ComputeAlignedRange()
+                    if not _sr.IsEmpty():
+                        _a, _b = _sr.GetMin(), _sr.GetMax()
+                        print(f"[bbox] sub {_sub.split('Table/')[-1]:42s} "
+                              f"z[{_a[2]:+.4f},{_b[2]:+.4f}]", flush=True)
+                _tp = _stage.GetPrimAtPath("/World/envs/env_0/Table")
+                _xf = UsdGeom.Xformable(_tp)
+                print(f"[bbox] Table xform ops: "
+                      f"{[(o.GetOpName(), str(o.Get())) for o in _xf.GetOrderedXformOps()]}",
+                      flush=True)
+                print(f"[bbox] stage upAxis = {UsdGeom.GetStageUpAxis(_stage)}", flush=True)
+            except Exception as _e:
+                print(f"[bbox] failed: {_e}", flush=True)
+            _err("t=0")
+            for _k in range(80):
+                settle_step()
+                if _k + 1 in (5, 20, 80):
+                    _err(f"step {_k+1}")
+            write_state(idx)   # restore, so the filmed/measured run below is unaffected
+
         if filming and ordinal == 1 and _rep == n_reps - 1:
             _rb = env.scene["robot"]
             _bn2 = list(_rb.data.body_names)
@@ -545,6 +746,17 @@ for ordinal, idx in enumerate(sel, start=1):
             _op = scene_obj.data.root_pos_w[0]
             print(f"[view] BODY insertive_object ({_op[0]:+.3f}, {_op[1]:+.3f}, {_op[2]:+.3f}) m",
                   flush=True)
+        if filming and args.video_freeze:
+            # THE RESET STATE ITSELF, before any physics. Re-written every frame, so what is on
+            # screen is exactly what the bank stores -- no controller, no drift, no argument.
+            # Everything after this in the clip is the settle, which is a separate claim and is
+            # captioned separately.
+            for _f in range(args.video_freeze):
+                write_state(idx)
+                _fr = np.asarray(env.render())[:, :, :3]
+                VIDEO_FRAMES.append(_burn_text(_fr, [
+                    f"state {ordinal}  idx {idx}",
+                    "RESET STATE AS RECORDED (physics not stepped)"]))
         if filming:
             # Aim BEFORE the settle, at where this state STARTS. The gallery's per-state aim runs
             # after the settle and so cannot frame the settle itself -- which is the whole point
@@ -572,14 +784,14 @@ for ordinal, idx in enumerate(sel, start=1):
         n_steps = max(args.settle_steps, args.video_settle_steps if filming else 0)
         drift_this_rep = None
         for _st in range(n_steps):
-            env.sim.step(render=False)
-            env.scene.update(env.physics_dt)
+            settle_step()
             if _st + 1 == args.settle_steps:
                 drift_this_rep = float((scene_obj.data.root_pos_w - before).norm(dim=-1).item()) * 1000.0
             if filming and _st % max(1, args.video_every) == 0:
                 _f = np.asarray(env.render())[:, :, :3]
-                VIDEO_FRAMES.append(_burn_text(_f, [f"state {ordinal}  idx {idx}",
-                                                    f"settle step {_st}/{n_steps}"]))
+                VIDEO_FRAMES.append(_burn_text(_f, [
+                    f"state {ordinal}  idx {idx}",
+                    f"SETTLE step {_st}/{n_steps} -- arm pinned, hand on its own gains"]))
         if drift_this_rep is None:
             drift_this_rep = float((scene_obj.data.root_pos_w - before).norm(dim=-1).item()) * 1000.0
         drifts.append(drift_this_rep)

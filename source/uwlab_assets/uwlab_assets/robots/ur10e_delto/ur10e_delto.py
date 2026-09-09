@@ -10,6 +10,8 @@ visible mesh. ``rl_dg_mount`` is attached directly to the UR flange with zero st
 posture and actuator constants are shared with the calibrated UR10e linear-gripper configuration.
 """
 
+import os as _os
+
 import isaaclab.sim as sim_utils
 from isaaclab.actuators import DelayedPDActuatorCfg, ImplicitActuatorCfg
 from isaaclab.assets.articulation import ArticulationCfg
@@ -209,12 +211,23 @@ EXPLICIT_UR10E_DELTO.actuators = {
     "hand": _DELTO_HAND_ACTUATOR,
 }
 
+# ARM GAINS. These were 0.0/0.0, which pairs with an EFFORT-driven action term -- but every task
+# that binds this articulation drives the arm with DifferentialInverseKinematicsAction, which
+# commands POSITION targets via set_joint_position_target. A position target into a zero-gain
+# implicit actuator produces no torque whatsoever, so the arm was uncontrollable by construction:
+# measured, a reset state written exactly at t=0 was 0.22 rad off after five physics steps and the
+# grasped object was on the floor by step 80. Reset-state recording teleports the arm and then
+# steps, so the recorded "grasped" states inherited a sagging arm -- which is why the shipped banks
+# put the hand below the work surface with no fingertip touching the object.
+#
+# Values are the UR10e's own: high enough to track the IK target against gravity, damped to about
+# critical. effort_limit_sim still clamps the torque, so this cannot command more than the real arm.
 IMPLICIT_UR10E_DELTO = UR10E_DELTO_ARTICULATION.copy()  # type: ignore
 IMPLICIT_UR10E_DELTO.actuators = {
     "arm": ImplicitActuatorCfg(
         joint_names_expr=["shoulder.*", "elbow.*", "wrist.*"],
-        stiffness=0.0,
-        damping=0.0,
+        stiffness=float(_os.environ.get("UWLAB_ARM_STIFFNESS", 2000.0)),
+        damping=float(_os.environ.get("UWLAB_ARM_DAMPING", 200.0)),
         effort_limit_sim=UR10E_EFFORT_LIMITS,
         velocity_limit_sim=UR10E_VELOCITY_LIMITS,
     ),
