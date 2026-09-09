@@ -468,6 +468,9 @@ class ResetStatesTerminationCfg:
             "object_cfgs": [SceneEntityCfg("insertive_object"), SceneEntityCfg("receptive_object")],
             "robot_cfg": SceneEntityCfg("robot"),
             "ee_body_name": "robotiq_base_link",
+            # Local axis used to ask whether the gripper points downward. None => the gripper
+            # metadata's value, i.e. unchanged; a non-default closed posture must supply its own.
+            "gripper_approach_direction": None,
             "collision_analyzer_cfgs": [
                 task_mdp.CollisionAnalyzerCfg(
                     num_points=1024,

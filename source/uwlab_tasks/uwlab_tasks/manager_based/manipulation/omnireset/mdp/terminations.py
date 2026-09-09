@@ -273,7 +273,16 @@ class check_reset_state_success(ManagerTermBase):
         robot_asset = env.scene[self.robot_cfg.name]
         usd_path = robot_asset.cfg.spawn.usd_path
         metadata = utils.read_metadata_from_usd_directory(usd_path)
-        self.gripper_approach_direction = tuple(metadata.get("gripper_approach_direction"))
+        # Overridable, for the same reason grasp_center_offset and grasp_align_axis are: this is
+        # a POSTURE-SPECIFIC vector living in a file shared by every object and every hand shape.
+        # It is used below to ask whether the gripper points downward, by rotating this local
+        # axis into the world -- so with a different closed posture the test is applied about the
+        # wrong body axis and rejects states that are perfectly fine. Measured with the pinch
+        # posture and metadata's fist axis: orient_down passed 41/128, capping success at 32%
+        # before any other condition was even considered.
+        self.gripper_approach_direction = tuple(
+            cfg.params.get("gripper_approach_direction") or metadata.get("gripper_approach_direction")
+        )
 
         # Initialize stability counter for consecutive stability checking
         self.stability_counter = torch.zeros(env.num_envs, device=env.device, dtype=torch.int32)
@@ -359,6 +368,9 @@ class check_reset_state_success(ManagerTermBase):
         receptive_asset_cfg: SceneEntityCfg | None = None,
         assembly_success_prob: float | None = None,
         assembly_threshold_scale: float = 1.0,
+        # Declared here as well as read in __init__: the manager validates params against this
+        # signature and unpacks them as kwargs, so a params key absent here raises.
+        gripper_approach_direction: tuple[float, float, float] | None = None,
         max_articulation_velocity_sum: float = 5.0,
         max_rigid_linear_velocity_sum: float = 0.1,
         max_rigid_angular_velocity_sum: float = 1.0,
