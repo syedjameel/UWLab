@@ -10,10 +10,10 @@
 # so the two align exactly when one cube is seated on the other.
 assembled_offset:
   pos: [0.0, 0.0, 0.017]
-  quat: [1.0, 0.0, 0.0, 0.0]
+  quat: [0.0, 0.0, 0.0, 1.0]
 bottom_offset:
   pos: [0.0, 0.0, -0.017]
-  quat: [1.0, 0.0, 0.0, 0.0]
+  quat: [0.0, 0.0, 0.0, 1.0]
 # A receptive object REQUIRES success_thresholds: mdp/commands.py reads position and orientation
 # with no default. position 0.005 is the shipped cube value, kept. orientation 0.025 is the shipped
 # TIGHT-FIT value meant for screw insertion; new_task.rst:92 explicitly recommends 0.05 for cube

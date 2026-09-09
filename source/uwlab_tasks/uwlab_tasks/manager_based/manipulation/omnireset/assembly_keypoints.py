@@ -18,7 +18,10 @@ if TYPE_CHECKING:
 @configclass
 class Offset:
     pos: tuple[float, float, float] = (0.0, 0.0, 0.0)
-    quat: tuple[float, float, float, float] = (1.0, 0.0, 0.0, 0.0)
+    # (x, y, z, w) -- ``quat`` is handed straight to ``math_utils.combine_frame_transforms``, and
+    # Isaac Lab 3.0's quaternion order is x-first. Identity is (0, 0, 0, 1); (1, 0, 0, 0) here is a
+    # 180 degree rotation about X, which is what made every seated-pose angle check fail.
+    quat: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 1.0)
 
     @property
     def pose(self) -> tuple[float, float, float, float, float, float, float]:

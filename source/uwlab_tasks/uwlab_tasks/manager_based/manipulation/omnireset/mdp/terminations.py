@@ -238,7 +238,9 @@ class check_grasp_success(ManagerTermBase):
                 f"not_far={int((~excessive_pose_deviation).sum())} "
                 f"above_ground={int(pos_above_ground.sum())} "
                 f"coll_free={int(collision_free.sum())} "
-                f"timeout={int(time_out.sum())} -> success={int(grasp_success.sum())}",
+                f"timeout={int(time_out.sum())} "
+                f"(len {int(env.episode_length_buf.max())}/{int(env.max_episode_length)}) "
+                f"-> success={int(grasp_success.sum())}",
                 flush=True,
             )
 

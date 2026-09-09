@@ -51,7 +51,11 @@ class grasp_sampling_event(ManagerTermBase):
 
     _PLACEMENT_POINTS_PER_BODY = 26
     _PLACEMENT_QUERY_CHUNK = 4096
-    _PLACEMENT_TOLERANCE = 0.0
+    # Signed distance a gripper collider point may reach INSIDE the object before the candidate is
+    # rejected. Zero means any contact at all disqualifies a placement -- including contact by the
+    # two fingertips, which are the bodies whose job is to touch the part. Overridable so the gate
+    # can be separated from the grasp when diagnosing which of the two is failing.
+    _PLACEMENT_TOLERANCE = -abs(float(os.environ.get("UWLAB_PLACEMENT_TOLERANCE", 0.0)))
     _PLACEMENT_MAX_DISTANCE = 0.5
 
     def __init__(self, cfg: EventTermCfg, env: ManagerBasedEnv):
@@ -379,6 +383,31 @@ class grasp_sampling_event(ManagerTermBase):
         inverse_root_quaternion = math_utils.quat_inv(root_quaternion)
         body_positions = gripper_asset.data.body_link_pos_w[reference_env_id]
         body_quaternions = gripper_asset.data.body_link_quat_w[reference_env_id]
+
+        # The gate tests the gripper AS IT STANDS. Whether that is the open pre-grasp or the closed
+        # posture decides everything: closed pads sit inside the object by construction, so a hand
+        # that arrives here closed rejects 100% of candidates and the diagnostic below is the only
+        # thing that says so.
+        _pad_names = [n for n in ("rl_dg_1_tip", "rl_dg_2_tip") if n in body_names]
+        if len(_pad_names) == 2:
+            _i, _j = body_names.index(_pad_names[0]), body_names.index(_pad_names[1])
+            print(
+                f"[grasp sampler] gate posture: pad separation "
+                f"{float((body_positions[_i] - body_positions[_j]).norm()) * 1000.0:.2f} mm; "
+                f"grasp_center_offset={self.grasp_center_offset}",
+                flush=True,
+            )
+            for _n in ("rl_dg_1_tip", "rl_dg_2_tip", "rl_dg_mount", "rl_dg_palm"):
+                if _n not in body_names:
+                    continue
+                _k = body_names.index(_n)
+                _rel = math_utils.quat_apply_inverse(root_quaternion, body_positions[_k] - root_position)
+                _d = float((_rel - torch.as_tensor(self.grasp_center_offset, dtype=_rel.dtype,
+                                                   device=_rel.device)).norm()) * 1000.0
+                _pts = self._placement_body_points[_n]
+                print(f"[grasp sampler]   {_n} root-frame {[round(float(v), 4) for v in _rel.tolist()]}"
+                      f"  {_d:.1f} mm from grasp_center_offset"
+                      f"  collider reach {float(_pts.norm(dim=1).max()) * 1000.0:.1f} mm", flush=True)
 
         surviving = torch.ones(len(candidates), dtype=torch.bool, device=self._env.device)
         first_rejections: dict[str, int] = {}
@@ -2684,11 +2713,11 @@ class reset_root_states_uniform(ManagerTermBase):
                     torch.tensor(bottom_offset.get("pos"), device=env.device).unsqueeze(0).repeat(env.num_envs, 1)
                 )
                 assert tuple(bottom_offset.get("quat")) == (
+                    0.0,
+                    0.0,
+                    0.0,
                     1.0,
-                    0.0,
-                    0.0,
-                    0.0,
-                ), "Bottom offset rotation must be (1.0, 0.0, 0.0, 0.0)"
+                ), "Bottom offset rotation must be identity, which in Isaac Lab 3.0's (x, y, z, w) order is (0, 0, 0, 1)"
 
     def __call__(
         self,

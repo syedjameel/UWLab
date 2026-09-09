@@ -3,7 +3,7 @@
 # bottom-center face. Real object: RED cube fabricated to match.
 assembled_offset:
   pos: [0.0, 0.0, -0.02]
-  quat: [1.0, 0.0, 0.0, 0.0]
+  quat: [0.0, 0.0, 0.0, 1.0]
 bottom_offset:
   pos: [0.0, 0.0, -0.02]
-  quat: [1.0, 0.0, 0.0, 0.0]
+  quat: [0.0, 0.0, 0.0, 1.0]
