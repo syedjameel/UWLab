@@ -157,7 +157,13 @@ from .ur10e_delto_cfg import (
 # Every DELTO cube artifact lives here: Grasps/InsertiveCube34/grasps.pt and
 # Resets/InsertiveCube34__ReceptiveCube34/resets_*.pt. Kept out of the shared cloud tree so a DELTO
 # bank can never be confused with the shipped 2F-85 one for the same pair.
-CUBE_DATASET_DIR = "./Datasets_ur10e_delto/OmniReset"
+# Overridable, because ``record_reset_states.py --dataset_dir`` controls only where output is
+# WRITTEN. Every event term that READS a dataset -- the grasp bank that
+# reset_end_effector_from_grasp_dataset replays, and the C1 bank MultiResetManager draws object
+# poses from -- takes its path from here instead. Hardcoded, a run that recorded a new grasp
+# bank into a separate tree and then generated C2/C3/C4 would silently replay the OLD bank and
+# produce reset states for a grasp nobody asked for, with nothing in the logs to say so.
+CUBE_DATASET_DIR = _os.environ.get("UWLAB_CUBE_DATASET_DIR", "./Datasets_ur10e_delto/OmniReset")
 
 # Loosened from the shipped 0.025 rad. `new_task.rst:92` names 0.025 as the TIGHT-FIT value (screw
 # insertion) and explicitly recommends `position: 0.005, orientation: 0.05` for cube stacking. The
