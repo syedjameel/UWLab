@@ -211,7 +211,18 @@ EXPLICIT_UR10E_DELTO.actuators = {
     "hand": _DELTO_HAND_ACTUATOR,
 }
 
-# ARM GAINS. These were 0.0/0.0, which pairs with an EFFORT-driven action term -- but every task
+# ARM GAINS stay 0.0/0.0 (env-overridable for experiments only).
+#
+# Real gains were tried and MEASURED against the reset gate's two velocity conditions, per 128 envs:
+#     shipped 0/0   not_abnormal 32  stable 29
+#     60/12         not_abnormal 31  stable 25   (baseline restored -- but 60 N*m/rad cannot hold a
+#                                                 UR10e against gravity, so it still sags)
+#     2000/200      not_abnormal 16  stable 14   (stiff enough to hold, unstable at dt = 1/120)
+# Stiff enough to hold is unstable; soft enough to be stable sags. That is a PD standing in for a
+# controller that should supply torques, so the fix belongs in the action term, not here.
+#
+# The original observation, still true and still unexplained:
+# these were 0.0/0.0, which pairs with an EFFORT-driven action term -- but every task
 # that binds this articulation drives the arm with DifferentialInverseKinematicsAction, which
 # commands POSITION targets via set_joint_position_target. A position target into a zero-gain
 # implicit actuator produces no torque whatsoever, so the arm was uncontrollable by construction:
@@ -226,8 +237,8 @@ IMPLICIT_UR10E_DELTO = UR10E_DELTO_ARTICULATION.copy()  # type: ignore
 IMPLICIT_UR10E_DELTO.actuators = {
     "arm": ImplicitActuatorCfg(
         joint_names_expr=["shoulder.*", "elbow.*", "wrist.*"],
-        stiffness=float(_os.environ.get("UWLAB_ARM_STIFFNESS", 2000.0)),
-        damping=float(_os.environ.get("UWLAB_ARM_DAMPING", 200.0)),
+        stiffness=float(_os.environ.get("UWLAB_ARM_STIFFNESS", 0.0)),
+        damping=float(_os.environ.get("UWLAB_ARM_DAMPING", 0.0)),
         effort_limit_sim=UR10E_EFFORT_LIMITS,
         velocity_limit_sim=UR10E_VELOCITY_LIMITS,
     ),

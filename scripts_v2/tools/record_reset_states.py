@@ -117,6 +117,28 @@ def main(env_cfg, agent_cfg) -> None:
     # make sure environment is non-deterministic for diverse pose discovery
     env_cfg.seed = None
 
+    # OPTIONAL: drop the arm's task-space action term for recording.
+    #
+    # No policy acts during reset-state recording -- the reset event solves IK to place the end
+    # effector at a sampled grasp, writes the joint state, and reconciles the PD targets to it
+    # (events.py, "RECONCILE THE PD TARGETS"). The arm should then simply hold that pose. It does
+    # not: the action term runs every control step and overwrites those reconciled targets from a
+    # frame that is stale immediately after the teleport, which measured as a 2.8 rad swing in a
+    # standalone replay of the same states.
+    #
+    # This was invisible while the arm actuator carried stiffness = damping = 0, because then the
+    # overwritten targets drove nothing at all and the arm merely sagged. Give the actuator real
+    # gains and the stale command becomes a real motion, which is why not_abnormal and stable got
+    # WORSE with gains alone (32 -> 16 and 29 -> 14 of 128).
+    if os.environ.get("UWLAB_DROP_ARM_ACTION"):
+        for _name, _term in list(vars(env_cfg.actions).items()):
+            if _term is None:
+                continue
+            _cls = type(_term).__name__
+            if "Cartesian" in _cls or "InverseKinematics" in _cls or "OperationalSpace" in _cls:
+                setattr(env_cfg.actions, _name, None)
+                print(f"[record] dropped arm action term '{_name}' ({_cls})", flush=True)
+
     # Derive pair directory and reset type for output path
     insertive_usd_path = env_cfg.scene.insertive_object.spawn.usd_path
     receptive_usd_path = env_cfg.scene.receptive_object.spawn.usd_path
@@ -173,6 +195,57 @@ def main(env_cfg, agent_cfg) -> None:
     # Create progress bar
     pbar = tqdm(total=args_cli.num_reset_states, desc="Successful reset states", unit="reset states")
 
+    # PIN THE ARM AT THE POSE THE RESET EVENT PLACED IT IN.
+    #
+    # A reset state is a STATIC initial condition: the reset event solves IK to put the end effector
+    # on a sampled grasp and reconciles the PD targets to it, and the arm is then supposed to stay
+    # there while the check decides whether the HAND holds the object. It does not stay: the arm
+    # actuator carries stiffness = damping = 0 by design (it is meant to be torque-controlled), no
+    # policy is running to supply those torques, and so the arm sags -- dragging the grasped object
+    # with it. That is what the shipped banks recorded, and it is why arms sit under the table in
+    # them.
+    #
+    # Gains are not the fix; that was measured. Swept against this same gate: 60/12 reproduces the
+    # baseline but is far too soft to hold a UR10e, 2000/200 is stiff enough but unstable at
+    # dt = 1/120 (not_abnormal 32 -> 16). Stiff enough to hold is unstable, soft enough to be stable
+    # sags -- a PD standing in for a controller that should be supplying torques.
+    #
+    # Writing the arm's joint state back each control step sidesteps that entirely and matches what
+    # the data is supposed to mean. The hand and the object stay fully dynamic, so the acceptance
+    # check still measures exactly what it should.
+    # GRAVITY COMPENSATION for the arm during recording.
+    #
+    # This is the missing piece the other three attempts were each working around. The arm actuator
+    # is zero-gain BY DESIGN because it is meant to be torque-controlled, and during reset-state
+    # recording no policy is running to supply those torques -- so the arm sags out of the pose the
+    # IK solver placed it in, dragging the grasped object with it. Measured alternatives, all
+    # rejected against this same gate (of 128 envs):
+    #
+    #     PD gains 2000/200   not_abnormal 32 -> 16   stiff enough to hold, unstable at dt = 1/120
+    #     PD gains 60/12      not_abnormal 32 -> 31   stable, but far too soft to hold a UR10e
+    #     kinematic pin       not_abnormal 47 -> 11   writing joint state mid-step is non-physical,
+    #                                                 and the velocity conditions measure exactly
+    #                                                 that discontinuity
+    #
+    # The torque needed is not a tuning parameter: PhysX already computes it. Feeding the
+    # generalized gravity forces back as the arm's effort target holds the arm where it was placed
+    # without any stiffness to oscillate and without violating the dynamics the checks read.
+    grav_comp = bool(os.environ.get("UWLAB_GRAVITY_COMP"))
+    if grav_comp:
+        _robot = env.scene["robot"]
+        _arm_ids, _arm_names = _robot.find_joints(["shoulder.*", "elbow.*", "wrist.*"])
+        _arm_ids_t = torch.tensor(_arm_ids, device=env.device, dtype=torch.long)
+        print(f"[record] gravity-compensating {len(_arm_ids)} arm joints: {_arm_names}", flush=True)
+
+    pin_arm = bool(os.environ.get("UWLAB_PIN_ARM"))
+    if pin_arm:
+        _robot = env.scene["robot"]
+        _arm_ids, _arm_names = _robot.find_joints(["shoulder.*", "elbow.*", "wrist.*"])
+        _pinned = _robot.data.joint_pos[:, _arm_ids].clone()
+        _zero_v = torch.zeros_like(_pinned)
+        print(f"[record] pinning {len(_arm_ids)} arm joints at the reset pose: {_arm_names}",
+              flush=True)
+
     start_time = time.time()
 
     while current_successful_reset_conditions < args_cli.num_reset_states:
@@ -181,6 +254,24 @@ def main(env_cfg, agent_cfg) -> None:
         _, _, terminated, truncated, _ = env.step(actions)
         dones = terminated | truncated
         done_idx = torch.where(dones)[0]
+
+        if grav_comp:
+            # data.gravity_compensation_forces is g(q) in joint space: applying tau = g(q) at
+            # q_dot = 0 with no external load gives static equilibrium, which is precisely the
+            # "arm stays where the IK solver put it" this recording needs. Its DoF axis may carry
+            # leading base DoFs, so index from the END, where the joint DoFs live.
+            _g = _robot.data.gravity_compensation_forces
+            _g = getattr(_g, "torch", _g)
+            _g = _g[:, -_robot.num_joints:]
+            _robot.set_joint_effort_target(_g[:, _arm_ids_t], joint_ids=_arm_ids)
+
+        if pin_arm:
+            # Environments that just reset carry a NEW arm pose from the reset event -- adopt it as
+            # their pin. Everything else is held at the pose it was given.
+            if done_idx.numel() > 0:
+                _pinned[done_idx] = _robot.data.joint_pos[done_idx][:, _arm_ids]
+            _robot.write_joint_state_to_sim(_pinned, _zero_v, joint_ids=_arm_ids)
+            _robot.set_joint_position_target(_pinned, joint_ids=_arm_ids)
 
         # Re-randomise the open/closed choice for environments that are done. Same substring test
         # as above: a grasped reset type must keep the gripper closed on re-randomisation, never

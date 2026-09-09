@@ -323,15 +323,47 @@ class check_reset_state_success(ManagerTermBase):
     def reset(self, env_ids: torch.Tensor | None = None) -> None:
         super().reset(env_ids)
 
+        # REFRESH BEFORE SAMPLING THE REFERENCE.
+        #
+        # The reset events have just written new root poses and joint states into the simulation,
+        # but ``data.root_pos_w`` / ``data.body_link_pos_w`` still hold values from the previous
+        # physics step until the buffers are refreshed. Sampling initial_pos here without that
+        # refresh records the PRE-teleport pose, so the deviation measured for the rest of the
+        # episode is the reset jump itself rather than any drift.
+        #
+        # Measured, before this refresh: object deviation median 213 mm (limit 50) and end-effector
+        # median 240 mm (limit 100) at the very first evaluation, with a max of 14 m -- distances
+        # no held object travels, and exactly the scale of the teleport. not_far consequently sat
+        # at 5-11% of environments under every configuration tried, while the object it was
+        # supposedly tracking had not moved at all.
+        # DEFER the reference capture to the first evaluation of this episode.
+        #
+        # The reset events have written new poses, but write_*_to_sim only STAGES them: reading
+        # data.root_pos_w here still returns the pre-reset values, and refreshing the asset does
+        # not help because the simulation has not stepped yet. Sampling initial_pos at this point
+        # therefore records where the object WAS before the teleport, and not_far then measures the
+        # teleport distance for the rest of the episode.
+        #
+        # Measured before this change: object deviation median 213-300 mm against a 50 mm limit and
+        # end-effector median 240 mm against 100 mm, on the very first evaluation, with maxima in
+        # metres. not_far consequently sat at 5-11% of environments under every configuration
+        # tried -- gains, no gains, arm term dropped, arm pinned, filtered grasp bank -- because it
+        # was never a function of the grasp at all.
+        #
+        # __call__ runs after a physics step, so the buffers are current there.
+        if not hasattr(self, "_needs_initial_pos"):
+            self._needs_initial_pos = torch.ones(self.num_envs, device=self.device, dtype=torch.bool)
+        if env_ids is None:
+            self._needs_initial_pos[:] = True
+        else:
+            self._needs_initial_pos[env_ids] = True
+
         for asset in self.assets_to_check:
-            if asset is self.robot_asset:
-                asset_pos = asset.data.body_link_pos_w[:, self.ee_body_idx].clone()
-            else:
-                asset_pos = asset.data.root_pos_w.clone()
-            if not hasattr(asset, "initial_pos") or env_ids is None:
-                asset.initial_pos = asset_pos
-            else:
-                asset.initial_pos[env_ids] = asset_pos[env_ids].clone()
+            if not hasattr(asset, "initial_pos"):
+                if asset is self.robot_asset:
+                    asset.initial_pos = asset.data.body_link_pos_w[:, self.ee_body_idx].clone()
+                else:
+                    asset.initial_pos = asset.data.root_pos_w.clone()
 
         if env_ids is None:
             self.stability_counter.zero_()
@@ -424,6 +456,8 @@ class check_reset_state_success(ManagerTermBase):
 
         # Reset initial positions on first check or after env reset
         excessive_pose_deviation = torch.zeros(env.num_envs, device=env.device, dtype=torch.bool)
+        _obj_dev_mm = None
+        _rob_dev_mm = None
         pos_below_threshold = torch.zeros(env.num_envs, device=env.device, dtype=torch.bool)
         for asset in self.assets_to_check:
             if asset is self.robot_asset:
@@ -436,13 +470,24 @@ class check_reset_state_success(ManagerTermBase):
             quat_is_nan = torch.isnan(asset.data.root_quat_w).any(dim=1)
             skip_check = pos_is_nan | quat_is_nan
 
+            # Adopt this episode's true starting pose the first time it can be read (see reset()).
+            _fresh = self._needs_initial_pos
+            if _fresh.any():
+                asset.initial_pos[_fresh] = asset_pos[_fresh].clone()
+
             # Asset has excessive pose deviation if position exceeds thresholds
             pos_deviation = (asset_pos - asset.initial_pos).norm(dim=1)
             valid_pos_deviation = torch.where(~skip_check, pos_deviation, torch.zeros_like(pos_deviation))
             if asset is self.robot_asset:
                 excessive_pose_deviation |= valid_pos_deviation > self.max_robot_pos_deviation
+                _rob_dev_mm = valid_pos_deviation * 1000.0
             else:
                 excessive_pose_deviation |= valid_pos_deviation > self.max_object_pos_deviation
+                # Keep the largest OBJECT deviation for the diagnostic below -- max, not last:
+                # this loop ends on the receptive cube, which is kinematic and never moves, so
+                # taking the last one reported a flat 0.0 mm and hid the insertive cube entirely.
+                _d_mm = valid_pos_deviation * 1000.0
+                _obj_dev_mm = _d_mm if _obj_dev_mm is None else torch.maximum(_obj_dev_mm, _d_mm)
 
             # Asset is above ground if position is greater than z threshold
             pos_below_threshold |= asset_pos[:, 2] < self.pos_z_threshold
@@ -466,6 +511,32 @@ class check_reset_state_success(ManagerTermBase):
 
         # Opt-in diagnostic (mirrors check_grasp_success): UWLAB_GRASP_DEBUG=1 prints which
         # condition rejects candidates, once per episode round (at the timeout step).
+        self._needs_initial_pos[:] = False
+
+        # LEAVE-ONE-OUT. Six conditions at 38-98% individually multiply to about 3 of 128
+        # environments, yet success has been exactly 0 across thousands of environment-episodes.
+        # That is not improbability, it is incompatibility -- some condition is never true at the
+        # same instant as the rest. Counting how many environments pass everything EXCEPT each
+        # condition in turn names the offender directly; a large count next to one name means that
+        # single condition is what stands between the run and a filled bank.
+        if os.environ.get("UWLAB_GRASP_DEBUG") and time_out.any():
+            _conds = {
+                "not_abnormal": ~abnormal_gripper_state,
+                "orient_down": gripper_orientation_within_range,
+                "stable": stability_reached,
+                "not_far": ~excessive_pose_deviation,
+                "above_ground": ~pos_below_threshold,
+                "coll_free": collision_free,
+            }
+            _loo = []
+            for _name in _conds:
+                _m = torch.ones_like(next(iter(_conds.values())))
+                for _o, _v in _conds.items():
+                    if _o != _name:
+                        _m &= _v
+                _loo.append(f"{_name}={int(_m.sum())}")
+            print("[reset dbg] pass-all-but: " + "  ".join(_loo), flush=True)
+
         if os.environ.get("UWLAB_GRASP_DEBUG") and time_out.any():
             n = env.num_envs
             print(
@@ -474,7 +545,16 @@ class check_reset_state_success(ManagerTermBase):
                 f"stable={int(stability_reached.sum())} "
                 f"not_far={int((~excessive_pose_deviation).sum())} "
                 f"above_ground={int((~pos_below_threshold).sum())} "
-                f"coll_free={int(collision_free.sum())} -> success={int(reset_success.sum())}",
+                f"coll_free={int(collision_free.sum())} -> success={int(reset_success.sum())}"
+                + (
+                    f"  | object mm med={_obj_dev_mm.median():.1f} "
+                    f"p75={_obj_dev_mm.quantile(0.75):.1f} max={_obj_dev_mm.max():.1f} "
+                    f"(lim {self.max_object_pos_deviation * 1000:.0f})"
+                    + (f"  robot mm med={_rob_dev_mm.median():.1f} max={_rob_dev_mm.max():.1f} "
+                       f"(lim {self.max_robot_pos_deviation * 1000:.0f})"
+                       if _rob_dev_mm is not None else "")
+                    if _obj_dev_mm is not None else ""
+                ),
                 flush=True,
             )
             # Per-asset velocity detail for the stability condition (median over envs of the
