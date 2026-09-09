@@ -675,6 +675,28 @@ class DeltoGraspSamplingCfg(Robotiq2f85GraspSamplingCfg):
         # pinch's pads actually meet. Leaving it would put every candidate object where the old
         # closure used to grip, which is the exact failure that once cost 6144 attempts and
         # produced 0 successes with all 25 hand bodies reading 0.000 N.
+        # WHERE THIS STANDS, measured against the same sampler, rig, cube and servo, switched only
+        # by UWLAB_DELTO_PINCH:
+        #
+        #     fist (0):   jaw 96 -> 84 -> 67 mm, still closing;  3 successes in batch 1
+        #     pinch (1):  jaw 94 -> 66 -> 63 mm, frozen there;   0 successes, every batch
+        #
+        # The sampler, the placement gate, the rig and the relative action term all work. Fingers 1
+        # and 2 simply never reach the commanded 30.8 mm jaw, stopping 14.5 mm clear of the cube on
+        # each side with torque still available. Note the 0.1 rad joint errors are NOT the stall:
+        # the fist shows the same 0.100 values while closing normally, because _per_joint_command
+        # recomputes from the measured position every step by design. The jaw aperture is the
+        # honest signal.
+        #
+        # Tested and rejected: asymmetric distal stiffness (20x thumb); effort_limit_sim raised to
+        # 0.3 N.m; joint limits (0 of 40 targets out of range, checked against the USD); episode
+        # length (already 18 s / 180 control steps); fingers 3/4/5 blocking the pair (held at their
+        # open pose for the whole close). Jaw stays at 63 mm in every one.
+        #
+        # The stalled joints are PROXIMAL (rj_dg_1_1, 1_2, 2_1, 2_2), which points at the grasp
+        # centre rather than the gains -- it is the CLOSED pad midpoint, so with the hand open the
+        # cube may sit against the proximal phalanges while the pads are still clear. That the
+        # collision analyzer reports coll_free=64 argues against that and is what to reconcile next.
         if bool(int(_os.environ.get("UWLAB_DELTO_PINCH", "0"))):
             self.scripted_gripper_pinch_posture = True
             # THE PINCH CLOSES AT THE AUTHORED SPEED, not the throttled one above. The 1.0 rad/s
