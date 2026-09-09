@@ -235,6 +235,19 @@ class grasp_sampling_event(ManagerTermBase):
                 flush=True,
             )
             gate_start = time.time()
+            # REFRESH BEFORE THE GATE. _open_gripper above wrote the pre-grasp posture with
+            # write_joint_state_to_sim, but ``body_link_pos_w`` is only refreshed from the
+            # physics view after a step -- so without this the gate reads body poses that still
+            # describe the articulation's DEFAULT posture and silently tests the wrong hand
+            # shape. For a parallel jaw the two are close enough that nothing showed. For the
+            # DELTO pinch they are not: the gate rejected 61440/61440 candidates with
+            # rl_dg_2_tip reported 12.73 mm inside a 34 mm cube, because the splay's index
+            # fingertip is nowhere near where the pre-grasp's is.
+            #
+            # One step, once per process: this whole branch runs only on the first reset.
+            env.sim.step(render=False)
+            gripper_asset.update(env.sim.get_physics_dt())
+
             self.grasp_candidates = self._filter_placement_collisions(candidates, gripper_asset, int(env_ids[0].item()))
             print(
                 f"[grasp sampler] {time.strftime('%H:%M:%S')} placement collision gate END "

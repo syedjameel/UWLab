@@ -686,7 +686,7 @@ class DeltoGraspSamplingCfg(Robotiq2f85GraspSamplingCfg):
             # (cube-stack/pinch/pinchaxes.py); the sign follows metadata's convention, which is
             # tip1 - tip2 (verified: recomputing the FIST's axis this way reproduces
             # metadata's to a dot product of -0.982, and its grasp centre exactly).
-            self.events.grasp_sampling.params["grasp_align_axis"] = (0.253221, -0.236808, -0.937977)
-            self.events.grasp_sampling.params["orientation_sample_axis"] = (0.253221, -0.236808, -0.937977)
+            self.events.grasp_sampling.params["grasp_align_axis"] = (0.572380, 0.589043, -0.570447)
+            self.events.grasp_sampling.params["orientation_sample_axis"] = (0.572380, 0.589043, -0.570447)
             self.events.grasp_sampling.params["gripper_approach_direction"] = (
-                0.703686, 0.224826, 0.674002)
+                0.725311, 0.288772, 0.624928)

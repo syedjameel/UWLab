@@ -89,12 +89,20 @@ class TorchDatasetFileHandler(DatasetFileHandlerBase):
         """Get number of episodes in the file."""
         return self._episode_count
 
-    def write_episode(self, episode: EpisodeData, demo_id: int | None = None):
+    def write_episode(
+        self, episode: EpisodeData, demo_id: int | None = None, compression: str | None = None
+    ):
         """Add an episode to the dataset.
 
         Args:
             episode: The episode data to add.
             demo_id: Custom index for the episode. If None, uses default index.
+            compression: Accepted and ignored. Isaac Lab 3.0's RecorderManager grew a third
+                positional argument (``self.cfg.dataset_compression``) at
+                ``recorder_manager.py:520`` and passes it unconditionally, so a two-argument
+                handler raises TypeError the moment the first episode is exported. This handler
+                writes torch tensors rather than an HDF5 dataset, so there is nothing here for a
+                compression setting to act on -- accepting it is the whole fix.
         """
         if episode.is_empty() or not episode.success:
             return
