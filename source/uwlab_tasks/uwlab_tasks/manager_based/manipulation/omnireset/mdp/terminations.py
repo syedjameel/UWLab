@@ -145,6 +145,26 @@ def _pad_geometry_note(gripper_asset, object_asset) -> str:
         err = (tgt[0] - q[0]).abs()
         worst = err.argsort(descending=True)[:4]
         note += "  stuck: " + ", ".join(f"{jn[int(i)]} {float(err[int(i)]):.3f}" for i in worst)
+        # Distance from the object to the PROXIMAL links of the two pinch fingers. If the hand
+        # stalls because the cube is sitting against them, this is where it shows: the pads can be
+        # comfortably clear while a knuckle is already hard against the part.
+        # Is the joint MOVING? The PD error is 0.1 rad whether the servo is tracking or stuck, so
+        # only the position itself distinguishes them. Two joints, measured against the posture the
+        # scripted close is servoing toward.
+        try:
+            from uwlab_tasks.manager_based.manipulation.omnireset.mdp.scripted_gripper import (
+                _PER_JOINT_PINCH_POSTURES as _PP,
+            )
+            for _j in ("rj_dg_1_2", "rj_dg_2_2"):
+                if _j in jn and _j in _PP:
+                    note += f"  {_j}: q={float(q[0, jn.index(_j)]):+.3f} -> {_PP[_j][1]:+.3f}"
+        except Exception:
+            pass
+        prox = [n for n in ("rl_dg_1_1", "rl_dg_1_2", "rl_dg_2_1", "rl_dg_2_2") if n in names]
+        if prox:
+            note += "  prox: " + ", ".join(
+                f"{n.split('rl_dg_')[-1]} {float((bp[0, names.index(n)] - op[0]).norm()) * 1000.0:.0f}"
+                for n in prox) + " mm"
         return note
     except Exception as exc:  # diagnostics must never break a run
         return f"  | pad geometry unavailable: {exc}"

@@ -651,6 +651,15 @@ class DeltoGraspSamplingCfg(Robotiq2f85GraspSamplingCfg):
         # PROXIMAL joints of the two pinch fingers -- and they stop with torque headroom, which
         # points at something blocking them rather than at a gain.
         _sampler_hand_stiffness["rj_dg_1_4"] = 1.698  # 10x the authored 0.1698
+        # The PINCH's binding joints are the _2 pair, not the _4 pair. Measured with the hand
+        # pointing down: rj_dg_1_2 is commanded from -1.162 toward -0.866 and instead travels
+        # -1.162 -> -1.179 -> -1.219, AWAY from its target and further from it every step. The
+        # relative action bounds realised torque at stiffness * 0.1 = 0.063 N.m there, and that is
+        # not enough authority to hold the thumb chain against its own weight in this orientation,
+        # so the joint sags while the servo keeps asking for the same 0.1 rad. Overridable to test.
+        _pinch_2_stiffness = float(_os.environ.get("UWLAB_PINCH_SEG2_STIFFNESS", 10.0))
+        _sampler_hand_stiffness["rj_dg_1_2"] = 0.6286 * _pinch_2_stiffness
+        _sampler_hand_stiffness["rj_dg_2_2"] = 0.8276 * _pinch_2_stiffness
         _sampler_hand_stiffness["rj_dg_5_4"] = 1.694  # 10x the authored 0.1694
         self.scene.robot.actuators = {
             **self.scene.robot.actuators,
