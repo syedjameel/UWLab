@@ -418,7 +418,21 @@ class grasp_sampling_event(ManagerTermBase):
         example_rejections: list[dict] = []
         _MAX_EXAMPLES_PER_BODY = 3
 
+        # BODIES THE GATE MUST NOT VETO. It exists to reject placements where the hand would be
+        # driven THROUGH the part on approach; it is not there to forbid the grasping surfaces from
+        # being near it. A five-finger fist wraps from outside, so its pads clear anyway and the
+        # distinction never mattered. A two-finger pinch cannot: the gate's zero tolerance forces
+        # the pre-grasp open to 93 mm (each pad 16.5 mm of collider reach plus the cube's 17 mm
+        # half-width, so 33.5 mm of standoff), and measured on the corrected bench the same closed
+        # posture holds 15.2% of free cubes from a 50 mm pre-grasp and 0.0% from a 93 mm one -- the
+        # cube leaves the gap before the pads arrive. Exempting the pads resolves the two.
+        _exempt = set(getattr(self._env.cfg, "placement_gate_exempt_bodies", ()) or ())
+        if _exempt:
+            print(f"[grasp sampler] placement gate exempting {sorted(_exempt)}", flush=True)
+
         for body_index, body_name in enumerate(body_names):
+            if body_name in _exempt:
+                continue
             points_body = self._placement_body_points[body_name]
             relative_position = math_utils.quat_apply_inverse(
                 root_quaternion, body_positions[body_index] - root_position
@@ -484,7 +498,11 @@ class grasp_sampling_event(ManagerTermBase):
             "deepest_candidate_index": deepest_candidate_index,
             "first_rejections": first_rejections,
             "body_intersections": body_intersections,
-            "points_per_body": {body_name: len(self._placement_body_points[body_name]) for body_name in body_names},
+            "points_per_body": {
+                body_name: len(self._placement_body_points[body_name])
+                for body_name in body_names
+                if body_name in first_rejections
+            },
             "example_rejections": example_rejections,
         }
         # Printed unconditionally (before the all-rejected raise below) so this diagnostic is
@@ -496,6 +514,8 @@ class grasp_sampling_event(ManagerTermBase):
             f"(body={deepest_body}, candidate_index={deepest_candidate_index})"
         )
         for body_name in body_names:
+            if body_name not in first_rejections:
+                continue          # exempted above; it was never evaluated
             print(
                 f"[grasp sampler] placement body {body_name}: first_rejections="
                 f"{first_rejections[body_name]}, all_intersections={body_intersections[body_name]}, "

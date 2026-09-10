@@ -708,6 +708,12 @@ class DeltoGraspSamplingCfg(Robotiq2f85GraspSamplingCfg):
         # collision analyzer reports coll_free=64 argues against that and is what to reconcile next.
         if bool(int(_os.environ.get("UWLAB_DELTO_PINCH", "0"))):
             self.scripted_gripper_pinch_posture = True
+            # The two pads and their distal links are the grasping surfaces; the placement gate
+            # must not veto them (see events.py). Without this the pre-grasp has to open to 93 mm
+            # to clear, and at 93 mm the cube falls out of the gap before the pads meet.
+            self.placement_gate_exempt_bodies = (
+                "rl_dg_1_tip", "rl_dg_2_tip", "rl_dg_1_4", "rl_dg_2_4",
+            )
             # THE PINCH CLOSES AT THE AUTHORED SPEED, not the throttled one above. The 1.0 rad/s
             # limit was tuned for the five-finger fist, where it breaks a limit cycle; for a
             # two-finger pinch it is the difference between capturing a free cube and never
@@ -743,6 +749,6 @@ class DeltoGraspSamplingCfg(Robotiq2f85GraspSamplingCfg):
             # (cube-stack/pinch/pinchaxes.py); the sign follows metadata's convention, which is
             # tip1 - tip2 (verified: recomputing the FIST's axis this way reproduces
             # metadata's to a dot product of -0.982, and its grasp centre exactly).
-            self.events.grasp_sampling.params["grasp_align_axis"] = (-0.621889, -0.267982, 0.735826)
-            self.events.grasp_sampling.params["orientation_sample_axis"] = (-0.621889, -0.267982, 0.735826)
-            self.events.grasp_sampling.params["gripper_approach_direction"] = (0.650066, 0.243572, 0.719783)
+            self.events.grasp_sampling.params["grasp_align_axis"] = (-0.592687, -0.118079, 0.796731)
+            self.events.grasp_sampling.params["orientation_sample_axis"] = (-0.592687, -0.118079, 0.796731)
+            self.events.grasp_sampling.params["gripper_approach_direction"] = (0.659318, 0.261952, 0.704756)
