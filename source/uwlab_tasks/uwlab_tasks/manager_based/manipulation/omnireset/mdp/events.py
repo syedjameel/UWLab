@@ -9,6 +9,7 @@ import logging
 import math
 import numpy as np
 import os
+import os as _os
 import random
 import scipy.stats as stats
 import time
@@ -635,6 +636,11 @@ class grasp_sampling_event(ManagerTermBase):
                         if center_offsets is None:
                             base = gc - approach_world * float(standoff)
                         else:
+                            # R is the gripper->object rotation and this is the right way round:
+                            # transposing it was tried and puts the pads 219/239 mm from the cube
+                            # against this form's 28/32, and the placement itself checks out --
+                            # measured at the first step of an episode, the object sits 28/32 mm
+                            # from the two pads with a 59 mm jaw, which is where it belongs.
                             base = gc - R[:3, :3] @ center_offsets[standoff_index]
                         T = np.eye(4)
                         T[:3, :3] = R[:3, :3]
@@ -862,6 +868,13 @@ class grasp_sampling_event(ManagerTermBase):
         object_asset = env.scene[self.object_cfg.name]
         object_pos = object_asset.data.root_pos_w[env_ids]
         object_quat = object_asset.data.root_quat_w[env_ids]
+        if _os.environ.get("UWLAB_GRASP_DEBUG"):
+            # The object is reset by an earlier event in the same reset. write_root_pose_to_sim
+            # STAGES into PhysX, so if the data buffer has not caught up this reads the object's
+            # PREVIOUS pose and the gripper is placed relative to where the cube used to be -- the
+            # same class of defect as the acceptance reference sampled before the reset teleport.
+            print(f"[grasp sampler] object pose used for placement, env {int(env_ids[0])}: "
+                  f"{[round(float(v), 4) for v in object_pos[0].tolist()]}", flush=True)
 
         # Extract positions and quaternions from transform matrices (already tensors)
         local_positions = grasp_transforms[:, :3, 3]  # Extract translation
