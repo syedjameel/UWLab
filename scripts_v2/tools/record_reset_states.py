@@ -246,6 +246,37 @@ def main(env_cfg, agent_cfg) -> None:
         print(f"[record] pinning {len(_arm_ids)} arm joints at the reset pose: {_arm_names}",
               flush=True)
 
+    # HOLD THE ARM WITH A STIFF PD, NEVER BY WRITING ITS STATE (UWLAB_ARM_PD_HOLD). Writing joint
+    # positions every control step (UWLAB_PIN_ARM) is a teleport as far as PhysX is concerned: the
+    # articulation's contacts lose their friction anchors each step. A 24 N parallel jaw holds anyway;
+    # a 0.06 N*m pinch holds by static friction alone and lets the cube slide out. The grasp sampler
+    # never writes the hand, which is why the same grasps hold there. Use with UWLAB_DROP_ARM_ACTION.
+    arm_pd_hold = bool(os.environ.get("UWLAB_ARM_PD_HOLD"))
+    if arm_pd_hold:
+        _robot = env.scene["robot"]
+        _pd_ids, _pd_names = _robot.find_joints(["shoulder.*", "elbow.*", "wrist.*"])
+        _robot.write_joint_stiffness_to_sim(
+            torch.full((env.num_envs, len(_pd_ids)), 8000.0, device=env.device), joint_ids=_pd_ids)
+        _robot.write_joint_damping_to_sim(
+            torch.full((env.num_envs, len(_pd_ids)), 400.0, device=env.device), joint_ids=_pd_ids)
+        _pd_target = getattr(_robot.data.joint_pos, "torch", _robot.data.joint_pos)[:, _pd_ids].clone()
+        print(f"[record] arm held by PD 8000/400 on {len(_pd_ids)} joints, no state writes", flush=True)
+
+    # HOLD THE OBJECT WHILE THE HAND LOADS ITS GRIP (per env, first N control steps after a reset).
+    # The grasp sampler closes the hand around a floating object and squeezes for 10 s before gravity
+    # engages; the reset event instead teleports the fingers into the recorded closed posture with
+    # gravity already on, so a weak hand (DELTO pinch, 0.06 N*m) has no contact force yet and the cube
+    # falls in the steps it takes to build it. Pinning the object's pose for the first steps of each
+    # episode reproduces the sampler's order: grip first, then weight. Released afterwards, so the
+    # stability and in-hand checks still judge a free object.
+    hold_obj_steps = int(os.environ.get("UWLAB_HOLD_OBJECT_STEPS", "0"))
+    if hold_obj_steps > 0:
+        _obj = env.scene["insertive_object"]
+        _obj_pose = _obj.data.root_pose_w.clone() if hasattr(_obj.data, "root_pose_w") else torch.cat(
+            [_obj.data.root_pos_w, _obj.data.root_quat_w], dim=-1).clone()
+        _obj_pose = getattr(_obj_pose, "torch", _obj_pose)
+        print(f"[record] holding insertive_object for the first {hold_obj_steps} steps of each episode", flush=True)
+
     start_time = time.time()
 
     while current_successful_reset_conditions < args_cli.num_reset_states:
@@ -264,6 +295,23 @@ def main(env_cfg, agent_cfg) -> None:
             _g = getattr(_g, "torch", _g)
             _g = _g[:, -_robot.num_joints:]
             _robot.set_joint_effort_target(_g[:, _arm_ids_t], joint_ids=_arm_ids)
+
+        if arm_pd_hold:
+            # Envs that just reset carry a new IK arm pose: adopt it as their PD target.
+            if done_idx.numel() > 0:
+                _pd_target[done_idx] = getattr(_robot.data.joint_pos, "torch", _robot.data.joint_pos)[done_idx][:, _pd_ids]
+            _robot.set_joint_position_target(_pd_target, joint_ids=_pd_ids)
+
+        if hold_obj_steps > 0:
+            # Envs that just reset carry a new object pose from the reset event: adopt it.
+            if done_idx.numel() > 0:
+                _pos = getattr(_obj.data.root_pos_w, "torch", _obj.data.root_pos_w)
+                _quat = getattr(_obj.data.root_quat_w, "torch", _obj.data.root_quat_w)
+                _obj_pose[done_idx] = torch.cat([_pos[done_idx], _quat[done_idx]], dim=-1)
+            _held = torch.where(env.episode_length_buf < hold_obj_steps)[0]
+            if _held.numel() > 0:
+                _obj.write_root_pose_to_sim(_obj_pose[_held], env_ids=_held)
+                _obj.write_root_velocity_to_sim(torch.zeros((_held.numel(), 6), device=env.device), env_ids=_held)
 
         if pin_arm:
             # Environments that just reset carry a NEW arm pose from the reset event -- adopt it as

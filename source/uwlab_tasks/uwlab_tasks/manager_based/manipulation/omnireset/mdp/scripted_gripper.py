@@ -40,6 +40,7 @@ finger-major while the articulation reports joints level-major, and the two orde
 
 from __future__ import annotations
 
+import os
 from collections.abc import Mapping
 
 import torch
@@ -245,6 +246,16 @@ def scripted_gripper_actions(env, close: bool) -> torch.Tensor:
             postures = _PER_JOINT_PINCH_POSTURES if pinch else _PER_JOINT_POSTURES
             index = 1 if close else 0
             target = torch.tensor([postures[n][index] for n in joint_names], device=env.device)
+            # SQUEEZE (opt-in, UWLAB_PINCH_SQUEEZE_RAD). The pinch close posture sits only 0.01-0.04 rad
+            # past where the thumb joints stop on the cube in the grasp bank, so stiffness x position
+            # error leaves almost no grip force. Pushing thumb/index targets further along their closing
+            # direction makes them press up to the effort limit; a finger stopped by the cube cannot
+            # overshoot, it only squeezes harder.
+            squeeze = float(os.environ.get("UWLAB_PINCH_SQUEEZE_RAD", "0") or 0)
+            if pinch and close and squeeze > 0:
+                for i, n in enumerate(joint_names):
+                    if n.startswith(("rj_dg_1_", "rj_dg_2_")):
+                        target[i] += squeeze if postures[n][1] >= postures[n][0] else -squeeze
             scale = _term_scale(term, len(joint_names), env.device)
             term_offset = getattr(term, "_offset", 0.0)
             term_offset = getattr(term_offset, "torch", term_offset)

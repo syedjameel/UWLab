@@ -130,6 +130,7 @@ metadata directly and never consults the command term. Record once, train twice.
 
 from __future__ import annotations
 
+import math
 import os as _os
 
 from isaaclab.managers import RewardTermCfg as RewTerm
@@ -533,6 +534,50 @@ def _apply_pinch_absolute_hand(cfg) -> None:
     assert_action_cfg_fully_actuates(cfg.actions, DELTO_HAND_JOINT_NAMES, context=type(cfg).__name__)
 
 
+def _apply_pinch_in_hand(cfg, perturbed: bool) -> None:
+    """Grasped-state acceptance for the pinch: grip, not distance to a stored grasp.
+
+    Same test as the linear gripper (terminations.check_reset_state_success ``grasp_center_margin``):
+    object inside a per-axis box around the pinch bank's grasp centre in the hand frame (bank max
+    |dev| + margin) and the hand joints near the bank median. ``perturbed`` families (C2, C4) also
+    shrink the placement noise around the stored grasp from +-2 cm / +-pi/16 to +-5 mm / +-pi/32,
+    which a rigid two-finger pinch can close on without pushing the cube off-centre.
+    """
+    params = cfg.terminations.success.params
+    params["max_grasp_distance_error"] = None
+    params["grasp_center_margin"] = float(_os.environ.get("UWLAB_GRASP_CENTER_MARGIN", "0.006"))
+    # p99 of the pinch bank's spread, not its max: outlier grasps (x max 45 mm vs p99 21 mm) made a
+    # +-51 mm box that accepted cubes lying on the table beside the hand.
+    params["grasp_center_quantile"] = float(_os.environ.get("UWLAB_GRASP_CENTER_QUANTILE", "0.99"))
+    # FRICTION AS SAMPLED. The reset-state configs set every robot body -- fingertips included -- to
+    # 0.3/0.2 at startup; the grasp sampler never randomizes, so the pinch bank was sampled with the
+    # tips' own 1.0 (friction combine max). A two-finger pinch at 0.3 lets the cube slide out under
+    # gravity on the arm (every recorded C3 state ended with the cube on the table), while the
+    # 24 N parallel jaw holds either way. Record with the friction the grasps were found under.
+    # MASS AS SAMPLED: the pinch bank was found on a 0.030 kg cube; mass DR up to 0.06 kg doubles the
+    # load on a 0.06 N*m pinch. Recording uses the sampled mass; training keeps its own DR.
+    mass_term = getattr(cfg.events, "randomize_insertive_object_mass", None)
+    if mass_term is not None:
+        mass_term.params["mass_distribution_params"] = (0.03, 0.03)
+    if bool(int(_os.environ.get("UWLAB_PINCH_NO_MATERIAL_DR", "0"))):
+        # Materials exactly as authored, like the grasp sampler (which never randomizes them): the
+        # startup material write may also replace the tips' friction-combine behaviour, not just mu.
+        cfg.events.reset_robot_material = None
+        cfg.events.insertive_object_material = None
+        return
+    tip_mu = float(_os.environ.get("UWLAB_PINCH_ROBOT_FRICTION", "1.0"))
+    material = cfg.events.reset_robot_material.params
+    material["static_friction_range"] = (tip_mu, tip_mu)
+    material["dynamic_friction_range"] = (tip_mu, tip_mu)
+    if perturbed:
+        pos = float(_os.environ.get("UWLAB_GRASP_POS_NOISE", "0.005"))
+        rot = float(_os.environ.get("UWLAB_GRASP_ROT_NOISE", str(math.pi / 32)))
+        cfg.events.reset_end_effector_pose_from_grasp_dataset.params["pose_range_b"] = {
+            "x": (-pos, pos), "y": (-pos, pos), "z": (-pos, pos),
+            "roll": (-rot, rot), "pitch": (-rot, rot), "yaw": (-rot, rot),
+        }
+
+
 def _apply_cube_objects(cfg) -> None:
     """Pin the scene to the cube34 pair, so the task cannot silently become peg-in-hole.
 
@@ -596,6 +641,10 @@ class CubeStackObjectRestingEEGraspedCfg(Ur10eDeltoObjectRestingEEGraspedResetSt
 
     def __post_init__(self):
         super().__post_init__()
+        if bool(int(_os.environ.get("UWLAB_DELTO_PINCH", "0"))):
+            _apply_pinch_in_hand(self, perturbed=True)
+            self.terminations.success.params["max_object_pos_deviation"] = float(
+                _os.environ.get("UWLAB_C2_MAX_OBJECT_DEVIATION", "0.025"))
         # TWO-FINGER PINCH, same opt-in flag the sampler uses. This is load-bearing and not a
         # duplicate of the sampler's setting: reset_end_effector_from_grasp_dataset seeds the
         # recorded grasp posture ONCE at reset, but record_reset_states.py then re-issues
@@ -627,6 +676,8 @@ class CubeStackObjectAnywhereEEGraspedCfg(Ur10eDeltoObjectAnywhereEEGraspedReset
 
     def __post_init__(self):
         super().__post_init__()
+        if bool(int(_os.environ.get("UWLAB_DELTO_PINCH", "0"))):
+            _apply_pinch_in_hand(self, perturbed=False)
         # TWO-FINGER PINCH, same opt-in flag the sampler uses. This is load-bearing and not a
         # duplicate of the sampler's setting: reset_end_effector_from_grasp_dataset seeds the
         # recorded grasp posture ONCE at reset, but record_reset_states.py then re-issues
@@ -672,6 +723,8 @@ class CubeStackObjectPartiallyAssembledEEGraspedCfg(Ur10eDeltoObjectPartiallyAss
 
     def __post_init__(self):
         super().__post_init__()
+        if bool(int(_os.environ.get("UWLAB_DELTO_PINCH", "0"))):
+            _apply_pinch_in_hand(self, perturbed=True)
         # TWO-FINGER PINCH, same opt-in flag the sampler uses. This is load-bearing and not a
         # duplicate of the sampler's setting: reset_end_effector_from_grasp_dataset seeds the
         # recorded grasp posture ONCE at reset, but record_reset_states.py then re-issues

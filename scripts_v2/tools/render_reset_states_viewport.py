@@ -566,8 +566,11 @@ def settle_step() -> None:
         # back each control step makes it an anchor, which is what it should be here: the question
         # this gallery answers is whether the HAND holds the object, and an arm wandering off
         # under no policy only obscures it. Stated in the caption, not hidden.
-        robot.write_joint_state_to_sim(
-            HOLD_Q[:, _arm_ids], torch.zeros_like(HOLD_Q[:, _arm_ids]), joint_ids=_arm_ids)
+        # UWLAB_VIEW_ARM_PD_ONLY: hold with the stiff PD alone. A per-step state write teleports the
+        # articulation and drops friction anchors, which a weak pinch cannot survive.
+        if not os.environ.get("UWLAB_VIEW_ARM_PD_ONLY"):
+            robot.write_joint_state_to_sim(
+                HOLD_Q[:, _arm_ids], torch.zeros_like(HOLD_Q[:, _arm_ids]), joint_ids=_arm_ids)
         robot.set_joint_position_target(HOLD_Q[:, _arm_ids], joint_ids=_arm_ids)
 
 

@@ -420,6 +420,10 @@ class check_reset_state_success(ManagerTermBase):
         # sits ~110 mm from the cube in every held state. Takes precedence over
         # max_grasp_distance_error when set.
         self.grasp_center_margin = cfg.params.get("grasp_center_margin")
+        # Quantile of the bank's per-axis |deviation| that sizes the box (1.0 = max). A few outlier
+        # grasps set the pinch bank's x max to 45 mm against p99 21 mm, and a max-sized box accepted
+        # cubes lying on the table 135 mm from the grasp centre.
+        self.grasp_center_quantile = cfg.params.get("grasp_center_quantile", 1.0)
         self._grasp_center_in_hand: torch.Tensor | None = None
 
         # Load gripper_approach_direction from metadata
@@ -562,6 +566,7 @@ class check_reset_state_success(ManagerTermBase):
         max_grasp_distance_error: float | None = None,
         max_grasp_joint_error_fraction: float = 0.15,
         grasp_center_margin: float | None = None,
+        grasp_center_quantile: float = 1.0,
     ) -> torch.Tensor:
 
         # Check time out
@@ -669,7 +674,8 @@ class check_reset_state_success(ManagerTermBase):
                 points = math_utils.quat_apply_inverse(replay.rel_quaternions, -replay.rel_positions)
                 self._grasp_center_in_hand = points.median(dim=0).values
                 self._grasp_center_half_extent = (
-                    (points - self._grasp_center_in_hand).abs().max(dim=0).values + self.grasp_center_margin
+                    (points - self._grasp_center_in_hand).abs().quantile(self.grasp_center_quantile, dim=0)
+                    + self.grasp_center_margin
                 )
                 print(
                     f"[reset] in-hand check (grasp centre box): object within +-"
