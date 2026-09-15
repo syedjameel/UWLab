@@ -168,26 +168,26 @@ DELTO_HAND_SCRIPTED_CLOSE_JOINT_POS = {
 # precedent in this repository: a stale grasp centre cost 6144 sampling attempts and 0 successes,
 # with all 25 hand bodies reading 0.000 N because the hand never touched the object.
 DELTO_HAND_PINCH_CLOSE_JOINT_POS = {
-    "rj_dg_1_1": 0.725470,
-    "rj_dg_1_2": -0.858060,
-    "rj_dg_1_3": 0.299098,
-    "rj_dg_1_4": 0.641685,
-    "rj_dg_2_1": -0.153643,
-    "rj_dg_2_2": 0.515258,
-    "rj_dg_2_3": 1.048908,
-    "rj_dg_2_4": 1.182386,
-    "rj_dg_3_1": 0.122543,
-    "rj_dg_3_2": 0.071419,
-    "rj_dg_3_3": 0.887978,
-    "rj_dg_3_4": 0.829371,
-    "rj_dg_4_1": 0.024529,
-    "rj_dg_4_2": 1.349191,
-    "rj_dg_4_3": 0.778358,
-    "rj_dg_4_4": 0.500969,
-    "rj_dg_5_1": 0.449463,
-    "rj_dg_5_2": 0.833789,
-    "rj_dg_5_3": 0.658953,
-    "rj_dg_5_4": 0.556028,
+    "rj_dg_1_1": 0.647434,
+    "rj_dg_1_2": -0.941164,
+    "rj_dg_1_3": 0.342645,
+    "rj_dg_1_4": 0.617939,
+    "rj_dg_2_1": -0.050510,
+    "rj_dg_2_2": 0.348081,
+    "rj_dg_2_3": 1.120042,
+    "rj_dg_2_4": 1.183027,
+    "rj_dg_3_1": 0.140242,
+    "rj_dg_3_2": 0.248586,
+    "rj_dg_3_3": 0.817770,
+    "rj_dg_3_4": 0.918308,
+    "rj_dg_4_1": 0.024972,
+    "rj_dg_4_2": 1.357610,
+    "rj_dg_4_3": 0.777772,
+    "rj_dg_4_4": 0.563929,
+    "rj_dg_5_1": 0.378474,
+    "rj_dg_5_2": 0.884081,
+    "rj_dg_5_3": 0.491104,
+    "rj_dg_5_4": 0.578349,
 }
 
 DELTO_HAND_PINCH_OPEN_JOINT_POS = {
@@ -215,7 +215,7 @@ DELTO_HAND_PINCH_OPEN_JOINT_POS = {
 
 # midpoint(rl_dg_1_tip, rl_dg_2_tip) at DELTO_HAND_PINCH_CLOSE_JOINT_POS, in the rl_dg_mount
 # frame, in metres -- the pinch's replacement for metadata.yaml's ``grasp_center_offset``.
-DELTO_PINCH_GRASP_CENTER_OFFSET = (0.086300, 0.034288, 0.166047)
+DELTO_PINCH_GRASP_CENTER_OFFSET = (0.085773, 0.031967, 0.168201)
 
 
 @configclass

@@ -419,6 +419,59 @@ def _apply_delto_dataset_dir(cfg, dataset_dir: str) -> None:
 # ---------------------------------------------------------------------------------------
 # Grasp sampling (hand-only, like ROBOTIQ_2F85 / LINEAR_GRIPPER)
 # ---------------------------------------------------------------------------------------
+def sampler_hand_gains() -> tuple[dict, dict]:
+    """Per-joint (stiffness, damping) of the grasp sampler's hand, for every env that replays its grasps.
+
+    The reset-state and training hands must match the hand the grasp bank was validated against:
+    measured on the DELTO pinch, the full-robot replay put object and fingers back within 1 mm and
+    0.000 rad of the recorded grasp, yet the cube fell -- its hand kept the authored _2 and _1
+    stiffness, unscaled damping and a 1.0 rad/s cap where the sampler's held it.
+    """
+    _sampler_hand_stiffness = dict(ur10e_delto.DELTO_HAND_ACTUATOR.stiffness)
+    # An ASYMMETRIC value here (delto_cfg.py:487 names it as the untested next step) was tried
+    # against the pinch and does NOT move the stall: at 20x the jaw still freezes at 63 mm
+    # against a commanded 30.8 mm. Neither does raising effort_limit_sim to 0.3 N.m. The joints
+    # that pin at the relative action's full 0.1 rad error are rj_dg_1_1/1_2/2_1/2_2 -- the
+    # PROXIMAL joints of the two pinch fingers -- and they stop with torque headroom, which
+    # points at something blocking them rather than at a gain.
+    _sampler_hand_stiffness["rj_dg_1_4"] = 1.698  # 10x the authored 0.1698
+    # The PINCH's binding joints are the _2 pair, not the _4 pair. Measured with the hand
+    # pointing down: rj_dg_1_2 is commanded from -1.162 toward -0.866 and instead travels
+    # -1.162 -> -1.179 -> -1.219, AWAY from its target and further from it every step. The
+    # relative action bounds realised torque at stiffness * 0.1 = 0.063 N.m there, and that is
+    # not enough authority to hold the thumb chain against its own weight in this orientation,
+    # so the joint sags while the servo keeps asking for the same 0.1 rad. Overridable to test.
+    _pinch_2_stiffness = float(_os.environ.get("UWLAB_PINCH_SEG2_STIFFNESS", 10.0))
+    _sampler_hand_stiffness["rj_dg_1_2"] = 0.6286 * _pinch_2_stiffness
+    _sampler_hand_stiffness["rj_dg_2_2"] = 0.8276 * _pinch_2_stiffness
+    _sampler_hand_stiffness["rj_dg_5_4"] = 1.694  # 10x the authored 0.1694
+    # PROXIMAL (_1) AUTHORITY for the pinch pair, opt-in by factor. With the scripted command
+    # normalised per physics substep (scripted_gripper_relative_per_substep) the PD error each
+    # substep is the per-substep delta, not the full remaining error, so a gravity-loaded joint
+    # gets proportionally less torque. Filmed: rj_dg_1_1 sagged 0.54 -> 0.36 rad against a
+    # 0.647 closed target and the pad aperture stalled at 60 mm while every other pinch joint
+    # reached its posture. Damping follows via the sqrt-ratio scaling below.
+    _pinch_1_factor = float(_os.environ.get("UWLAB_PINCH_SEG1_STIFFNESS", 1.0))
+    for _n in ("rj_dg_1_1", "rj_dg_2_1"):
+        _sampler_hand_stiffness[_n] = ur10e_delto.DELTO_HAND_ACTUATOR.stiffness[_n] * _pinch_1_factor
+    # KEEP THE DAMPING RATIO when stiffness is raised. The asset's damping was chosen for zeta
+    # ~0.7 at the AUTHORED stiffness; multiplying stiffness by k at fixed damping divides zeta by
+    # sqrt(k). Filmed at 10x on the _2 pair: rj_dg_1_2 and rj_dg_2_2 swing ~0.25 rad on alternate
+    # control steps and the pad aperture never settles (57-66 mm), with or without a servo gain.
+    # Damping is therefore scaled by sqrt(k) for exactly the joints whose stiffness changed.
+    # Written out per joint because the asset gives damping as per-class regexes, and a joint
+    # matching both a regex and an explicit name is an error when the gains are resolved.
+    _authored_stiffness = ur10e_delto.DELTO_HAND_ACTUATOR.stiffness
+    _class_damping = {1: 0.040, 2: 0.025, 3: 0.0374, 4: 0.0025}  # ur10e_delto._DELTO_HAND_ACTUATOR.damping
+    _sampler_hand_damping = {}
+    for _f in range(1, 6):
+        for _j in range(1, 5):
+            _n = f"rj_dg_{_f}_{_j}"
+            _ratio = _sampler_hand_stiffness[_n] / _authored_stiffness[_n]
+            _sampler_hand_damping[_n] = _class_damping[_j] * _ratio**0.5
+    return _sampler_hand_stiffness, _sampler_hand_damping
+
+
 @configclass
 class DeltoGraspSamplingCfg(Robotiq2f85GraspSamplingCfg):
     """Grasp sampling with the DELTO hand alone -- no arm, teleported onto candidate grasps.
@@ -643,28 +696,12 @@ class DeltoGraspSamplingCfg(Robotiq2f85GraspSamplingCfg):
         # permanent limit cycle the deadband alone had to absorb. At 1.0 rad/s, one control step's
         # maximum travel (0.1 rad) matches the commanded delta exactly, so there is nothing left to
         # oscillate about even before the deadband intervenes.
-        _sampler_hand_stiffness = dict(ur10e_delto.DELTO_HAND_ACTUATOR.stiffness)
-        # An ASYMMETRIC value here (delto_cfg.py:487 names it as the untested next step) was tried
-        # against the pinch and does NOT move the stall: at 20x the jaw still freezes at 63 mm
-        # against a commanded 30.8 mm. Neither does raising effort_limit_sim to 0.3 N.m. The joints
-        # that pin at the relative action's full 0.1 rad error are rj_dg_1_1/1_2/2_1/2_2 -- the
-        # PROXIMAL joints of the two pinch fingers -- and they stop with torque headroom, which
-        # points at something blocking them rather than at a gain.
-        _sampler_hand_stiffness["rj_dg_1_4"] = 1.698  # 10x the authored 0.1698
-        # The PINCH's binding joints are the _2 pair, not the _4 pair. Measured with the hand
-        # pointing down: rj_dg_1_2 is commanded from -1.162 toward -0.866 and instead travels
-        # -1.162 -> -1.179 -> -1.219, AWAY from its target and further from it every step. The
-        # relative action bounds realised torque at stiffness * 0.1 = 0.063 N.m there, and that is
-        # not enough authority to hold the thumb chain against its own weight in this orientation,
-        # so the joint sags while the servo keeps asking for the same 0.1 rad. Overridable to test.
-        _pinch_2_stiffness = float(_os.environ.get("UWLAB_PINCH_SEG2_STIFFNESS", 10.0))
-        _sampler_hand_stiffness["rj_dg_1_2"] = 0.6286 * _pinch_2_stiffness
-        _sampler_hand_stiffness["rj_dg_2_2"] = 0.8276 * _pinch_2_stiffness
-        _sampler_hand_stiffness["rj_dg_5_4"] = 1.694  # 10x the authored 0.1694
+        _sampler_hand_stiffness, _sampler_hand_damping = sampler_hand_gains()
         self.scene.robot.actuators = {
             **self.scene.robot.actuators,
             "hand": self.scene.robot.actuators["hand"].replace(
                 stiffness=_sampler_hand_stiffness,
+                damping=_sampler_hand_damping,
                 velocity_limit_sim={r"rj_dg_[1-5]_[1-4]": 1.0},
             ),
         }
@@ -708,6 +745,41 @@ class DeltoGraspSamplingCfg(Robotiq2f85GraspSamplingCfg):
         # collision analyzer reports coll_free=64 argues against that and is what to reconcile next.
         if bool(int(_os.environ.get("UWLAB_DELTO_PINCH", "0"))):
             self.scripted_gripper_pinch_posture = True
+            # SERVO GAIN BELOW 1. Filmed with a per-step joint log: at gain 1 the pinch fingers do not
+            # close, they chatter -- rj_dg_2_1 alternates q 0.00 / -0.19 rad every control step around
+            # its -0.05 target, rj_dg_2_2 0.43 / 0.13, and the pad aperture swings 44-73 mm, shaking a
+            # correctly placed cube (within 2 mm of the pad midpoint) out of the hand in ~10 steps.
+            # Each step commanded the full remaining error at the 0.1 rad clip and the joint
+            # overshot it. A gain < 1 commands only part of the error per step.
+            self.scripted_gripper_servo_gain = float(_os.environ.get("UWLAB_PINCH_SERVO_GAIN", "1.0"))
+            # The cause of that chatter was not the gain: the relative action is re-applied every
+            # physics substep, so the command must be divided by decimation (scripted_gripper.py).
+            self.scripted_gripper_relative_per_substep = True
+            self.scripted_gripper_full_squeeze_when_stalled = bool(int(_os.environ.get("UWLAB_PINCH_STALL_SQUEEZE", "0")))
+            # ABSOLUTE HAND ACTION FOR THE OFFLINE SAMPLER. A relative joint action is re-applied on
+            # every physics substep, so a scripted close through it either overshoots and chatters
+            # (full command) or squeezes at 1/decimation strength (divided command) -- filmed: every
+            # variant dropped or ejected the cube at or before gravity-on. The sampler is offline and
+            # hand-only, so it takes an absolute per-joint position action: the PD target IS the
+            # closed pinch posture and a blocked finger squeezes with its full stiffness. Training
+            # keeps the relative action; only the grasp sampler's hand is swapped.
+            # PAD CENTRING (terminations.check_grasp_success): measure the object's offset from the pad
+            # midpoint on every held grasp, and reject grasps beyond UWLAB_PINCH_MAX_PAD_OFFSET (m).
+            # Unset = measure and log only.
+            self.terminations.success.params["pad_body_names"] = ("rl_dg_1_tip", "rl_dg_2_tip")
+            _max_pad = _os.environ.get("UWLAB_PINCH_MAX_PAD_OFFSET")
+            self.terminations.success.params["max_pad_center_offset"] = float(_max_pad) if _max_pad else None
+            if bool(int(_os.environ.get("UWLAB_PINCH_ABSOLUTE", "1"))):
+                from isaaclab.envs.mdp.actions.actions_cfg import JointPositionActionCfg
+
+                self.actions.gripper = JointPositionActionCfg(
+                    asset_name="robot",
+                    joint_names=list(DELTO_HAND_JOINT_NAMES),
+                    scale={n: 1.0 for n in DELTO_HAND_JOINT_NAMES},
+                    use_default_offset=False,
+                    preserve_order=True,
+                )
+                assert_action_cfg_fully_actuates(self.actions, DELTO_HAND_JOINT_NAMES, context=type(self).__name__)
             # The two pads and their distal links are the grasping surfaces; the placement gate
             # must not veto them (see events.py). Without this the pre-grasp has to open to 93 mm
             # to clear, and at 93 mm the cube falls out of the gap before the pads meet.
@@ -749,6 +821,6 @@ class DeltoGraspSamplingCfg(Robotiq2f85GraspSamplingCfg):
             # (cube-stack/pinch/pinchaxes.py); the sign follows metadata's convention, which is
             # tip1 - tip2 (verified: recomputing the FIST's axis this way reproduces
             # metadata's to a dot product of -0.982, and its grasp centre exactly).
-            self.events.grasp_sampling.params["grasp_align_axis"] = (-0.592687, -0.118079, 0.796731)
-            self.events.grasp_sampling.params["orientation_sample_axis"] = (-0.592687, -0.118079, 0.796731)
-            self.events.grasp_sampling.params["gripper_approach_direction"] = (0.659318, 0.261952, 0.704756)
+            self.events.grasp_sampling.params["grasp_align_axis"] = (-0.571894, -0.136793, 0.808842)
+            self.events.grasp_sampling.params["orientation_sample_axis"] = (-0.571894, -0.136793, 0.808842)
+            self.events.grasp_sampling.params["gripper_approach_direction"] = (0.652300, 0.243107, 0.717916)

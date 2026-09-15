@@ -14,6 +14,16 @@ recorder logs finger_joint=0). The legacy mimic path (default, no --dual-drive) 
 physxMimicJoint on the follower matching the reference 2F-85 USD (gearing +1.0 for our frame; the
 old -1.0 demanded q_right=-q_finger, below the follower's lower limit 0, which froze the driver).
 
+BOTH URDF IMPORTER LAYOUTS. The Isaac Sim 5.1 importer wrote ``/linear_gripper/<body>`` with an
+instanced ``collisions`` subtree whose prototype lives in ``configuration/*_physics.usd``. The Isaac
+Sim 6 importer nests the bodies under ``/linear_gripper/Geometry`` and authors the CollisionAPI
+directly on each Mesh, inline. Bodies are therefore found by NAME, and when there is no prototype
+layer the collider edits happen in the stage itself. Every step that finds nothing to edit raises
+rather than printing a warning: on the Isaac Sim 6 layout the old warnings were the only sign that
+the jaw boxes, the finger friction and the finger-mesh removal had all been skipped, and the
+gripper they produced could not hold anything -- its convex-hull jaws (3.4x the finger's volume)
+squeezed a 1 g object out along the approach axis at 0.36 m/s on every attempt.
+
 Run in-app (server or local leisaac)::
 
     ./uwlab.sh -p scripts_v2/tools/conversions/add_gripper_mimic.py \
@@ -69,6 +79,9 @@ import os
 
 from pxr import PhysxSchema, Sdf, Usd, UsdPhysics, UsdShade
 
+ROOT = "/linear_gripper"
+FINGER_BODIES = ("left_inner_finger", "right_inner_finger")
+
 
 def _find_joint(stage, name):
     for p in stage.Traverse():
@@ -77,7 +90,26 @@ def _find_joint(stage, name):
     raise RuntimeError(f"joint '{name}' not found")
 
 
-def relocate_collision_to_mesh(usd_path: str, friction: float | None = None,
+def _find_body(stage, name):
+    """The one prim called ``name`` under the gripper root, on either importer layout."""
+    hits = [p for p in Usd.PrimRange(stage.GetPrimAtPath(ROOT)) if p.GetName() == name]
+    if len(hits) != 1:
+        raise RuntimeError(f"expected exactly one body named {name!r} under {ROOT}, found {[str(h.GetPath()) for h in hits]}")
+    return hits[0]
+
+
+def _bind_friction(stage, prims, friction: float, material_path: str) -> None:
+    mat = UsdShade.Material.Define(stage, material_path)
+    papi = UsdPhysics.MaterialAPI.Apply(mat.GetPrim())
+    papi.CreateStaticFrictionAttr(friction)
+    papi.CreateDynamicFrictionAttr(friction)
+    for prim in prims:
+        UsdShade.MaterialBindingAPI.Apply(prim).Bind(
+            mat, bindingStrength=UsdShade.Tokens.weakerThanDescendants, materialPurpose="physics"
+        )
+
+
+def relocate_collision_to_mesh(usd_path: str, stage, friction: float | None = None,
                                finger_approximation: str = "convexDecomposition") -> int:
     """Move CollisionAPI onto the child Mesh in the collider PROTOTYPE, preserving instancing.
 
@@ -91,13 +123,16 @@ def relocate_collision_to_mesh(usd_path: str, friction: float | None = None,
     Editing it there (move CollisionAPI onto the child Mesh) fixes every instance at once and
     KEEPS instancing -- important, because de-instancing duplicates the big collision meshes
     (26k+ pts) per env and makes grasp sampling extremely slow. Returns colliders moved.
+
+    On the Isaac Sim 6 layout there is no prototype layer: the CollisionAPI is already on the Mesh,
+    in ``stage``. The rule is the same -- finger meshes lose their collider, the base keeps its
+    own -- and is applied there instead (see ``_disable_finger_mesh_colliders_inline``).
     """
     cfg_dir = os.path.join(os.path.dirname(os.path.abspath(usd_path)), "configuration")
     base = os.path.splitext(os.path.basename(usd_path))[0]
     phys = os.path.join(cfg_dir, f"{base}_physics.usd")
     if not os.path.exists(phys):
-        print(f"  WARNING: prototype layer {phys} not found; skipping collision relocation.")
-        return 0
+        return _disable_finger_mesh_colliders_inline(stage, friction)
     ps = Usd.Stage.Open(phys)
     moved = 0
     meshes = []
@@ -153,6 +188,37 @@ def relocate_collision_to_mesh(usd_path: str, friction: float | None = None,
     return moved
 
 
+def _disable_finger_mesh_colliders_inline(stage, friction: float | None) -> int:
+    """Isaac Sim 6 layout: collider Meshes are inline. Strip the finger ones, keep (and rub) the base."""
+    # The importer marks each collider's parent instanceable, and prims inside an instance are
+    # read-only proxies that a plain PrimRange does not even visit. De-instance first. This is a
+    # small gripper (three colliders), so the per-env duplication the prototype path avoids is
+    # not a concern here.
+    for prim in list(Usd.PrimRange(stage.GetPrimAtPath(ROOT))):
+        if prim.IsInstanceable():
+            prim.SetInstanceable(False)
+    kept, removed = [], 0
+    for prim in list(Usd.PrimRange(stage.GetPrimAtPath(ROOT))):
+        if prim.GetTypeName() != "Mesh" or not prim.HasAPI(UsdPhysics.CollisionAPI):
+            continue
+        if prim.GetName() == "JawBox":
+            continue  # ours, from a previous run
+        if any(body in str(prim.GetPath()) for body in FINGER_BODIES):
+            prim.RemoveAPI(UsdPhysics.MeshCollisionAPI)
+            prim.RemoveAPI(UsdPhysics.CollisionAPI)
+            removed += 1
+        else:
+            kept.append(prim)
+    if removed != len(FINGER_BODIES):
+        raise RuntimeError(f"expected to strip {len(FINGER_BODIES)} finger mesh colliders, stripped {removed}")
+    if not kept:
+        raise RuntimeError("no base collider mesh left after stripping the fingers")
+    if friction is not None:
+        _bind_friction(stage, kept, friction, f"{ROOT}/BasePhysicsMaterial")
+    print(f"  Inline layout: stripped {removed} finger mesh collider(s), kept {len(kept)} base collider(s).")
+    return len(kept)
+
+
 # Jaw gripping-pad boxes on each finger's inner gripping FACE (body-local x=+/-0.0235). These are
 # clean box proxies that collide reliably where the convex/SDF mesh colliders failed. The FULL jaw
 # HEIGHT (Z half 0.040) holds the object -- a short box lets it slide out.
@@ -188,7 +254,7 @@ def add_jaw_box_colliders(stage, friction: float | None) -> int:
 
     mat = None
     if friction is not None:
-        mat = UsdShade.Material.Define(stage, "/linear_gripper/JawPhysicsMaterial")
+        mat = UsdShade.Material.Define(stage, f"{ROOT}/JawPhysicsMaterial")
         papi = UsdPhysics.MaterialAPI.Apply(mat.GetPrim())
         papi.CreateStaticFrictionAttr(friction)
         papi.CreateDynamicFrictionAttr(friction)
@@ -202,19 +268,20 @@ def add_jaw_box_colliders(stage, friction: float | None) -> int:
 
     n = 0
     for body, (center, half) in _JAW_BOXES.items():
-        body_prim = stage.GetPrimAtPath(f"/linear_gripper/{body}")
-        if not body_prim or not body_prim.IsValid():
-            print(f"  WARNING: finger body /linear_gripper/{body} not found; skipping jaw box.")
-            continue
-        # The collider must live INSIDE the link's /collisions subtree (where the base's working
-        # collider is); de-instance it so we can add the box there. /collisions is at identity
-        # relative to the body, so body-local box points are correct.
-        coll = stage.GetPrimAtPath(f"/linear_gripper/{body}/collisions")
+        body_prim = _find_body(stage, body)
+        # Old layout: the collider must live INSIDE the link's /collisions subtree (where the
+        # base's working collider is); de-instance it so we can add the box there. /collisions is
+        # at identity relative to the body, so body-local box points are correct. New layout: no
+        # such subtree, so the box goes directly under the body, which is the same frame.
+        coll = body_prim.GetChild("collisions")
         if coll and coll.IsValid():
             coll.SetInstanceable(False)
+            parent = coll.GetPath()
+        else:
+            parent = body_prim.GetPath()
         cx, cy, cz = center
         hx, hy, hz = half
-        mesh = UsdGeom.Mesh.Define(stage, f"/linear_gripper/{body}/collisions/JawBox")
+        mesh = UsdGeom.Mesh.Define(stage, parent.AppendChild("JawBox"))
         mesh.CreatePointsAttr(Vt.Vec3fArray([Gf.Vec3f(cx + sx * hx, cy + sy * hy, cz + sz * hz)
                                              for sx, sy, sz in _BOX_CORNERS]))
         mesh.CreateFaceVertexCountsAttr(Vt.IntArray([4] * 6))
@@ -242,8 +309,19 @@ def add_jaw_box_colliders(stage, friction: float | None) -> int:
     return n
 
 
+def _strip_mimic(prim) -> list[str]:
+    """Remove every mimic schema and attribute (PhysX or Newton) from a joint prim."""
+    removed = [s for s in prim.GetAppliedSchemas() if "mimic" in s.lower()]
+    for schema in removed:
+        prim.RemoveAppliedSchema(schema)
+    for prop in list(prim.GetProperties()):
+        if "mimic" in prop.GetName().lower():
+            prim.RemoveProperty(prop.GetName())
+            removed.append(prop.GetName())
+    return removed
+
+
 def author_mimic() -> None:
-    print("PhysxMimicJointAPI methods:", [m for m in dir(PhysxSchema.PhysxMimicJointAPI) if not m.startswith("_")])
     stage = Usd.Stage.Open(os.path.abspath(args.usd))
     mimic_prim = _find_joint(stage, args.mimic_joint)
     driver_prim = _find_joint(stage, args.driver_joint)
@@ -251,9 +329,13 @@ def author_mimic() -> None:
     if args.dual_drive:
         # Dual-drive: NO mimic; keep both jaws' DriveAPI (the converter gives both a linear drive).
         # The standalone grasp-sampling actuator/action drive both jaws to the same binary target.
+        # The Isaac Sim 6 importer authors a Newton mimic from the URDF's <mimic> tag; strip it so
+        # "no mimic" is true of the file and not only of the PhysX schemas.
         if not mimic_prim.HasAPI(UsdPhysics.DriveAPI, "linear"):
             UsdPhysics.DriveAPI.Apply(mimic_prim, "linear")
-        print(f"Dual-drive: kept DriveAPI on both jaws ('{args.driver_joint}', '{args.mimic_joint}'); no mimic.")
+        stripped = _strip_mimic(mimic_prim)
+        print(f"Dual-drive: kept DriveAPI on both jaws ('{args.driver_joint}', '{args.mimic_joint}'); "
+              f"no mimic (stripped {stripped}).")
     else:
         api = PhysxSchema.PhysxMimicJointAPI.Apply(mimic_prim, args.axis)
         api.CreateGearingAttr(args.gearing)
@@ -280,22 +362,19 @@ def author_mimic() -> None:
     #    slam/FLING a light object out (a fast close ejects it even with the right grip force).
     #  * MIMIC jaw  -> a HIGH cap (--max-joint-velocity) so it can move fast enough to follow the
     #    driver rigidly (a low cap on the mimic makes it lag badly). The URDF's 0.05 throttled both.
-    dmv = driver_prim.GetAttribute("physxJoint:maxJointVelocity")
-    mmv = mimic_prim.GetAttribute("physxJoint:maxJointVelocity")
-    if dmv:
-        dmv.Set(args.close_velocity)
-    if mmv:
-        mmv.Set(args.max_joint_velocity)
+    for prim, value in ((driver_prim, args.close_velocity), (mimic_prim, args.max_joint_velocity)):
+        PhysxSchema.PhysxJointAPI.Apply(prim).CreateMaxJointVelocityAttr(value)
     print(f"Set maxJointVelocity: driver={args.close_velocity} (gentle close), mimic={args.max_joint_velocity} (follow).")
 
     # Relocate CollisionAPI onto the Mesh prims (in the prototype layer) so the OmniReset
     # hasher detects the colliders -- without de-instancing (keeps it fast).
-    n = relocate_collision_to_mesh(args.usd, friction=args.finger_friction,
+    n = relocate_collision_to_mesh(args.usd, stage, friction=args.finger_friction,
                                    finger_approximation=args.finger_collision)
-    print(f"Relocated CollisionAPI onto {n} mesh prim(s) (base only; finger mesh collision disabled).")
+    print(f"Relocated/kept CollisionAPI on {n} mesh prim(s) (base only; finger mesh collision disabled).")
 
     # Add clean jaw box colliders on the fingers (the mesh colliders can't grip the L-shape).
-    add_jaw_box_colliders(stage, args.finger_friction)
+    if add_jaw_box_colliders(stage, args.finger_friction) != len(_JAW_BOXES):
+        raise RuntimeError("jaw box colliders were not all added")
 
     stage.GetRootLayer().Save()
     if args.dual_drive:
@@ -304,12 +383,6 @@ def author_mimic() -> None:
         print(f"Applied mimic on '{args.mimic_joint}' (axis {args.axis}) -> reference '{args.driver_joint}', "
               f"gearing={args.gearing}, offset={args.offset}")
     print("applied schemas now:", list(mimic_prim.GetAppliedSchemas()))
-    for a in mimic_prim.GetAttributes():
-        if "imic" in a.GetName().lower():
-            print("   ", a.GetName(), "=", a.Get())
-    for r in mimic_prim.GetRelationships():
-        if "imic" in r.GetName().lower():
-            print("   ", r.GetName(), "->", [t.pathString for t in r.GetTargets()])
 
 
 def main() -> None:

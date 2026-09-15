@@ -74,7 +74,7 @@ UR5E_LINEAR_ARTICULATION = ArticulationCfg(
             enabled_self_collisions=True, solver_position_iteration_count=36, solver_velocity_iteration_count=0
         ),
     ),
-    init_state=ArticulationCfg.InitialStateCfg(pos=(0, 0, 0), rot=(1, 0, 0, 0), joint_pos=UR5E_DEFAULT_JOINT_POS),
+    init_state=ArticulationCfg.InitialStateCfg(pos=(0, 0, 0), rot=(0, 0, 0, 1), joint_pos=UR5E_DEFAULT_JOINT_POS),
     soft_joint_pos_limit_factor=1,
 )
 
@@ -149,7 +149,7 @@ LINEAR_GRIPPER = ArticulationCfg(
         mass_props=sim_utils.MassPropertiesCfg(mass=0.5),
     ),
     init_state=ArticulationCfg.InitialStateCfg(
-        pos=(0, 0, 0.1), rot=(1, 0, 0, 0), joint_pos=LINEAR_GRIPPER_DEFAULT_JOINT_POS
+        pos=(0, 0, 0.1), rot=(0, 0, 0, 1), joint_pos=LINEAR_GRIPPER_DEFAULT_JOINT_POS
     ),
     actuators={"gripper": _LINEAR_GRIPPER_ACTUATOR},
     soft_joint_pos_limit_factor=1,

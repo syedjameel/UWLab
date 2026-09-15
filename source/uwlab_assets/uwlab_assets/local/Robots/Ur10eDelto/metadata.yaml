@@ -38,7 +38,9 @@
 # This is the thumb/finger-2 visible-tip pinch frame, not a centroid over all five fingers.
 # This full-robot copy must match DeltoHand/metadata.yaml. Freeze it with
 # the grasp datasets: observations, rewards and resets all consume this frame.
-# quat is (w, x, y, z), with +Z along approach and +X along the closing axis.
+# quat is (x, y, z, w) -- Isaac Lab 3.0's order, which mdp/rewards.py and mdp/observations.py hand
+# straight to Offset -- with +Z along approach and +X along the closing axis. It was authored as
+# (w, x, y, z) = (0.357494, 0.033307, 0.278099, 0.890926) and reordered, not re-derived.
 #
 # CORRECTED 2026-08-31 (cube-stacking work). This copy had drifted from the value it declares it
 # must match: it still carried [0.07445, 0.05800, 0.14970], the PRE-2026-08-17 number that
@@ -57,7 +59,7 @@
 # including the table-leg ones -- deliberately, since the point it referenced does not exist.
 gripper_offset:
   pos: [0.0637, 0.0465, 0.1500]
-  quat: [0.357494, 0.033307, 0.278099, 0.890926]
+  quat: [0.033307, 0.278099, 0.890926, 0.357494]
 
 # DUPLICATED FROM Robots/DeltoHand/metadata.yaml. This is the one exception to the field split
 # described at the top of this file, and it is deliberate.

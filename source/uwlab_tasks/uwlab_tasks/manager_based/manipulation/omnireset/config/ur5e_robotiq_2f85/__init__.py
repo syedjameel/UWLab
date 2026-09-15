@@ -638,7 +638,35 @@ for _rs_name, _rs_cls in [
         disable_env_checker=True,
         kwargs={"env_cfg_entry_point": f"{__name__}.ur10e_delto_cubestack_cfg:{_rs_cls}"},
     )
+    # The same five families with the UR10e + linear gripper: the parallel-jaw baseline on the same
+    # cube pair, written to its own dataset tree (ur10e_linear_gripper_cubestack_cfg.py).
+    gym.register(
+        id=f"OmniReset-UR10eLinearGripper-CubeStack-{_rs_name}-v0",
+        entry_point="isaaclab.envs:ManagerBasedRLEnv",
+        disable_env_checker=True,
+        kwargs={"env_cfg_entry_point": f"{__name__}.ur10e_linear_gripper_cubestack_cfg:Linear{_rs_cls}"},
+    )
 del _rs_name, _rs_cls
+
+gym.register(
+    id="OmniReset-UR10eLinearGripper-CubeStack-RelCartesianOSC-State-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.ur10e_linear_gripper_cubestack_cfg:LinearCubeStackTrainCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_cfg:UR10eLinearGripperCubeStack_PPORunnerCfg",
+    },
+)
+
+gym.register(
+    id="OmniReset-UR10eLinearGripper-CubeStack-RelCartesianOSC-State-Play-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.ur10e_linear_gripper_cubestack_cfg:LinearCubeStackEvalCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_cfg:UR10eLinearGripperCubeStack_PPORunnerCfg",
+    },
+)
 
 # ORIENTED: roll/pitch constrained at 0.05 rad (the docs' cube-stacking tolerance), yaw free.
 gym.register(

@@ -507,6 +507,32 @@ def _apply_grasp_shaping(cfg) -> None:
     )
 
 
+def _apply_pinch_absolute_hand(cfg) -> None:
+    """Offline reset-state recording only: drive the hand with ABSOLUTE per-joint position targets.
+
+    record_reset_states.py re-issues the scripted close on every step to hold the replayed grasp.
+    Through the policy's RELATIVE hand action that command is re-applied on every physics substep,
+    so it either overshoots and chatters or squeezes at 1/decimation strength -- filmed on the grasp
+    sampler, where every such variant dropped or ejected the cube once gravity came on, and the
+    absolute action held it within 4 mm through gravity and the shake. The arm action is untouched,
+    and the RL-state (training) configs keep the relative hand action.
+    """
+    if not bool(int(_os.environ.get("UWLAB_PINCH_ABSOLUTE", "1"))):
+        return
+    from isaaclab.envs.mdp.actions.actions_cfg import JointPositionActionCfg
+
+    from uwlab_assets.robots.ur10e_delto.actions import DELTO_HAND_JOINT_NAMES
+
+    cfg.actions.gripper = JointPositionActionCfg(
+        asset_name="robot",
+        joint_names=list(DELTO_HAND_JOINT_NAMES),
+        scale={n: 1.0 for n in DELTO_HAND_JOINT_NAMES},
+        use_default_offset=False,
+        preserve_order=True,
+    )
+    assert_action_cfg_fully_actuates(cfg.actions, DELTO_HAND_JOINT_NAMES, context=type(cfg).__name__)
+
+
 def _apply_cube_objects(cfg) -> None:
     """Pin the scene to the cube34 pair, so the task cannot silently become peg-in-hole.
 
@@ -579,11 +605,16 @@ class CubeStackObjectRestingEEGraspedCfg(Ur10eDeltoObjectRestingEEGraspedResetSt
         # pinch the dataset just seeded and recording something that is neither.
         if bool(int(_os.environ.get("UWLAB_DELTO_PINCH", "0"))):
             self.scripted_gripper_pinch_posture = True
+            # Same servo gain as the grasp sampler (delto_cfg.DeltoGraspSamplingCfg): at gain 1 the
+            # pinch fingers chatter instead of closing and shake the cube out of the hand.
+            self.scripted_gripper_servo_gain = float(_os.environ.get("UWLAB_PINCH_SERVO_GAIN", "1.0"))
+            self.scripted_gripper_relative_per_substep = True
+            _apply_pinch_absolute_hand(self)
             # The success check rotates this LOCAL axis into the world to decide whether the
             # gripper points downward. metadata's value is the fist's, and with the pinch it
             # rejected two thirds of otherwise-valid states (orient_down 41/128).
             self.terminations.success.params["gripper_approach_direction"] = (
-                0.659318, 0.261952, 0.704756)
+                0.652300, 0.243107, 0.717916)
         _apply_cube_objects(self)
         _apply_cube_dataset_dir(self)
         _apply_grasp_matched_hand_actuator(self)
@@ -605,11 +636,16 @@ class CubeStackObjectAnywhereEEGraspedCfg(Ur10eDeltoObjectAnywhereEEGraspedReset
         # pinch the dataset just seeded and recording something that is neither.
         if bool(int(_os.environ.get("UWLAB_DELTO_PINCH", "0"))):
             self.scripted_gripper_pinch_posture = True
+            # Same servo gain as the grasp sampler (delto_cfg.DeltoGraspSamplingCfg): at gain 1 the
+            # pinch fingers chatter instead of closing and shake the cube out of the hand.
+            self.scripted_gripper_servo_gain = float(_os.environ.get("UWLAB_PINCH_SERVO_GAIN", "1.0"))
+            self.scripted_gripper_relative_per_substep = True
+            _apply_pinch_absolute_hand(self)
             # The success check rotates this LOCAL axis into the world to decide whether the
             # gripper points downward. metadata's value is the fist's, and with the pinch it
             # rejected two thirds of otherwise-valid states (orient_down 41/128).
             self.terminations.success.params["gripper_approach_direction"] = (
-                0.659318, 0.261952, 0.704756)
+                0.652300, 0.243107, 0.717916)
         _apply_cube_objects(self)
         _apply_cube_dataset_dir(self)
         _apply_grasp_matched_hand_actuator(self)
@@ -645,11 +681,16 @@ class CubeStackObjectPartiallyAssembledEEGraspedCfg(Ur10eDeltoObjectPartiallyAss
         # pinch the dataset just seeded and recording something that is neither.
         if bool(int(_os.environ.get("UWLAB_DELTO_PINCH", "0"))):
             self.scripted_gripper_pinch_posture = True
+            # Same servo gain as the grasp sampler (delto_cfg.DeltoGraspSamplingCfg): at gain 1 the
+            # pinch fingers chatter instead of closing and shake the cube out of the hand.
+            self.scripted_gripper_servo_gain = float(_os.environ.get("UWLAB_PINCH_SERVO_GAIN", "1.0"))
+            self.scripted_gripper_relative_per_substep = True
+            _apply_pinch_absolute_hand(self)
             # The success check rotates this LOCAL axis into the world to decide whether the
             # gripper points downward. metadata's value is the fist's, and with the pinch it
             # rejected two thirds of otherwise-valid states (orient_down 41/128).
             self.terminations.success.params["gripper_approach_direction"] = (
-                0.659318, 0.261952, 0.704756)
+                0.652300, 0.243107, 0.717916)
         _apply_cube_objects(self)
         _apply_cube_dataset_dir(self)
         _apply_grasp_matched_hand_actuator(self)
@@ -787,6 +828,20 @@ def _apply_grasp_matched_hand_actuator(cfg) -> None:
     stay untouched for every other task on this robot.
     """
     hand = cfg.scene.robot.actuators["hand"]
+    if bool(int(_os.environ.get("UWLAB_DELTO_PINCH", "0"))):
+        # The pinch grasp bank was sampled with the sampler's full per-joint gains (segment _1/_2
+        # stiffness, sqrt-scaled damping) and the authored 3.0 rad/s cap. Replaying it on the thumb-
+        # side-only override below put object and fingers back within 1 mm / 0.000 rad and the cube
+        # still fell, so the pinch takes the sampler's gains from the one shared definition.
+        from .delto_cfg import sampler_hand_gains
+
+        pinch_stiffness, pinch_damping = sampler_hand_gains()
+        cfg.scene.robot.actuators = {
+            **cfg.scene.robot.actuators,
+            "hand": hand.replace(stiffness=pinch_stiffness, damping=pinch_damping,
+                                 velocity_limit_sim={r"rj_dg_[1-5]_[1-4]": 3.0}),
+        }
+        return
     stiffness = dict(hand.stiffness)
     stiffness.update(_THUMB_SIDE_STIFFNESS)
     cfg.scene.robot.actuators = {

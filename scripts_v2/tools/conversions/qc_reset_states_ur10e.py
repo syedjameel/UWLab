@@ -82,7 +82,10 @@ def fk_wrist3(q, fixed):
 
 
 def quat_to_R(quat):
-    w, x, y, z = quat
+    # (x, y, z, w): Isaac Lab 3.0 stores root_pose quaternions scalar-last. Read as (w, x, y, z)
+    # the identity root (0, 0, 0, 1) becomes a 180 deg turn about Z, which leaves the top-down and
+    # fingertip-height checks unchanged (both use only the Z column) but mirrors wrist X/Y.
+    x, y, z, w = quat
     return np.array(
         [
             [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
@@ -111,7 +114,7 @@ def main():
         data = torch.load(f, map_location="cpu", weights_only=False)
         robot = data["initial_state"]["articulation"]["robot"]
         jp = torch.stack([t.cpu() for t in robot["joint_position"]]).numpy()
-        root = torch.stack([t.cpu() for t in robot["root_pose"]]).numpy()  # (N,7) pos+quat wxyz
+        root = torch.stack([t.cpu() for t in robot["root_pose"]]).numpy()  # (N,7) pos+quat xyzw (Isaac Lab 3.0)
         N = jp.shape[0]
         fails = []
 

@@ -51,6 +51,11 @@ sys.argv = [sys.argv[0]] + hydra_args
 app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app
 
+# ISAAC SIM 6 PORT: see train.py. Before any uwlab import.
+import uwlab_is6_bridge  # noqa: E402
+
+uwlab_is6_bridge.apply()
+
 """Rest everything follows."""
 
 import gymnasium as gym

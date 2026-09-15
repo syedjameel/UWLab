@@ -80,7 +80,7 @@ UR10E_LINEAR_ARTICULATION = ArticulationCfg(
             enabled_self_collisions=True, solver_position_iteration_count=36, solver_velocity_iteration_count=0
         ),
     ),
-    init_state=ArticulationCfg.InitialStateCfg(pos=(0, 0, 0), rot=(1, 0, 0, 0), joint_pos=UR10E_DEFAULT_JOINT_POS),
+    init_state=ArticulationCfg.InitialStateCfg(pos=(0, 0, 0), rot=(0, 0, 0, 1), joint_pos=UR10E_DEFAULT_JOINT_POS),
     soft_joint_pos_limit_factor=1,
 )
 

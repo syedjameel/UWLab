@@ -1568,6 +1568,24 @@ class reset_end_effector_from_grasp_dataset(ManagerTermBase):
         # into range (exact full-turn wrap) so PhysX never has to resolve a violated limit.
         _wrap_joints_into_limits(self.robot, self.joint_ids, env_ids)
 
+        if _os.environ.get("UWLAB_GRASP_DEBUG"):
+            # HOW CLOSE DID THE IK GET? A two-finger pinch on a 34 mm cube tolerates ~10 mm; the
+            # grasped reset states filmed with the cube 25 mm off the pad midpoint at step 1 and on
+            # the table by step 5. Compare the end-effector pose the loop reached against the pose it
+            # was asked for (both in the robot base frame), before physics runs.
+            self.robot.write_data_to_sim()
+            env.sim.forward()
+            self.robot.update(0.0)
+            reached_pos_b, reached_quat_b = self.solver._compute_frame_pose()
+            pos_err = (reached_pos_b[env_ids] - pos_b[env_ids]).norm(dim=1) * 1000.0
+            rot_err = math_utils.quat_error_magnitude(reached_quat_b[env_ids], quat_b[env_ids]) * 57.2958
+            print(
+                f"[grasp replay] IK error over {len(env_ids)} envs: position mm min/med/max "
+                f"{float(pos_err.min()):.1f}/{float(pos_err.median()):.1f}/{float(pos_err.max()):.1f}, "
+                f"rotation deg med/max {float(rot_err.median()):.1f}/{float(rot_err.max()):.1f}",
+                flush=True,
+            )
+
         # Sample gripper joint positions using the same indices
         sampled_gripper_positions = self.gripper_joint_positions[grasp_indices]
 
@@ -1578,6 +1596,42 @@ class reset_end_effector_from_grasp_dataset(ManagerTermBase):
             joint_ids=self.gripper_joint_ids,
             env_ids=env_ids,
         )
+
+        if _os.environ.get("UWLAB_GRASP_DEBUG"):
+            # WHERE IS THE OBJECT RELATIVE TO THE HAND AT THE RESET INSTANT, before any physics? The
+            # bank stores the hand pose in the object frame; its inverse is where the object should
+            # sit in the hand frame. Also report the object's distance from the midpoint of the two
+            # pinch pads, which is what actually decides whether the grasp holds.
+            self.robot.write_data_to_sim()
+            env.sim.forward()
+            self.robot.update(0.0)
+            self.fixed_asset.update(0.0)
+            names = list(self.robot.body_names)
+            _hand_body = self.solver.cfg.body_name
+            hand_idx = names.index(_hand_body[0] if isinstance(_hand_body, (list, tuple)) else _hand_body)
+            bp = getattr(self.robot.data.body_link_pos_w, "torch", self.robot.data.body_link_pos_w)[env_ids]
+            bq = getattr(self.robot.data.body_link_quat_w, "torch", self.robot.data.body_link_quat_w)[env_ids]
+            op = getattr(self.fixed_asset.data.root_pos_w, "torch", self.fixed_asset.data.root_pos_w)[env_ids]
+            actual_in_hand, _ = math_utils.subtract_frame_transforms(bp[:, hand_idx], bq[:, hand_idx], op)
+            expected_in_hand = math_utils.quat_apply_inverse(sampled_rel_quaternions, -sampled_rel_positions)
+            place_err = (actual_in_hand - expected_in_hand).norm(dim=1) * 1000.0
+            line = (f"[grasp replay] object vs stored grasp, hand frame, mm: med/max "
+                    f"{float(place_err.median()):.1f}/{float(place_err.max()):.1f}")
+            pads = [n for n in ("rl_dg_1_tip", "rl_dg_2_tip") if n in names]
+            if len(pads) == 2:
+                mid = (bp[:, names.index(pads[0])] + bp[:, names.index(pads[1])]) / 2
+                pad_err = (op - mid).norm(dim=1) * 1000.0
+                aperture = (bp[:, names.index(pads[0])] - bp[:, names.index(pads[1])]).norm(dim=1) * 1000.0
+                line += (f"; object to pad midpoint mm med/max {float(pad_err.median()):.1f}/{float(pad_err.max()):.1f}"
+                         f"; aperture mm med {float(aperture.median()):.1f}")
+            # Did the finger joints the bank recorded actually land? Read back and compare by index.
+            q_now = getattr(self.robot.data.joint_pos, "torch", self.robot.data.joint_pos)[env_ids][:, self.gripper_joint_ids]
+            q_err = (q_now - sampled_gripper_positions).abs()
+            worst = int(q_err.max(dim=0).values.argmax())
+            line += (f"; finger joint readback err rad max {float(q_err.max()):.3f} "
+                     f"(worst {self.robot.joint_names[self.gripper_joint_ids[worst]]})"
+                     f"; gripper joints written {len(self.gripper_joint_ids)}")
+            print(line, flush=True)
 
         # -- RECONCILE THE PD TARGETS to the state just written, for BOTH the arm and the gripper.
         # apply_actions() (inside the loop above) sets the arm's PD POSITION TARGET to a fresh

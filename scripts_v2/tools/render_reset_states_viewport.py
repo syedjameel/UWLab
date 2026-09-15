@@ -213,10 +213,13 @@ import uwlab_is6_bridge  # noqa: E402
 
 uwlab_is6_bridge.apply()
 
+import re  # noqa: E402
+
 import gymnasium as gym  # noqa: E402
 import isaaclab.utils.math as math_utils  # noqa: E402
 import numpy as np  # noqa: E402
 import uwlab_tasks  # noqa: F401,E402
+import uwlab_tasks.manager_based.manipulation.omnireset.mdp.scripted_gripper as _scripted_gripper  # noqa: E402
 from isaaclab.sensors import ContactSensorCfg  # noqa: E402
 from isaaclab_tasks.utils import parse_env_cfg  # noqa: E402
 from PIL import Image  # noqa: E402
@@ -227,8 +230,20 @@ from PIL import Image  # noqa: E402
 from uwlab_tasks.manager_based.manipulation.dexlift.mdp.rewards import _sensor_force_magnitudes  # noqa: E402
 
 FORCE_THRESHOLD = 0.2  # N, matches held_with_probe's default force_threshold
-THUMB_TIP_NAMES = ("rl_dg_1_tip", "rl_dg_5_tip")
-TIP_NAMES = ("rl_dg_2_tip", "rl_dg_3_tip", "rl_dg_4_tip")
+# GRIPPER PROFILE, chosen from the task id. "Opposed" means at least one body from EACH side of
+# the grasp carries load. The DELTO sides are thumb-side tips vs finger tips; the linear gripper's are
+# its two jaws. The linear gripper's bodies sit under gripper/Geometry/ because its USD comes from the
+# Isaac Sim 6 importer; the DELTO USD predates it and keeps the flat gripper/<body> layout.
+if "LinearGripper" in args.task:
+    THUMB_TIP_NAMES = ("left_inner_finger",)
+    TIP_NAMES = ("right_inner_finger",)
+    TIP_PRIM_PREFIX = "{ENV_REGEX_NS}/Robot/gripper/Geometry"
+    PALM_BODY = "robotiq_base_link"
+else:
+    THUMB_TIP_NAMES = ("rl_dg_1_tip", "rl_dg_5_tip")
+    TIP_NAMES = ("rl_dg_2_tip", "rl_dg_3_tip", "rl_dg_4_tip")
+    TIP_PRIM_PREFIX = "{ENV_REGEX_NS}/Robot/gripper"
+    PALM_BODY = "rl_dg_mount"
 ALL_TIP_NAMES = THUMB_TIP_NAMES + TIP_NAMES
 
 cfg = parse_env_cfg(args.task, device=args.device, num_envs=1)
@@ -237,6 +252,12 @@ for term in args.drop_terminations:
     if getattr(cfg.terminations, term, None) is not None:
         setattr(cfg.terminations, term, None)
         print(f"[view] dropped termination '{term}'", flush=True)
+# Reset-state configs run 2.0 s episodes (20 control steps). Any settle longer than that hits
+# time_out INSIDE env.step, the env auto-resets, and the replay "drops" the cube onto its default
+# pose -- measured: jaws holding at 24 N and the cube still for 19 steps, then everything at
+# defaults on step 20. A replay has no episode, so make it effectively unbounded.
+cfg.episode_length_s = 1.0e6
+print("[view] episode_length_s -> 1e6 (no time_out auto-reset during settle)", flush=True)
 
 cfg.scene.insertive_object = cfg.variants["scene.insertive_object"][args.insertive_variant]
 cfg.scene.receptive_object = cfg.variants["scene.receptive_object"][args.receptive_variant]
@@ -256,7 +277,7 @@ for _tip in ALL_TIP_NAMES:
         cfg.scene,
         f"{_tip}_object_s",
         ContactSensorCfg(
-            prim_path=f"{{ENV_REGEX_NS}}/Robot/gripper/{_tip}",
+            prim_path=f"{TIP_PRIM_PREFIX}/{_tip}",
             filter_prim_paths_expr=["{ENV_REGEX_NS}/InsertiveObject"],
         ),
     )
@@ -516,7 +537,27 @@ def settle_step() -> None:
     # Step through the action manager either way. With the arm's OSC term dropped above, the
     # only term left is the hand's, which is exactly what has to run: the fingers are servoed by
     # it, and the arm keeps the joint targets write_state() wrote, held by the actuator's PD.
-    env.step(ZERO_ACTION)
+    # UWLAB_VIEW_SCRIPTED_HOLD=1: hold with the recorder's own scripted close instead of zeros. Needed
+    # when the hand action is ABSOLUTE (the DELTO pinch recording configs), where zero means 'drive
+    # every hand joint to 0 rad' rather than 'hold', and it matches how the bank was recorded.
+    if os.environ.get("UWLAB_VIEW_SCRIPTED_HOLD"):
+        env.step(_scripted_gripper.scripted_gripper_actions(env, close=True))
+    else:
+        env.step(ZERO_ACTION)
+    if os.environ.get("UWLAB_VIEW_TRACE"):
+        # One line per control step: jaw q / target / applied torque and the cube's height and
+        # speed, to see whether a dropped grasp is a jaw that opens or a cube that slides.
+        _t = lambda x: getattr(x, "torch", x)
+        _d = robot.data
+        _hand = [i for i, n in enumerate(robot.joint_names) if i not in list(_arm_ids)]
+        _cube = env.scene["insertive_object"].data
+        _p = _t(_cube.root_pos_w)[0] - env.scene.env_origins[0]
+        print("[view trace] q=%s tgt=%s tau=%s cube_z=%.4f cube_v=%.3f ee_z=%.4f" % (
+            [round(float(v), 4) for v in _t(_d.joint_pos)[0, _hand]],
+            [round(float(v), 4) for v in _t(_d.joint_pos_target)[0, _hand]],
+            [round(float(v), 2) for v in _t(_d.applied_torque)[0, _hand]],
+            float(_p[2]), float(_t(_cube.root_lin_vel_w)[0].norm()),
+            float(_t(_d.body_pos_w)[0, -1, 2] - env.scene.env_origins[0, 2])), flush=True)
     if not args.no_hold_arm and HOLD_Q is not None:
         # Pin the arm KINEMATICALLY at the recorded pose. PD targets alone lose: the hand's
         # scripted term writes a command spanning all 26 joints, so whatever the arm target is set
@@ -610,7 +651,9 @@ def write_state(idx: int) -> None:
 # _DELTO_HAND_ACTUATOR instead: effort 0.06-0.17 N*m, velocity 3.0 rad/s, i.e. 200-500x weaker.
 # That seam is not a rendering detail -- it is the difference between the environment that made
 # these states and the environment that will train on them, so it is printed rather than assumed.
-_hand_ids, _ = robot.find_joints([r"rj_dg_[1-5]_[1-4]"], preserve_order=False)
+# Matched by hand rather than with find_joints, which raises when nothing matches -- and on the
+# linear gripper nothing does, which is the case the warning below is for.
+_hand_ids = [i for i, n in enumerate(robot.joint_names) if re.fullmatch(r"rj_dg_[1-5]_[1-4]", n)]
 if len(_hand_ids):
     _eff = robot.data.joint_effort_limits[0, _hand_ids]
     _vel = robot.data.joint_velocity_limits[0, _hand_ids]
@@ -627,8 +670,8 @@ def target_gap_rad() -> float:
 
 
 # PALM BODY + TABLE DATUM, for the reference in-palm offset and the airborne/supported height.
-_palm_ids, _ = robot.find_bodies(["rl_dg_mount"])
-assert len(_palm_ids) == 1, f"expected exactly one rl_dg_mount body, got {_palm_ids}"
+_palm_ids, _ = robot.find_bodies([PALM_BODY])
+assert len(_palm_ids) == 1, f"expected exactly one {PALM_BODY} body, got {_palm_ids}"
 PALM_ID = _palm_ids[0]
 _table_support = env.scene["ur5_metal_support"]
 
@@ -833,8 +876,20 @@ for ordinal, idx in enumerate(sel, start=1):
             # screen is exactly what the bank stores -- no controller, no drift, no argument.
             # Everything after this in the clip is the settle, which is a separate claim and is
             # captioned separately.
+            if ordinal == 1:
+                # Articulation link poses only reach the renderer once physics has stepped at least
+                # once; before that even render() after a write shows the default pose (seen: state
+                # 1's freeze frames had the arm stretched out). One warm-up step, then the state is
+                # re-written below every frame anyway, so nothing of the step stays on screen.
+                write_state(idx)
+                settle_step()
             for _f in range(args.video_freeze):
                 write_state(idx)
+                # Tick the viewport before reading it. env.render() returns the last rendered image,
+                # so without this the first state's freeze frames showed the scene from BEFORE the
+                # write (arm at its default pose, no cubes) -- later states only looked right
+                # because the previous state's settle steps had rendered in between.
+                env.sim.render()
                 _fr = np.asarray(env.render())[:, :, :3]
                 VIDEO_FRAMES.append(_burn_text(_fr, [
                     f"state {ordinal}  idx {idx}",
@@ -942,8 +997,8 @@ for ordinal, idx in enumerate(sel, start=1):
     # the old drift-based HELD/SLIPPED/DROPPED label carried no information about the grasp and is
     # not reproduced here. Read AFTER the last repeat's settle, at the same simulation instant drift
     # was measured at, using the SAME reducer and SAME 0.2 N gate held_with_probe itself uses.
-    thumb_force = _sensor_force_magnitudes(env, THUMB_TIP_NAMES)[0]  # (2,)
-    tip_force = _sensor_force_magnitudes(env, TIP_NAMES)[0]  # (3,)
+    thumb_force = _sensor_force_magnitudes(env, THUMB_TIP_NAMES)[0]
+    tip_force = _sensor_force_magnitudes(env, TIP_NAMES)[0]
     all_force = {**dict(zip(THUMB_TIP_NAMES, thumb_force.tolist())), **dict(zip(TIP_NAMES, tip_force.tolist()))}
     thumb_loaded = [n for n in THUMB_TIP_NAMES if all_force[n] > FORCE_THRESHOLD]
     tip_loaded = [n for n in TIP_NAMES if all_force[n] > FORCE_THRESHOLD]
@@ -1051,7 +1106,7 @@ for ordinal, idx in enumerate(sel, start=1):
     print(
         f"[view] state {ordinal}/{len(sel)} idx={idx} z_stored={z_stored:.4f} "
         f"drift median={drift_mm:.1f}mm range=[{drift_lo:.1f},{drift_hi:.1f}] n={len(drifts)} "
-        f"target_gap={gap:.3f}rad tips_loaded={n_loaded}/5 forces={{"
+        f"target_gap={gap:.3f}rad tips_loaded={n_loaded}/{len(ALL_TIP_NAMES)} forces={{"
         + ", ".join(f"{k}:{v:.3f}N" for k, v in all_force.items())
         + f"}} {contact_verdict} height_above_table={height_above_table_m*1000:.1f}mm "
         f"{'SUPPORTED' if supported else 'AIRBORNE'}",
@@ -1099,7 +1154,7 @@ print("\n[view] SUMMARY  (contact_verdict from fingertip normal force, NOT displ
 for ordinal, idx, z, d, lo, hi, v, n_loaded, opposed, supported in rows:
     print(
         f"  state {ordinal:2d}  idx {idx:5d}  z {z:7.4f} m  drift {d:8.1f} mm  [{lo:7.1f},{hi:7.1f}]  "
-        f"{v:22s}  tips_loaded={n_loaded}/5  opposed={opposed}  {'SUPPORTED' if supported else 'AIRBORNE'}",
+        f"{v:22s}  tips_loaded={n_loaded}/{len(ALL_TIP_NAMES)}  opposed={opposed}  {'SUPPORTED' if supported else 'AIRBORNE'}",
         flush=True,
     )
 opposed_n = sum(1 for r in rows if r[6] == "OPPOSED")

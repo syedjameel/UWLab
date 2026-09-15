@@ -64,6 +64,13 @@ class UR10eDelto_PPORunnerCfg(Base_PPORunnerCfg):
 
 
 @configclass
+class UR10eLinearGripperCubeStack_PPORunnerCfg(Base_PPORunnerCfg):
+    """The parallel-jaw cube-stack baseline: base hyperparameters, its own checkpoint namespace."""
+
+    experiment_name = "ur10e_linear_gripper_cubestack_agent"
+
+
+@configclass
 class UR5eDelto_PPORunnerCfg(Base_PPORunnerCfg):
     """PPO runner isolated from the linear-gripper / 2F-85 checkpoint namespace.
 

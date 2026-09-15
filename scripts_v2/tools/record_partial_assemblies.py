@@ -41,6 +41,13 @@ simulation_app = app_launcher.app
 
 """Rest everything else."""
 
+# Isaac Sim 6 port, same as record_reset_states.py and record_grasps.py: the deprecated
+# isaacsim.core.utils extension is off the default search path, and uwlab.envs.real_rl_env imports
+# it at module scope. Without this the tool dies on import and C4 cannot be recorded at all.
+import uwlab_is6_bridge  # noqa: E402
+
+uwlab_is6_bridge.apply()
+
 import gymnasium as gym
 import time
 

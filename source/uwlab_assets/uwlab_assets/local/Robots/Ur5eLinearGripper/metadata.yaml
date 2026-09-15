@@ -7,7 +7,7 @@
 # old 0.13 fingertip slides DOWN to ~0.07), so the TCP is 0.07, NOT the 0.13 fingertip.
 gripper_offset:
   pos: [0.0, 0.0, 0.07]
-  quat: [1.0, 0.0, 0.0, 0.0]
+  quat: [0.0, 0.0, 0.0, 1.0]  # identity, (x, y, z, w) under Isaac Lab 3.0
 finger_offset: 0.07
 finger_clearance: 0.05
 maximum_aperture: 0.13

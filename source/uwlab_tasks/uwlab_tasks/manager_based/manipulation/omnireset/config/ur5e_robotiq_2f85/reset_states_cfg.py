@@ -745,6 +745,9 @@ class ObjectRestingEEGraspedResetStatesCfg(UR5eRobotiq2f85ResetStatesCfg):
     def __post_init__(self):
         super().__post_init__()
         self.terminations.success.params["max_object_pos_deviation"] = 0.01
+        # Require the object to actually be in the hand (terminations.check_reset_state_success,
+        # max_grasp_distance_error). 20 mm covers the replay's +/-20 mm placement noise.
+        self.terminations.success.params["max_grasp_distance_error"] = 0.02
 
 
 @configclass
@@ -754,6 +757,9 @@ class ObjectAnywhereEEGraspedResetStatesCfg(UR5eRobotiq2f85ResetStatesCfg):
     def __post_init__(self):
         super().__post_init__()
         self.terminations.success.params["max_object_pos_deviation"] = 0.05
+        # Require the object to actually be in the hand (terminations.check_reset_state_success,
+        # max_grasp_distance_error). 20 mm covers the replay's +/-20 mm placement noise.
+        self.terminations.success.params["max_grasp_distance_error"] = 0.02
 
 
 @configclass
@@ -780,3 +786,6 @@ class ObjectPartiallyAssembledEEGraspedResetStatesCfg(UR5eRobotiq2f85ResetStates
         self.terminations.success.params["receptive_asset_cfg"] = SceneEntityCfg("receptive_object")
         self.terminations.success.params["assembly_success_prob"] = 0.5
         self.terminations.success.params["assembly_threshold_scale"] = 1.5
+        # Require the object to actually be in the hand (terminations.check_reset_state_success,
+        # max_grasp_distance_error). 20 mm covers the replay's +/-20 mm placement noise.
+        self.terminations.success.params["max_grasp_distance_error"] = 0.02

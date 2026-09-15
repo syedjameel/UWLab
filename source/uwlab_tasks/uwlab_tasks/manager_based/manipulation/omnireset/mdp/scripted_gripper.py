@@ -45,6 +45,7 @@ from collections.abc import Mapping
 import torch
 
 from isaaclab.envs.mdp.actions.binary_joint_actions import BinaryJointAction
+from isaaclab.envs.mdp.actions.joint_actions import JointPositionAction
 
 from uwlab_assets.robots.ur10e_delto.actions import (
     DELTO_HAND_OPEN_JOINT_POS,
@@ -73,8 +74,19 @@ _PER_JOINT_POSTURES: dict[str, tuple[float, float]] = {
 # Selected per environment by ``env.cfg.scripted_gripper_pinch_posture``, following the same
 # pattern as ``scripted_gripper_deadband_rad`` below: absent on every cfg that does not opt in, so
 # every existing caller, gripper and task keeps exactly the postures it has today.
+#
+# ONLY FINGERS 1 AND 2 CLOSE. The optimised closed posture also moves fingers 3/4/5 (by up to
+# 0.19 rad on rj_dg_4_2), so the pinch used to curl all twenty joints -- measured in the sampler
+# with the cube pinned, that stops the jaw at 58 mm because 3/4/5 reach the cube first, against
+# 35 mm with them held (cube-stack/pinch/pinchhold.py --pinch-fingers-only). A pinch is the thumb
+# and index pads; the other three fingers hold their open targets for the whole close.
+_PINCH_CLOSING_FINGERS = ("rj_dg_1_", "rj_dg_2_")
 _PER_JOINT_PINCH_POSTURES: dict[str, tuple[float, float]] = {
-    name: (float(DELTO_HAND_PINCH_OPEN_JOINT_POS[name]), float(DELTO_HAND_PINCH_CLOSE_JOINT_POS[name]))
+    name: (
+        float(DELTO_HAND_PINCH_OPEN_JOINT_POS[name]),
+        float(DELTO_HAND_PINCH_CLOSE_JOINT_POS[name] if name.startswith(_PINCH_CLOSING_FINGERS)
+              else DELTO_HAND_PINCH_OPEN_JOINT_POS[name]),
+    )
     for name in DELTO_HAND_PINCH_CLOSE_JOINT_POS
 }
 
@@ -120,7 +132,8 @@ def _clip_bounds(term, num_joints: int, device) -> tuple[torch.Tensor, torch.Ten
 
 
 def _per_joint_command(term, close: bool, device, deadband_rad: float = _POSITION_DEADBAND_RAD,
-                       pinch: bool = False) -> torch.Tensor:
+                       pinch: bool = False, gain: float = 1.0, stalled_gain: float | None = None,
+                       stall_velocity: float = 0.05) -> torch.Tensor:
     """Servo command driving every joint of ``term`` toward its open or closed posture.
 
     ``deadband_rad`` defaults to the shared ``_POSITION_DEADBAND_RAD`` -- every caller that doesn't
@@ -147,7 +160,16 @@ def _per_joint_command(term, close: bool, device, deadband_rad: float = _POSITIO
     error = target.unsqueeze(0) - measured
     # Recomputed from the MEASURED position every step, so the command saturates against contact
     # and keeps a standing position error -- a sustained squeeze rather than a one-shot target.
-    command = torch.clamp(error / scale, lo, hi)
+    # gain < 1 commands only part of the remaining error per step (see scripted_gripper_servo_gain
+    # on the DELTO pinch cfg for the chatter it removes); 1.0 is the behaviour every caller had.
+    per_joint_gain = torch.full_like(error, gain)
+    if stalled_gain is not None:
+        # A joint that has stopped moving while still short of its target is pressed against the
+        # object: give it the full command so the squeeze is not divided along with the free motion.
+        velocity = term._asset.data.joint_vel[:, term._joint_ids]
+        velocity = getattr(velocity, "torch", velocity)
+        per_joint_gain = torch.where(velocity.abs() < stall_velocity, torch.full_like(error, stalled_gain), per_joint_gain)
+    command = torch.clamp(per_joint_gain * error / scale, lo, hi)
     # Deadband: a joint already within deadband_rad of its target holds (zero command) instead of
     # issuing a correction the actuator would overshoot -- see _POSITION_DEADBAND_RAD's derivation.
     # A relative joint action reads zero as "hold the measured position", so this is a genuine hold,
@@ -183,6 +205,23 @@ def scripted_gripper_actions(env, close: bool) -> torch.Tensor:
     # offline recorders across every gripper, so the choice belongs to the caller's cfg rather
     # than to a module constant. Default False => today's five-finger postures, unchanged.
     pinch = bool(getattr(env.cfg, "scripted_gripper_pinch_posture", False))
+    gain = float(getattr(env.cfg, "scripted_gripper_servo_gain", 1.0))
+    # PER-SUBSTEP RELATIVE ACTIONS. Isaac Lab calls ActionManager.apply_action() once per PHYSICS
+    # substep (decimation times per env.step), and RelativeJointPositionAction.apply_actions sets
+    # target = current joint position + processed action EACH time -- so one control step's command
+    # is re-added `decimation` times. The servo below sizes its command as a one-shot correction; at
+    # decimation 12 it overshoots ~12x. Filmed on the DELTO pinch: rj_dg_1_2 / 2_2 / 2_1 flip between
+    # two values every control step, commanded AWAY from their closed posture, unchanged by servo gain,
+    # stiffness or damping. Opt-in, so every caller tuned against today's behaviour keeps it.
+    stalled_gain = None
+    if bool(getattr(env.cfg, "scripted_gripper_relative_per_substep", False)):
+        if bool(getattr(env.cfg, "scripted_gripper_full_squeeze_when_stalled", False)):
+            # Dividing by decimation makes free motion converge but also divides the squeeze: a
+            # finger blocked by the object sees only 1/decimation of its error per substep. Filmed:
+            # the pinch held a 30 g cube with gravity off and dropped it within 10 steps of gravity
+            # on, at 1/12, 1/4 and 1/2 of the full command alike.
+            stalled_gain = gain
+        gain /= max(1, int(getattr(env.cfg, "decimation", 1)))
     actions = torch.zeros(env.num_envs, env.action_manager.total_action_dim, device=env.device)
     offset = 0
     found = False
@@ -194,9 +233,26 @@ def scripted_gripper_actions(env, close: bool) -> torch.Tensor:
             # Isaac Lab's convention, taken from the class rather than from the action width.
             actions[:, offset : offset + width] = -1.0 if close else 1.0
             found = True
+        elif (
+            isinstance(term, JointPositionAction)
+            and joint_names
+            and width == len(joint_names)
+            and joint_names[0] in _PER_JOINT_POSTURES
+        ):
+            # ABSOLUTE per-joint term: command the posture itself as the PD target. No servo, no
+            # per-substep re-application, and a finger blocked by the object squeezes with its full
+            # stiffness * (posture - position). processed = raw * scale + offset, so invert that.
+            postures = _PER_JOINT_PINCH_POSTURES if pinch else _PER_JOINT_POSTURES
+            index = 1 if close else 0
+            target = torch.tensor([postures[n][index] for n in joint_names], device=env.device)
+            scale = _term_scale(term, len(joint_names), env.device)
+            term_offset = getattr(term, "_offset", 0.0)
+            term_offset = getattr(term_offset, "torch", term_offset)
+            actions[:, offset : offset + width] = (target.unsqueeze(0) - term_offset) / scale
+            found = True
         elif joint_names and width == len(joint_names) and joint_names[0] in _PER_JOINT_POSTURES:
             actions[:, offset : offset + width] = _per_joint_command(
-                term, close, env.device, deadband_rad, pinch=pinch
+                term, close, env.device, deadband_rad, pinch=pinch, gain=gain, stalled_gain=stalled_gain
             )
             found = True
         offset += width

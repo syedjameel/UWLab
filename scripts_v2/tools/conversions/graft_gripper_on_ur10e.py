@@ -23,6 +23,14 @@ Steps:
   5. Add a FixedJoint wrist_3_link -> robotiq_base_link.
   6. Flatten + export a self-contained combined USD.
 
+PRIMS ARE FOUND BY NAME, NOT BY PATH. The Isaac Sim 5.1 URDF importer wrote a flat layout
+(``/ur10e/wrist_3_link``, ``/ur10e/joints/<joint>``); the Isaac Sim 6 importer nests every link
+under its parent inside ``/<robot>/Geometry`` and puts the joints in ``/<robot>/Physics``, with or
+without ``run_asset_transformer``. Each prim this script touches is therefore looked up by name
+under the subtree it belongs to, and a name that is missing or ambiguous is an error rather than
+a silent miss. Likewise the mimic is stripped by schema/property name containing "mimic", which
+covers both ``PhysxMimicJointAPI`` and the ``newton:mimicJoint`` the Isaac Sim 6 importer writes.
+
 The mount --standoff places the gripper base along wrist_3 +Z; eyeball it in the GUI and re-run
 with a different value if the jaws sit too close/far. Run::
 
@@ -39,6 +47,14 @@ from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
 _REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 ROOT = "/ur10e"
+
+
+def _find(stage: Usd.Stage, under: str, name: str) -> Usd.Prim:
+    """The one prim called ``name`` in the subtree at ``under``, whatever the importer's layout."""
+    hits = [prim for prim in Usd.PrimRange(stage.GetPrimAtPath(under)) if prim.GetName() == name]
+    if len(hits) != 1:
+        raise SystemExit(f"expected exactly one prim named {name!r} under {under}, found {[str(h.GetPath()) for h in hits]}")
+    return hits[0]
 
 
 def main() -> None:
@@ -77,9 +93,7 @@ def main() -> None:
 
     # world pose of the gripper = wrist_3 world * mount(translate +standoff along wrist_3 +Z).
     xc = UsdGeom.XformCache(Usd.TimeCode.Default())
-    wrist = stage.GetPrimAtPath(f"{ROOT}/wrist_3_link")
-    if not wrist or not wrist.IsValid():
-        raise SystemExit(f"wrist_3_link not found under {ROOT}; is this a UR10e arm USD?")
+    wrist = _find(stage, ROOT, "wrist_3_link")
     T_wrist_w = xc.GetLocalToWorldTransform(wrist)
     T_mount = Gf.Matrix4d().SetTranslate(Gf.Vec3d(0.0, 0.0, args.standoff))
     T_grip_w = T_mount * T_wrist_w  # pre-multiply: mount is in wrist frame
@@ -89,21 +103,21 @@ def main() -> None:
 
     # 2) the referenced gripper's robotiq_base_link carries ArticulationRootAPI; remove it so the
     #    gripper joins the arm's single articulation (root stays /ur10e/root_joint).
-    rb = stage.GetPrimAtPath(f"{gpath}/robotiq_base_link")
+    rb = _find(stage, gpath, "robotiq_base_link")
     if rb.HasAPI(UsdPhysics.ArticulationRootAPI):
         rb.RemoveAPI(UsdPhysics.ArticulationRootAPI)
 
     # 3) dual-drive the follower (the prismatic mimic is inert once embedded in the arm articulation
     #    and blocks the actuator; drive both jaws instead -- see graft_gripper_on_ur5e.py step 3b).
-    rfj = stage.GetPrimAtPath(f"{gpath}/joints/right_finger_joint")
+    rfj = _find(stage, gpath, "right_finger_joint")
     UsdPhysics.DriveAPI.Apply(rfj, "linear")  # re-activate the orphaned linear drive
     print("  full-robot follower: re-activated linear DriveAPI (dual-drive)")
 
     # 4) mount FixedJoint wrist_3 -> robotiq_base_link.
-    fj = UsdPhysics.FixedJoint.Define(stage, f"{gpath}/robotiq_base_link/MountJoint")
+    fj = UsdPhysics.FixedJoint.Define(stage, rb.GetPath().AppendChild("MountJoint"))
     fp = fj.GetPrim()
-    fj.CreateBody0Rel().SetTargets([Sdf.Path(f"{ROOT}/wrist_3_link")])
-    fj.CreateBody1Rel().SetTargets([Sdf.Path(f"{gpath}/robotiq_base_link")])
+    fj.CreateBody0Rel().SetTargets([wrist.GetPath()])
+    fj.CreateBody1Rel().SetTargets([rb.GetPath()])
     fp.CreateAttribute("physics:localPos0", Sdf.ValueTypeNames.Point3f).Set(Gf.Vec3f(0.0, 0.0, args.standoff))
     fp.CreateAttribute("physics:localRot0", Sdf.ValueTypeNames.Quatf).Set(Gf.Quatf(1, 0, 0, 0))
     fp.CreateAttribute("physics:localPos1", Sdf.ValueTypeNames.Point3f).Set(Gf.Vec3f(0.0, 0.0, 0.0))
@@ -116,18 +130,13 @@ def main() -> None:
 
     # 4a) scale the gripper link masses to the real measured total (see --gripper-mass help).
     #     Inertia tensors scale with mass for a rigid body of fixed geometry, so scale them too.
+    glinks = {name: _find(stage, gpath, name) for name in ("robotiq_base_link", "left_inner_finger", "right_inner_finger")}
     if args.gripper_mass > 0:
-        glinks = ["robotiq_base_link", "left_inner_finger", "right_inner_finger"]
-        masses = {}
-        for name in glinks:
-            prim = stage.GetPrimAtPath(f"{gpath}/{name}")
-            api = UsdPhysics.MassAPI(prim)
-            masses[name] = api.GetMassAttr().Get() or 0.0
+        masses = {name: UsdPhysics.MassAPI(prim).GetMassAttr().Get() or 0.0 for name, prim in glinks.items()}
         total = sum(masses.values())
         if total > 0:
             scale = args.gripper_mass / total
-            for name in glinks:
-                prim = stage.GetPrimAtPath(f"{gpath}/{name}")
+            for name, prim in glinks.items():
                 api = UsdPhysics.MassAPI(prim)
                 api.GetMassAttr().Set(masses[name] * scale)
                 inertia = api.GetDiagonalInertiaAttr().Get()
@@ -142,31 +151,52 @@ def main() -> None:
     #      changing this. Pass --wrist-limit 0 to keep the URDF's +/-360.
     if args.wrist_limit > 0:
         for name in ("wrist_1_joint", "wrist_2_joint", "wrist_3_joint"):
-            joint = UsdPhysics.RevoluteJoint(stage.GetPrimAtPath(f"{ROOT}/joints/{name}"))
+            joint = UsdPhysics.RevoluteJoint(_find(stage, ROOT, name))
             joint.GetLowerLimitAttr().Set(-args.wrist_limit)
             joint.GetUpperLimitAttr().Set(args.wrist_limit)
-        print(f"  wrist joint limits -> +/-{args.wrist_limit:.0f} deg (was +/-360)")
+        print(f"  wrist joint limits -> +/-{args.wrist_limit:.0f} deg")
 
     # 4b) give the URDF importer's massless frame links a small mass. The importer leaves the
     #     URDF's pure-frame links (base, base_link, flange, tool0 -- no inertial) at mass 0.0;
     #     zero-mass links in a PhysX articulation are ill-conditioned (the calibrated UR5e cloud
     #     asset has no such links -- they were merged away). Asset hygiene: 0.01 kg is negligible
     #     against the 28.7 kg arm and keeps the mass matrix well-posed.
-    for name in ("base", "base_link", "flange", "tool0"):
-        prim = stage.GetPrimAtPath(f"{ROOT}/{name}")
-        if prim and prim.IsValid():
+    for prim in Usd.PrimRange(stage.GetPrimAtPath(ROOT)):
+        if prim.GetName() in ("base", "base_link", "flange", "tool0") and prim.HasAPI(UsdPhysics.RigidBodyAPI):
             api = UsdPhysics.MassAPI(prim) if prim.HasAPI(UsdPhysics.MassAPI) else UsdPhysics.MassAPI.Apply(prim)
             if not api.GetMassAttr().Get():
                 api.GetMassAttr().Set(0.01)
-                print(f"  frame link {name}: mass 0.0 -> 0.01 kg")
+                print(f"  frame link {prim.GetName()}: mass 0.0 -> 0.01 kg")
 
     # 5) flatten (inlines the gripper + its meshes) and export a self-contained USD.
     flat = stage.Flatten()
-    frfj = flat.GetPrimAtPath(f"{gpath}/joints/right_finger_joint")  # Sdf.PrimSpec (Flatten -> Sdf.Layer)
-    stripped = [n for n in list(frfj.properties.keys()) if "physxMimicJoint" in n]
+    frfj = flat.GetPrimAtPath(rfj.GetPath())  # Sdf.PrimSpec (Flatten -> Sdf.Layer)
+    stripped = [n for n in list(frfj.properties.keys()) if "mimic" in n.lower()]
     for name in stripped:
         del frfj.properties[name]
+    schemas = frfj.GetInfo("apiSchemas") if frfj.HasInfo("apiSchemas") else None
+    if schemas is not None:
+        kept = [s for s in schemas.GetAddedOrExplicitItems() if "mimic" not in s.lower()]
+        frfj.SetInfo("apiSchemas", Sdf.TokenListOp.CreateExplicit(kept))
     print(f"  full-robot follower: stripped {len(stripped)} inert mimic prop(s) post-flatten")
+
+    # 5a) exactly one articulation root. Step 2's RemoveAPI on the referenced base link does not
+    #     survive Flatten on the Isaac Sim 6 layout (measured: the spawned robot then carries roots at
+    #     both /root_joint and /gripper/Geometry/robotiq_base_link, and Isaac Lab refuses to build
+    #     it). Strip every articulation-root schema under the gripper from the flattened specs.
+    def _strip_articulation_root(spec) -> int:
+        n = 0
+        if spec.HasInfo("apiSchemas"):
+            items = list(spec.GetInfo("apiSchemas").GetAddedOrExplicitItems())
+            kept = [s for s in items if "ArticulationRoot" not in s and s != "PhysxArticulationAPI"]
+            if len(kept) != len(items):
+                spec.SetInfo("apiSchemas", Sdf.TokenListOp.CreateExplicit(kept))
+                n += 1
+        for child in spec.nameChildren:
+            n += _strip_articulation_root(child)
+        return n
+
+    print(f"  gripper articulation roots stripped post-flatten: {_strip_articulation_root(flat.GetPrimAtPath(gpath))}")
 
     # 5b) de-instance the gripper VISUAL prims: the URDF importer marks them instanceable,
     #     but instance proxies are read-only -- the RGB collection's per-episode gripper
@@ -174,8 +204,8 @@ def main() -> None:
     #     equivalents) cannot bind per-env materials to them. Visual-only change: rendering
     #     memory grows by 3 small meshes per env; physics/collisions untouched.
     deinstanced = 0
-    for link in ("robotiq_base_link", "left_inner_finger", "right_inner_finger"):
-        spec = flat.GetPrimAtPath(f"{gpath}/{link}/visuals")
+    for prim in glinks.values():
+        spec = flat.GetPrimAtPath(prim.GetPath().AppendChild("visuals"))
         if spec is not None and spec.instanceable:
             spec.instanceable = False
             deinstanced += 1

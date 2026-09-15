@@ -188,6 +188,13 @@ class check_grasp_success(ManagerTermBase):
         self.max_gripper_joint_velocity_sum = cfg.params.get("max_gripper_joint_velocity_sum", 5.0)
         self.max_object_linear_velocity_sum = cfg.params.get("max_object_linear_velocity_sum", 0.05)
         self.max_object_angular_velocity_sum = cfg.params.get("max_object_angular_velocity_sum", 1.0)
+        # PAD CENTRING, opt-in. A two-finger pinch that holds the object off the line between its
+        # pads survives on the free, damped grasp-sampling hand (which shifts to balance the squeeze)
+        # but not on the arm, which holds the hand rigid: replayed on the UR10e the object sat 8-25 mm
+        # from the pad midpoint and was squeezed out within two control steps in 2 of 3 episodes.
+        self.pad_body_names = cfg.params.get("pad_body_names")
+        self.max_pad_center_offset = cfg.params.get("max_pad_center_offset")
+        self._pad_ids = None
         self.stability_counter = torch.zeros(env.num_envs, device=env.device, dtype=torch.int32)
 
     def reset(self, env_ids: torch.Tensor | None = None) -> None:
@@ -218,6 +225,8 @@ class check_grasp_success(ManagerTermBase):
         max_gripper_joint_velocity_sum: float = 5.0,
         max_object_linear_velocity_sum: float = 0.05,
         max_object_angular_velocity_sum: float = 1.0,
+        pad_body_names: tuple[str, str] | None = None,
+        max_pad_center_offset: float | None = None,
     ) -> torch.Tensor:
         # Get object and gripper from scene
         object_asset = env.scene[self.object_cfg.name]
@@ -276,14 +285,45 @@ class check_grasp_success(ManagerTermBase):
         all_env_ids = torch.arange(env.num_envs, device=env.device)
         collision_free = self.collision_analyzer(env, all_env_ids)
 
+        pad_centred = torch.ones(env.num_envs, device=env.device, dtype=torch.bool)
+        pad_offset_mm = None
+        if self.pad_body_names:
+            if self._pad_ids is None:
+                self._pad_ids = [list(gripper_asset.body_names).index(n) for n in self.pad_body_names]
+            bp = getattr(gripper_asset.data.body_pos_w, "torch", gripper_asset.data.body_pos_w)
+            op = getattr(object_asset.data.root_pos_w, "torch", object_asset.data.root_pos_w)
+            midpoint = (bp[:, self._pad_ids[0]] + bp[:, self._pad_ids[1]]) / 2
+            pad_offset = (op - midpoint).norm(dim=1)
+            pad_offset_mm = pad_offset * 1000.0
+            # Split the offset: ALONG the pad line (is the object centred between the pads?) and
+            # PERPENDICULAR to it (partly fixed pad-link geometry: link origins sit behind the pads).
+            _axis = bp[:, self._pad_ids[1]] - bp[:, self._pad_ids[0]]
+            _axis = _axis / _axis.norm(dim=1, keepdim=True).clamp(min=1e-9)
+            _rel = op - midpoint
+            along_mm = (_rel * _axis).sum(dim=1).abs() * 1000.0
+            perp_mm = (_rel - (_rel * _axis).sum(dim=1, keepdim=True) * _axis).norm(dim=1) * 1000.0
+            if self.max_pad_center_offset is not None:
+                pad_centred = pad_offset <= self.max_pad_center_offset
+
         grasp_success = (
             (~abnormal_gripper_state)
             & stability_reached
             & (~excessive_pose_deviation)
             & pos_above_ground
             & collision_free
+            & pad_centred
             & time_out
         )
+        if pad_offset_mm is not None and bool(time_out.any()):
+            held = (~abnormal_gripper_state) & stability_reached & (~excessive_pose_deviation) & pos_above_ground & collision_free & time_out
+            if bool(held.any()):
+                h = pad_offset_mm[held]
+                a, p = along_mm[held], perp_mm[held]
+                print(f"[grasp pads] {int(held.sum())} held at timeout: object-to-pad-midpoint mm "
+                      f"min/med/p75/max {float(h.min()):.1f}/{float(h.median()):.1f}/{float(h.quantile(0.75)):.1f}/{float(h.max()):.1f}"
+                      f"; along pad line med/max {float(a.median()):.1f}/{float(a.max()):.1f}"
+                      f"; perpendicular med/min/max {float(p.median()):.1f}/{float(p.min()):.1f}/{float(p.max()):.1f}"
+                      f"; passing centring: {int((held & pad_centred).sum())}", flush=True)
 
         # Opt-in diagnostic: set UWLAB_GRASP_DEBUG=1 to see which condition is the bottleneck.
         if os.environ.get("UWLAB_GRASP_DEBUG"):
@@ -298,6 +338,23 @@ class check_grasp_success(ManagerTermBase):
                 f"(len {int(env.episode_length_buf.max())}/{int(env.max_episode_length)}) "
                 f"-> success={int(grasp_success.sum())}"
                 + _pad_geometry_note(gripper_asset, object_asset),
+                flush=True,
+            )
+            # Gripper-agnostic trace of env 0: separates "the jaws pushed the object out" (object
+            # moves while gravity reads zero) from "gravity was never off" (gravity reads -9.81 in
+            # the first second) from "the object was measured against the wrong reference".
+            try:
+                from isaaclab.sim import SimulationContext as _SC; _g = _SC.instance().physics_sim_view.get_gravity()
+                _g = f"({float(_g[0]):.2f},{float(_g[1]):.2f},{float(_g[2]):.2f})"
+            except Exception as exc:  # noqa: BLE001 -- diagnostic only
+                _g = f"unreadable:{type(exc).__name__}"
+            _q = gripper_asset.data.joint_pos[0]
+            print(
+                f"[grasp dbg0] obj_z={float(object_asset.data.root_pos_w[0, 2]):.4f} "
+                f"dev={float(pos_deviation[0]):.4f} "
+                f"obj_v={float(object_asset.data.root_lin_vel_w[0].norm()):.3f} "
+                f"grip_z={float(gripper_asset.data.root_pos_w[0, 2]):.4f} "
+                f"q[:2]={[round(float(v), 4) for v in _q[:2].tolist()]} gravity={_g}",
                 flush=True,
             )
 
@@ -327,6 +384,43 @@ class check_reset_state_success(ManagerTermBase):
         self.max_articulation_velocity_sum = cfg.params.get("max_articulation_velocity_sum", 5.0)
         self.max_rigid_linear_velocity_sum = cfg.params.get("max_rigid_linear_velocity_sum", 0.1)
         self.max_rigid_angular_velocity_sum = cfg.params.get("max_rigid_angular_velocity_sum", 1.0)
+        # IN-HAND CHECK, opt-in per family. Nothing else in this term asks whether the object is in
+        # the gripper: stability, pose deviation, height and collisions are all satisfied by a hand
+        # that settled beside a cube resting on the table. Measured on the UR10e linear-gripper cube
+        # banks before this existed: ObjectAnywhereEEGrasped put the cube within 15 mm of the grasp
+        # point in 92% of states, ObjectRestingEEGrasped in 0% (median 148 mm away) and
+        # ObjectPartiallyAssembledEEGrasped in 25% -- banks named "grasped" that mostly were not.
+        # The DELTO fist banks showed the same thing as NO_CONTACT on replay.
+        #
+        # The test: the object's position IN THE HAND FRAME must lie within this tolerance of where
+        # at least one grasp in the grasp bank holds it. Distance alone is not enough -- measured on
+        # the same banks, a distance band passed 63% of the resting family, whose cubes sit beside
+        # the hand base, while this passes 2% (100% of the anywhere family, median 0.7 mm). No
+        # gripper-specific constant: the grasp points come from the bank the replay event loaded.
+        self.max_grasp_distance_error = cfg.params.get("max_grasp_distance_error")
+        self._grasp_points_in_hand: torch.Tensor | None = None
+        # Position alone still passes a hand whose jaws shut past the object. Measured on the
+        # re-recorded ObjectRestingEEGrasped bank: every state had the cube within 20 mm of a grasp
+        # point (median 13.5 mm, 0.1 mm along the closing axis), yet 72% had the linear gripper's
+        # jaws at 0.068 -- fully closed, where every grasp in the bank stops at 0.049-0.052 on the
+        # 34 mm cube. So the gripper joints must also sit near the joint values of the grasp whose
+        # object position matched, measured as a fraction of each joint's travel so the same
+        # number applies to a prismatic jaw in metres and a DELTO finger in radians.
+        self.max_grasp_joint_error_fraction = cfg.params.get("max_grasp_joint_error_fraction", 0.15)
+        # GRASP-CENTRE MODE, for families that PERTURB the grasp. ObjectResting/PartiallyAssembled
+        # offset the hand from the stored grasp by up to +-2 cm / +-11 deg on purpose, so "within
+        # 20 mm of a stored grasp point" rejected ~97% of genuine holds (placement median 26 mm). The
+        # test instead: the object lies inside a per-axis BOX around the bank's grasp CENTRE in the
+        # hand frame, sized as the bank's own max |deviation| per axis plus this margin, AND the jaws
+        # are stopped where the bank's grasps stop (not shut past the object, not open). Per axis,
+        # not a radius: a 40 mm radius passed states where the jaws closed on the RECEPTIVE cube
+        # beside the target (filmed, 3/6). Linear cube bank: centre (0, -1, 136) mm, max |dev|
+        # (2.8, 12.8, 24.4) mm; held states sat at |x|<=1.5, |y|<=15.6 mm, the misses at |x| 8.5-13.5,
+        # |y| 27-30 mm. Link origins are not usable as the reference: the finger bodies' midpoint
+        # sits ~110 mm from the cube in every held state. Takes precedence over
+        # max_grasp_distance_error when set.
+        self.grasp_center_margin = cfg.params.get("grasp_center_margin")
+        self._grasp_center_in_hand: torch.Tensor | None = None
 
         # Load gripper_approach_direction from metadata
         robot_asset = env.scene[self.robot_cfg.name]
@@ -465,6 +559,9 @@ class check_reset_state_success(ManagerTermBase):
         max_articulation_velocity_sum: float = 5.0,
         max_rigid_linear_velocity_sum: float = 0.1,
         max_rigid_angular_velocity_sum: float = 1.0,
+        max_grasp_distance_error: float | None = None,
+        max_grasp_joint_error_fraction: float = 0.15,
+        grasp_center_margin: float | None = None,
     ) -> torch.Tensor:
 
         # Check time out
@@ -558,6 +655,73 @@ class check_reset_state_success(ManagerTermBase):
             dim=0,
         )
 
+        in_hand = torch.ones(env.num_envs, device=env.device, dtype=torch.bool)
+        _hand_dist_mm = None
+        if self.grasp_center_margin is not None:
+            if self._grasp_center_in_hand is None:
+                replay = env.event_manager.get_term_cfg("reset_end_effector_pose_from_grasp_dataset").func
+                self._grasp_joint_ids = torch.as_tensor(replay.gripper_joint_ids, device=env.device, dtype=torch.long)
+                limits = self.robot_asset.data.joint_pos_limits
+                limits = getattr(limits, "torch", limits)[0, self._grasp_joint_ids]
+                self._grasp_joint_travel = (limits[:, 1] - limits[:, 0]).clamp(min=1e-6)
+                self._grasp_joint_median = replay.gripper_joint_positions.median(dim=0).values
+                # Object in the hand frame for every stored grasp is -R^T p; its median is the grasp centre.
+                points = math_utils.quat_apply_inverse(replay.rel_quaternions, -replay.rel_positions)
+                self._grasp_center_in_hand = points.median(dim=0).values
+                self._grasp_center_half_extent = (
+                    (points - self._grasp_center_in_hand).abs().max(dim=0).values + self.grasp_center_margin
+                )
+                print(
+                    f"[reset] in-hand check (grasp centre box): object within +-"
+                    f"{[round(float(v) * 1000, 1) for v in self._grasp_center_half_extent]} mm (bank max |dev| + "
+                    f"{self.grasp_center_margin * 1000:.0f} mm) of {[round(float(v) * 1000, 1) for v in self._grasp_center_in_hand]} "
+                    f"mm in the hand frame, gripper joints within {self.max_grasp_joint_error_fraction:.0%} of travel of "
+                    f"the bank median {[round(float(v), 4) for v in self._grasp_joint_median]}",
+                    flush=True,
+                )
+            hand_pos = self.robot_asset.data.body_link_pos_w[:, self.ee_body_idx]
+            hand_quat = self.robot_asset.data.body_link_quat_w[:, self.ee_body_idx]
+            obj_in_hand, _ = math_utils.subtract_frame_transforms(
+                hand_pos, hand_quat, self.object_assets[0].data.root_pos_w
+            )
+            center_offset = obj_in_hand - self._grasp_center_in_hand
+            center_dist = center_offset.norm(dim=1)
+            inside_box = (center_offset.abs() <= self._grasp_center_half_extent).all(dim=1)
+            joint_pos = getattr(self.robot_asset.data.joint_pos, "torch", self.robot_asset.data.joint_pos)
+            joint_error = (joint_pos[:, self._grasp_joint_ids] - self._grasp_joint_median).abs()
+            joints_match = (joint_error / self._grasp_joint_travel <= self.max_grasp_joint_error_fraction).all(dim=1)
+            in_hand = inside_box & joints_match
+            _hand_dist_mm = center_dist * 1000.0
+        elif self.max_grasp_distance_error is not None:
+            if self._grasp_points_in_hand is None:
+                replay = env.event_manager.get_term_cfg("reset_end_effector_pose_from_grasp_dataset").func
+                self._grasp_joint_ids = torch.as_tensor(replay.gripper_joint_ids, device=env.device, dtype=torch.long)
+                self._grasp_joint_positions = replay.gripper_joint_positions
+                limits = self.robot_asset.data.joint_pos_limits
+                limits = getattr(limits, "torch", limits)[0, self._grasp_joint_ids]
+                self._grasp_joint_travel = (limits[:, 1] - limits[:, 0]).clamp(min=1e-6)
+                # The bank stores the hand pose in the object frame; the object in the hand frame is
+                # its inverse translation, -R^T p.
+                self._grasp_points_in_hand = math_utils.quat_apply_inverse(
+                    replay.rel_quaternions, -replay.rel_positions
+                )
+                print(
+                    f"[reset] in-hand check: {len(self._grasp_points_in_hand)} grasp points, "
+                    f"tolerance {self.max_grasp_distance_error * 1000:.0f} mm",
+                    flush=True,
+                )
+            hand_pos = self.robot_asset.data.body_link_pos_w[:, self.ee_body_idx]
+            hand_quat = self.robot_asset.data.body_link_quat_w[:, self.ee_body_idx]
+            obj_in_hand, _ = math_utils.subtract_frame_transforms(
+                hand_pos, hand_quat, self.object_assets[0].data.root_pos_w
+            )
+            nearest, nearest_idx = torch.cdist(obj_in_hand, self._grasp_points_in_hand).min(dim=1)
+            joint_pos = getattr(self.robot_asset.data.joint_pos, "torch", self.robot_asset.data.joint_pos)
+            joint_error = (joint_pos[:, self._grasp_joint_ids] - self._grasp_joint_positions[nearest_idx]).abs()
+            joints_match = (joint_error / self._grasp_joint_travel <= self.max_grasp_joint_error_fraction).all(dim=1)
+            in_hand = (nearest <= self.max_grasp_distance_error) & joints_match
+            _hand_dist_mm = nearest * 1000.0
+
         reset_success = (
             (~abnormal_gripper_state)
             & gripper_orientation_within_range
@@ -565,6 +729,7 @@ class check_reset_state_success(ManagerTermBase):
             & (~excessive_pose_deviation)
             & (~pos_below_threshold)
             & collision_free
+            & in_hand
             & time_out
         )
 
@@ -586,6 +751,7 @@ class check_reset_state_success(ManagerTermBase):
                 "not_far": ~excessive_pose_deviation,
                 "above_ground": ~pos_below_threshold,
                 "coll_free": collision_free,
+                "in_hand": in_hand,
             }
             _loo = []
             for _name in _conds:
@@ -604,7 +770,10 @@ class check_reset_state_success(ManagerTermBase):
                 f"stable={int(stability_reached.sum())} "
                 f"not_far={int((~excessive_pose_deviation).sum())} "
                 f"above_ground={int((~pos_below_threshold).sum())} "
-                f"coll_free={int(collision_free.sum())} -> success={int(reset_success.sum())}"
+                f"coll_free={int(collision_free.sum())} in_hand={int(in_hand.sum())} "
+                f"-> success={int(reset_success.sum())}"
+                + (f"  | in-hand dist mm med={_hand_dist_mm.median():.1f} p25={_hand_dist_mm.quantile(0.25):.1f}"
+                   if _hand_dist_mm is not None else "")
                 + (
                     f"  | object mm med={_obj_dev_mm.median():.1f} "
                     f"p75={_obj_dev_mm.quantile(0.75):.1f} max={_obj_dev_mm.max():.1f} "
