@@ -16,6 +16,18 @@ from uwlab_tasks.manager_based.manipulation.omnireset.assembly_keypoints import 
 from uwlab_tasks.manager_based.manipulation.omnireset.mdp import utils
 
 
+def _as_torch(x, device) -> torch.Tensor:
+    """Isaac Lab 3 hands back warp arrays (physx view getters) and ProxyArrays (asset data) where
+    Isaac Lab 2 returned torch tensors; ``.view(n, -1)`` on those raises. Physx material/mass getters
+    also live on the CPU."""
+    x = getattr(x, "torch", x)
+    if not isinstance(x, torch.Tensor):
+        import warp as wp
+
+        x = wp.to_torch(x)
+    return x.to(device)
+
+
 def target_asset_pose_in_root_asset_frame(
     env: ManagerBasedEnv,
     target_asset_cfg: SceneEntityCfg,
@@ -152,7 +164,7 @@ def get_material_properties(
     asset_cfg: SceneEntityCfg,
 ):
     asset: RigidObject | Articulation = env.scene[asset_cfg.name]
-    return asset.root_physx_view.get_material_properties().view(env.num_envs, -1)
+    return _as_torch(asset.root_physx_view.get_material_properties(), env.device).reshape(env.num_envs, -1)
 
 
 def get_mass(
@@ -160,7 +172,7 @@ def get_mass(
     asset_cfg: SceneEntityCfg,
 ):
     asset: RigidObject | Articulation = env.scene[asset_cfg.name]
-    return asset.root_physx_view.get_masses().view(env.num_envs, -1)
+    return _as_torch(asset.root_physx_view.get_masses(), env.device).reshape(env.num_envs, -1)
 
 
 def get_joint_friction(
@@ -168,7 +180,7 @@ def get_joint_friction(
     asset_cfg: SceneEntityCfg,
 ):
     asset: RigidObject | Articulation = env.scene[asset_cfg.name]
-    return asset.data.joint_friction_coeff.view(env.num_envs, -1)
+    return _as_torch(asset.data.joint_friction_coeff, env.device).reshape(env.num_envs, -1)
 
 
 def get_joint_armature(
@@ -176,7 +188,7 @@ def get_joint_armature(
     asset_cfg: SceneEntityCfg,
 ):
     asset: RigidObject | Articulation = env.scene[asset_cfg.name]
-    return asset.data.joint_armature.view(env.num_envs, -1)
+    return _as_torch(asset.data.joint_armature, env.device).reshape(env.num_envs, -1)
 
 
 def get_joint_stiffness(
@@ -184,7 +196,7 @@ def get_joint_stiffness(
     asset_cfg: SceneEntityCfg,
 ):
     asset: RigidObject | Articulation = env.scene[asset_cfg.name]
-    return asset.data.joint_stiffness.view(env.num_envs, -1)
+    return _as_torch(asset.data.joint_stiffness, env.device).reshape(env.num_envs, -1)
 
 
 def get_joint_damping(
@@ -192,7 +204,7 @@ def get_joint_damping(
     asset_cfg: SceneEntityCfg,
 ):
     asset: RigidObject | Articulation = env.scene[asset_cfg.name]
-    return asset.data.joint_damping.view(env.num_envs, -1)
+    return _as_torch(asset.data.joint_damping, env.device).reshape(env.num_envs, -1)
 
 
 def time_left(env) -> torch.Tensor:

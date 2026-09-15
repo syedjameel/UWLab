@@ -356,15 +356,16 @@ def _apply_fingertip_contact_sensors(cfg) -> None:
     cfg.scene.insertive_object = cfg.scene.insertive_object.replace(
         spawn=cfg.scene.insertive_object.spawn.replace(activate_contact_sensors=True)
     )
-    for tip in DELTO_ALL_TIP_NAMES:
-        setattr(
-            cfg.scene,
-            f"{tip}_object_s",
-            ContactSensorCfg(
-                prim_path=f"{{ENV_REGEX_NS}}/Robot/{DELTO_HAND_PRIM}/{tip}",
-                filter_prim_paths_expr=["{ENV_REGEX_NS}/InsertiveObject"],
-            ),
-        )
+    # OBJECT-CENTRIC, not per tip. On the Isaac Sim 6 asset each fingertip link has a visual child
+    # Xform with the SAME name (gripper/rl_dg_1_tip/visuals/rl_dg_1_tip), and spawning with contact
+    # reporting marks both, so a per-tip sensor discovers two bodies per env and PhysX builds no
+    # contact view ("Filter pattern ... expected 32, found 16" -> 'NoneType' has no 'filter_count').
+    # One sensor on the cube filtered to the exact tip link paths cannot match the nested visuals, is
+    # one view instead of five, and is the form _sensor_force_magnitudes already prefers.
+    cfg.scene.object_hand_s = ContactSensorCfg(
+        prim_path="{ENV_REGEX_NS}/InsertiveObject",
+        filter_prim_paths_expr=[f"{{ENV_REGEX_NS}}/Robot/{DELTO_HAND_PRIM}/{tip}" for tip in DELTO_ALL_TIP_NAMES],
+    )
 
 
 # A 34 mm cube seated on a 34 mm cube has its centre at 55 mm; the table puts it at 21 mm. 90 mm is
