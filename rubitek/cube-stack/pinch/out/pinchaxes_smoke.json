@@ -1,0 +1,74 @@
+{
+ "closed": {
+  "grasp_center_offset": [
+   0.082118,
+   0.031864,
+   0.172372
+  ],
+  "grasp_align_axis": [
+   -0.261118,
+   0.145276,
+   0.954312
+  ],
+  "gripper_approach_direction": [
+   0.621195,
+   0.241037,
+   0.745666
+  ],
+  "pad_separation_mm": 27.074
+ },
+ "open": {
+  "grasp_center_offset": [
+   0.08621,
+   0.03343,
+   0.168972
+  ],
+  "grasp_align_axis": [
+   -0.522386,
+   0.09906,
+   0.846936
+  ],
+  "gripper_approach_direction": [
+   0.649694,
+   0.251939,
+   0.717234
+  ],
+  "pad_separation_mm": 50.001
+ },
+ "fist_reference": {
+  "grasp_center_offset": [
+   0.063714,
+   0.04651,
+   0.149997
+  ],
+  "grasp_align_axis": [
+   0.632272,
+   -0.725372,
+   0.272153
+  ],
+  "gripper_approach_direction": [
+   0.580933,
+   0.42407,
+   0.694753
+  ],
+  "pad_separation_mm": 51.027
+ },
+ "source_pose": "/home/mattephi/Work/Rubitek/cube-stack/pinch/out/pinchhold_fixed_smoke.json",
+ "metadata_today": {
+  "grasp_center_offset": [
+   0.0637,
+   0.0465,
+   0.15
+  ],
+  "grasp_align_axis": [
+   -0.7422,
+   0.6555,
+   -0.1395
+  ],
+  "gripper_approach_direction": [
+   0.2582,
+   0.4717,
+   0.8431
+  ]
+ }
+}

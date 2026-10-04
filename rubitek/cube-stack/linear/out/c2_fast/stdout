@@ -1,0 +1,10 @@
+C2FAST RECORD_START arm=pinned 2026-09-15T19:25:15+09:00
+C2FAST RECORD_END rc=124 4/6 [13:08 2026-09-15T19:40:15+09:00
+C2FAST FILM_START 2026-09-15T19:40:15+09:00
+C2FAST FILM_END rc=0 2026-09-15T19:41:30+09:00
+  state  1  idx     0  z  0.0416 m  drift      0.5 mm  [    0.5,    0.5]  OPPOSED                 tips_loaded=2/2  opposed=True  AIRBORNE
+  state  2  idx     1  z  0.0267 m  drift      8.1 mm  [    8.1,    8.1]  OPPOSED                 tips_loaded=2/2  opposed=True  AIRBORNE
+  state  3  idx     2  z  0.0244 m  drift      0.4 mm  [    0.4,    0.4]  OPPOSED                 tips_loaded=2/2  opposed=True  AIRBORNE
+  state  4  idx     3  z  0.0289 m  drift      9.9 mm  [    9.9,    9.9]  OPPOSED                 tips_loaded=2/2  opposed=True  AIRBORNE
+[view] OPPOSED 4/4  CONTACT_NO_OPPOSITION 0/4  NO_CONTACT 0/4  AIRBORNE 4/4  frames in /home/mattephi/Work/Rubitek/cube-stack/linear/out/c2_fast/film  json in /home/mattephi/Work/Rubitek/cube-stack/linear/out/c2_fast/film
+C2FAST_DONE 2026-09-15T19:41:30+09:00

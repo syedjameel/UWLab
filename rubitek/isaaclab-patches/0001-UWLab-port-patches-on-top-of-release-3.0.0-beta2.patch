@@ -1,0 +1,105 @@
+From 59f2dc6ce7222c32135da96a14fe8cb690282603 Mon Sep 17 00:00:00 2001
+From: mattephi <ialentev@icloud.com>
+Date: Tue, 8 Sep 2026 20:41:26 +0900
+Subject: [PATCH 1/2] UWLab port patches on top of release/3.0.0-beta2
+
+Two changes needed to run UWLab's OmniReset cube-stack task on this branch.
+
+1. simulation_cfg.py: make SimulationCfg.physics eager and backend-selectable.
+   Upstream defaults it to None and lets SimulationContext substitute PhysxCfg()
+   at init (simulation_context.py:166-169), but env cfgs tune physics in
+   __post_init__, which runs first and therefore hits None. The default is now
+   chosen from UWLAB_PHYSICS_BACKEND (physx | newton, default physx), which lets
+   one Isaac Lab checkout serve both the PhysX and the Newton branch of UWLab.
+
+2. wrench_composer.py: hasattr(self._asset.data, "body_com_pos_w") is a TYPE
+   check -- the code says so, it avoids isinstance to dodge a circular import --
+   but calling it on the INSTANCE evaluates the property, which queries the PhysX
+   backend. During the first initialize callback the backend has no transforms
+   yet and raises a plain Exception, which hasattr does not swallow (it only
+   swallows AttributeError). Checking the class performs the intended test
+   without touching the backend.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01JhuUnim6biTdbSspBfCgm5
+---
+ .../isaaclab/isaaclab/sim/simulation_cfg.py   | 31 +++++++++++++++++--
+ .../isaaclab/utils/wrench_composer.py         | 10 ++++--
+ 2 files changed, 37 insertions(+), 4 deletions(-)
+
+diff --git a/source/isaaclab/isaaclab/sim/simulation_cfg.py b/source/isaaclab/isaaclab/sim/simulation_cfg.py
+index 2c71c72..0730fe0 100644
+--- a/source/isaaclab/isaaclab/sim/simulation_cfg.py
++++ b/source/isaaclab/isaaclab/sim/simulation_cfg.py
+@@ -14,6 +14,28 @@ from __future__ import annotations
+ from typing import Any, Literal  # Literal used by RenderCfg
+ 
+ from isaaclab.physics import PhysicsCfg
++import os as _os
++
++from isaaclab_physx.physics.physx_manager_cfg import PhysxCfg
++
++
++def _default_physics_cfg():
++    """Pick the physics backend from ``UWLAB_PHYSICS_BACKEND`` (physx | newton).
++
++    UWLAB PORT NOTE: upstream leaves ``SimulationCfg.physics = None`` and lets
++    SimulationContext substitute PhysxCfg() at init. UWLab env cfgs tune physics in
++    __post_init__, which runs first, so the default has to be eager. Making it
++    env-selectable is what lets one Isaac Lab checkout serve both the PhysX and the
++    Newton branch of UWLab.
++    """
++    backend = _os.environ.get("UWLAB_PHYSICS_BACKEND", "physx").strip().lower()
++    if backend == "newton":
++        from isaaclab_newton.physics.newton_manager_cfg import NewtonCfg
++
++        return NewtonCfg()
++    if backend not in ("physx", ""):
++        raise ValueError(f"UWLAB_PHYSICS_BACKEND must be 'physx' or 'newton', got {backend!r}")
++    return PhysxCfg()
+ from isaaclab.sim.spawners.materials.physics_materials_cfg import RigidBodyMaterialCfg
+ from isaaclab.utils.configclass import configclass
+ from isaaclab.visualizers import VisualizerCfg
+@@ -304,8 +326,13 @@ class SimulationCfg:
+     actuation continue to work as expected.
+     """
+ 
+-    physics: PhysicsCfg | None = None
+-    """Physics manager configuration. Default is None (uses PhysxCfg()).
++    physics: PhysicsCfg = _default_physics_cfg()
++    """Physics manager configuration. Default is PhysxCfg().
++
++    UWLAB PORT NOTE: upstream defaults this to None and SimulationContext substitutes
++    PhysxCfg() at init (simulation_context.py:166-169). Env cfgs that tune PhysX in
++    __post_init__ run BEFORE that, so they hit None. Making the default eager is
++    behaviourally identical and lets those cfgs set fields directly.
+ 
+     This configuration determines which physics manager to use. Override with
+     a different config (e.g., NewtonManagerCfg) to use a different physics backend.
+diff --git a/source/isaaclab/isaaclab/utils/wrench_composer.py b/source/isaaclab/isaaclab/utils/wrench_composer.py
+index 6c9390e..406824c 100644
+--- a/source/isaaclab/isaaclab/utils/wrench_composer.py
++++ b/source/isaaclab/isaaclab/utils/wrench_composer.py
+@@ -66,11 +66,17 @@ class WrenchComposer:
+         self._asset = asset
+         self._active = False
+         self._dirty = False
+-        if hasattr(self._asset.data, "body_com_pos_w"):
++        # UWLAB PORT NOTE: these are TYPE checks (see the comment above about avoiding
++        # isinstance), but hasattr() on the INSTANCE evaluates the property, which queries
++        # the PhysX backend. During the first initialize callback the backend has no
++        # transforms yet and raises a plain Exception - which hasattr does not swallow
++        # (it only swallows AttributeError). Checking the class keeps the intended type
++        # test without touching the backend.
++        if hasattr(type(self._asset.data), "body_com_pos_w"):
+             self._get_com_pos_fn = lambda a=self._asset: a.data.body_com_pos_w.warp
+         else:
+             raise ValueError(f"Unsupported asset type: {self._asset.__class__.__name__}")
+-        if hasattr(self._asset.data, "body_link_quat_w"):
++        if hasattr(type(self._asset.data), "body_link_quat_w"):
+             self._get_link_quat_fn = lambda a=self._asset: a.data.body_link_quat_w.warp
+         else:
+             raise ValueError(f"Unsupported asset type: {self._asset.__class__.__name__}")
+-- 
+2.55.0
+

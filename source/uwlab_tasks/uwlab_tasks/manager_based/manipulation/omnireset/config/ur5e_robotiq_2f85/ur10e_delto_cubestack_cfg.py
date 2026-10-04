@@ -1215,7 +1215,11 @@ class CubeStackTwoFingerEvalCfg(CubeStackNoOrientEvalCfg):
 # got the C3 drop only from 83 mm down to 40 mm at 0.08 rad. The `_3` joints are IDENTICAL in both
 # stored postures yet carry the largest stiffness in the hand (4.0 N*m/rad), and the hold_hand
 # forces show they supply most of the grip. So: every hand joint.
-GRIP_BIAS_RAD = 0.05
+# Env-overridable so a sweep can move it without editing the file. 0.05 stays the shipped value.
+# Note the measured ceiling: going 0.08 -> 0.40 rad changed fingertip force NOT AT ALL, because the
+# hand saturates its effort caps first. Raising this alone is therefore not expected to do anything;
+# it is swept together with UWLAB_HAND_EFFORT_SCALE, which is the knob that can actually move force.
+GRIP_BIAS_RAD = float(_os.environ.get("UWLAB_GRIP_BIAS_RAD", "0.05"))
 
 
 def _grip_bias_joint_names(action_cfg) -> list[str]:
@@ -1237,6 +1241,45 @@ def _apply_grip_bias(cfg, bias: float = GRIP_BIAS_RAD) -> None:
             f"{type(cfg).__name__}: gripper action term has no dict `scale`, so the grip-bias joint "
             "set cannot be resolved by name. Give the action term a per-joint scale dict."
         )
+
+    # UWLAB_LATCHED_HAND=1 swaps the relative term for one that accumulates onto a target LATCHED at
+    # reset. The offset above is applied by `RelativeJointPositionAction` inside apply_actions, which
+    # runs on every one of the 12 physics substeps and re-adds it to the live measurement -- so the
+    # "bias" is a RAMP, not a set point, and the fingers crush through the cube and eject it.
+    # Measured on the C3 bank with a null action (128 envs), relative vs latched-absolute:
+    #     relative 0.08 rad : in_hand 0.461 -> 0.000 by step 120, fingers travel +0.453 rad
+    #     latched  0.05 rad : in_hand 0.867 -> 0.117 by step 120, fingers settle at +0.044 rad
+    # Grip force reaches 1.72 N latched vs the reset films' ~1.2 N, so the hand was never too weak;
+    # it was being told to keep closing forever. See latched_joint_actions.py for the full trace.
+    if _os.environ.get("UWLAB_LATCHED_HAND", "0") not in ("0", "", "false", "False"):
+        # Local import, matching how _apply_absolute_hand reaches for JointPositionActionCfg above.
+        from ...mdp.actions import LatchedJointPositionActionCfg
+
+        names = _grip_bias_joint_names(g)
+        scale = g.scale if isinstance(g.scale, dict) else {n: g.scale for n in names}
+        # UWLAB_TUCK_OTHERS curls the undriven fingers 3/4/5 out of the way. The block comment above
+        # explains why they are left out of the ACTION term (the stored banks recorded them, and the
+        # tuck would invalidate that) -- this keeps them out of the action term, and out of the
+        # observation and the action dimension, while still writing them a target. They are held, not
+        # driven: the policy never sees them and checkpoints stay loadable at action_dim 14.
+        tuck = float(_os.environ.get("UWLAB_TUCK_OTHERS", "0") or 0.0)
+        hold_names = [r"rj_dg_[3-5]_[1-4]"] if tuck else []
+        cfg.actions.gripper = LatchedJointPositionActionCfg(
+            asset_name=g.asset_name,
+            joint_names=list(names),
+            scale=scale,
+            grip_bias=bias,
+            clip_per_step=1.0,
+            hold_joint_names=hold_names,
+            hold_bias=tuck,
+        )
+        print(
+            f"[{type(cfg).__name__}] hand action -> LatchedJointPositionAction "
+            f"(grip_bias={bias} rad, {len(names)} joints)",
+            flush=True,
+        )
+        return
+
     cfg.actions.gripper = g.replace(use_zero_offset=False, offset=offset)
 
 
@@ -1336,13 +1379,166 @@ class CubeStackGripCarryEvalCfg(CubeStackGripEvalCfg):
         _apply_transport_shaping(self)
 
 
+
+# =========================================================================================
+# HOLD SHAPING -- pay for KEEPING the pinch, not just for reaching the goal pose
+# =========================================================================================
+# MEASURED DEFECT (2026-09-17, contact sensor, 64 envs, both completed runs). The reset hands the
+# policy a VALID pinch: the two-finger gate (thumb rl_dg_1_tip AND index rl_dg_2_tip both above
+# GRASP_CONTACT_THRESHOLD_N) is open in 63/64 environments at t=0 under a null action. The trained
+# policy opens its hand on the FIRST control step and the gate is then open in 0/64 environments at
+# every step of every rollout; measured fingertip force is 0.0000 N throughout.
+#
+# WHY IT DOES THAT -- per-term episode sums from the trained policy on C3:
+#
+#     dense_success_reward        +1.28618      <- exp(-d/1.0), pays ~0.82/step for existing
+#     ee_asset_distance           +1.24784      <- palm pose only; satisfied by an OPEN hand
+#     dense_success_reward_mid    +0.61985
+#     joint_vel                   -0.19528
+#     fingertip_object_distance   +0.00738
+#     grasp_contact               +0.00180
+#     any_finger_contact          +0.00042
+#     object_lift                 +0.00000      <- gated on contacts(); gate never opens
+#
+# The three goal terms are functions of cube-to-goal pose ONLY. A dropped cube still sits somewhere,
+# so they keep paying for all 150 steps after the grasp is gone, and TerminationsCfg has no drop
+# termination -- losing the cube is free. Holding is worth 0.0018; existing is worth 2.5.
+#
+# THE FIX, on the yardstick this file uses everywhere else (action_rate = -2.80e-3 per step):
+# a per-step bonus on the SAME gate the other contact terms already use. At weight 0.5 an open gate
+# pays +5.0e-1 per step, ~180x the action-rate penalty, and 75 over a 150-step episode against the
+# ~3.2 the policy currently earns in total. The gradient is reachable from step 0 because the reset
+# already opens the gate in 63/64 environments -- the policy only has to STOP LETTING GO.
+#
+# WHY A BONUS RATHER THAN A DROP TERMINATION. Same effect on the incentive, far less surface area:
+# terminations.py has no contact- or height-reading termination to reuse, so that route means new
+# termination code plus a new TerminationsCfg subclass threaded through the variant chain. This
+# reuses contacts(), already bound to the two-finger gate by _apply_two_finger_hand.
+# Settable to 0 so the ABLATION can run: shipped OmniReset rewards + the repo's own ported
+# contact terms, with ONLY the control fixes (hand action scale, entropy). If the grasp holds
+# at weight 0, this added term is unnecessary and should be dropped -- a reward change is a
+# deviation from the published objective and costs comparability, so it has to earn its place.
+HOLD_BONUS_WEIGHT = float(_os.environ.get("UWLAB_HOLD_BONUS_WEIGHT", "0.5"))
+# CARRY, NOT MERELY HOLD. Measured on model_225 of the first hold-bonus run (64 envs, C3):
+#   gate open 64/64 at step 0 and 49/64 at step 149, fingertip force 11.4 N -> 9.0 N, held for a
+#   median 148 of 150 steps -- the grasp problem IS fixed -- but cube-to-goal went the WRONG WAY,
+#   217 mm -> 336 mm, cube travelling 383 mm median, success 0/64.
+#
+# The flat hold bonus has no positional dependence, so "grip and wander" collects it in full. That
+# is the local optimum contact_rewards.py:153-157 already documented for the signed lift term
+# ("grip, lift, and hold ... never coming down"); object_lift was fixed for it (one_sided=True,
+# lift_ceiling_m=0.09) and this term reintroduced it.
+#
+# Fix: gate the SAME contact test on distance to the goal, with a length scale matched to the carry
+# C3 actually starts at (217 mm). TRANSPORT_SHAPING_STD_M = 0.08 is far too tight for that --
+# exp(-0.217/0.08) = 0.067, i.e. dead where the carry begins, which is why dense_success_reward_mid
+# earned 0.016 and stayed flat for 20 readings while the policy drifted.
+#
+#   at 217 mm (start)  : exp(-0.217/0.15) = 0.235  ->  0.24/step while held
+#   at  34 mm (seated) : exp(-0.034/0.15) = 0.797  ->  0.80/step while held
+#
+# a 3.3x gradient that exists ONLY while the cube is gripped: hold -> carry -> place, in one term.
+CARRY_STD_M = float(_os.environ.get("UWLAB_CARRY_STD_M", "0.15"))
+# TAPER -- the carry bonus must stop paying before the seat, or it charges for releasing.
+# MEASURED on model_899 (900/900 iters, 64 envs, C3): the policy grips 150/150 steps at 10.8-13.0 N
+# and carries the cube 234.6 -> 146.2 mm, then PLATEAUS (last 30 steps move 15.6 mm, slope
+# -0.096 mm/step) and never lets go. Cube z descends 176.5 -> 100.6 mm against a 55.0 mm seated
+# centre: it lowers toward the stack and stops ~45 mm short, still holding.
+#
+# Why, from the measured term values: hold_bonus 0.1522 vs success_reward 0.0007 -- 217x. Per step,
+# holding pays 0.189 at 146 mm and 0.399 even seated at 34 mm, while releasing pays exactly 0 until
+# the cube lands inside the 5 mm tolerance, which it has no gradient to reach
+# (dense_success_reward_fine, std 0.02, earns 0.0018 -- dead at this range).
+#
+# This is the same structural error contact_rewards.py:153-157 documents for the signed lift term,
+# reintroduced by the term added to fix the previous failure: pay for a state the task must leave.
+#
+# The taper multiplies the carry bonus by a factor that goes to zero as the cube approaches the
+# seat, so transport is rewarded and hovering over the target is not:
+#     factor = clamp((d - RELEASE_M) / (TAPER_M - RELEASE_M), 0, 1)
+#   d >= TAPER_M (120 mm) : full bonus, ordinary transport
+#   d <= RELEASE_M (45 mm): ZERO bonus -- releasing costs nothing, seating is the only way to score
+CARRY_TAPER_M = float(_os.environ.get("UWLAB_CARRY_TAPER_M", "0.12"))
+CARRY_RELEASE_M = float(_os.environ.get("UWLAB_CARRY_RELEASE_M", "0.045"))
+
+
+def carry_bonus(env, threshold, thumb_contact_name, tip_contact_names, std: float = CARRY_STD_M,
+                taper: float = CARRY_TAPER_M, release: float = CARRY_RELEASE_M,
+                context: str = "progress_context"):
+    """Contact gate x goal proximity x release taper. Pays to carry; pays nothing to hover."""
+    import torch as _torch
+
+    ctx = env.reward_manager.get_term_cfg(context).func
+    xyz = getattr(ctx, "xyz_distance")
+    gate = task_mdp.contacts(env, threshold, thumb_contact_name, tip_contact_names).float()
+    factor = ((xyz - release) / max(taper - release, 1e-6)).clamp(0.0, 1.0)
+    return _torch.exp(-xyz / max(std, 1e-6)) * factor * gate
+
+
+def _apply_hold_shaping(cfg, weight: float = HOLD_BONUS_WEIGHT) -> None:
+    """Pay for holding the cube NEAR THE GOAL, not for holding it anywhere.
+
+    A flat gate bonus fixed the grasp and created a clamp-and-wander optimum (see CARRY_STD_M).
+    This keeps the same contact gate and multiplies it by goal proximity, so the only way to raise
+    the term is to carry what is held toward the stack.
+    """
+    if weight <= 0.0:
+        print(f"[{type(cfg).__name__}] hold/carry bonus DISABLED (ablation: baseline objective)", flush=True)
+        return
+    gate_params = dict(cfg.rewards.grasp_contact.params)
+    cfg.rewards.hold_bonus = RewTerm(func=carry_bonus, weight=weight,
+                                     params={**gate_params, "std": CARRY_STD_M,
+                                             "taper": CARRY_TAPER_M, "release": CARRY_RELEASE_M})
+
+
+
+# =========================================================================================
+# HAND ACTION SCALE -- exploration noise was destroying the grasp before reward could credit it
+# =========================================================================================
+# MEASURED (2026-09-17). `Mean action noise std` RISES through training in every run:
+#     local  0.76 -> 2.16      H100  0.74 -> 2.29      hold-bonus run  1.15 -> 1.38 (and climbing)
+# The hand action is RELATIVE and INTEGRATING (`target = measured + scale * action`, clipped to
+# +-1.0 in action units), with DELTO_TWO_FINGER_ACTION_SCALE = 0.1 rad. At a noise std above 1 the
+# action saturates the clip nearly every step, so the fingers receive ~+-0.1 rad of random command
+# per step -- TWICE the entire 0.05 rad grip_bias that holds the reset's pinch -- and, because the
+# term integrates, a few same-sign steps walk the fingers wide open with nothing pulling them back.
+#
+# That matches the measurement exactly: the reset hands over a valid pinch (two-finger contact gate
+# open 63/64 at t=0 under a null action) and the trained policy has the gate open in 0/64 envs at
+# every step, with the fingers separating at median step 1 in 64/64 environments.
+#
+# CORRECTION TO AN EARLIER READING: the `scale=1.0` at _apply_pinch_absolute is NOT what trains --
+# _apply_two_finger_hand overwrites cfg.actions.gripper with DELTO_TWO_FINGER_ACTIONS (scale 0.1).
+# The effect is 10x smaller than first stated, and still 2x the grip bias per step.
+#
+# At 0.02 rad a saturated action moves the fingers 0.4x the grip bias per step instead of 2x, so a
+# held pinch survives exploration long enough for hold_bonus to assign credit. Opening remains fully
+# available -- five consecutive same-sign steps still clear the bias.
+#
+# Scoped as a __post_init__ overlay so the shared DELTO_TWO_FINGER_ACTIONS, and every other variant
+# that uses it, are untouched. action_dim is set by joint_names (regex rj_dg_[1-2]_[1-4] -> 8), NOT
+# by the scale dict, so this cannot change the 14-dim action space or invalidate a checkpoint.
+HAND_ACTION_SCALE_RAD = float(_os.environ.get("UWLAB_HAND_ACTION_SCALE", "0.02"))
+
+
+def _apply_hand_action_scale(cfg, scale: float = HAND_ACTION_SCALE_RAD) -> None:
+    """Shrink the per-step finger delta so exploration cannot blow the pinch open in one step."""
+    g = cfg.actions.gripper
+    if isinstance(getattr(g, "scale", None), dict):
+        g.scale = {n: scale for n in g.scale}
+        print(f"[{type(cfg).__name__}] hand action scale -> {scale} rad/step "
+              f"({len(g.scale)} joints; grip_bias {GRIP_BIAS_RAD} rad)", flush=True)
+
+
 @configclass
 class CubeStackTwoFingerGripCarryTrainCfg(CubeStackTwoFingerGripTrainCfg):
-    """Two-finger, grip bias, AND the mid-range transport term. Action dimension 14."""
+    """Two-finger, grip bias, mid-range transport term, AND the hold bonus. Action dimension 14."""
 
     def __post_init__(self):
         super().__post_init__()
         _apply_transport_shaping(self)
+        _apply_hold_shaping(self)
+        _apply_hand_action_scale(self)
 
 
 @configclass
@@ -1352,3 +1548,5 @@ class CubeStackTwoFingerGripCarryEvalCfg(CubeStackTwoFingerGripEvalCfg):
     def __post_init__(self):
         super().__post_init__()
         _apply_transport_shaping(self)
+        _apply_hold_shaping(self)
+        _apply_hand_action_scale(self)

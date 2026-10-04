@@ -1,0 +1,896 @@
+<title>Cube Stacking on the DG-5F</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans+Condensed:wght@600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+  :root{
+    --ground:#F2F5F6; --surface:#FFFFFF; --surface-2:#E9EEF0; --line:#CFD9DD;
+    --ink:#141C21; --ink-2:#4A5B64; --ink-3:#72858F;
+    --accent:#B4761B; --accent-soft:#F3E2C4;
+    --pass:#2E7D6B; --pass-soft:#D6EBE5;
+    --fail:#B24534; --fail-soft:#F6DCD7;
+    --pend:#6B6F8C; --pend-soft:#E2E3EE;
+    --mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+    --sans:"IBM Plex Sans",system-ui,-apple-system,sans-serif;
+    --cond:"IBM Plex Sans Condensed","IBM Plex Sans",system-ui,sans-serif;
+  }
+  @media (prefers-color-scheme:dark){
+    :root:not([data-theme="light"]){
+      --ground:#0E1418; --surface:#161E24; --surface-2:#1E282F; --line:#2C3941;
+      --ink:#DCE5E9; --ink-2:#9BAEB8; --ink-3:#6F838E;
+      --accent:#E8A33D; --accent-soft:#3A2E17;
+      --pass:#4FB8A0; --pass-soft:#16302B;
+      --fail:#D9614C; --fail-soft:#3A1F1A;
+      --pend:#9A9EC4; --pend-soft:#23253A;
+    }
+  }
+  :root[data-theme="dark"]{
+    --ground:#0E1418; --surface:#161E24; --surface-2:#1E282F; --line:#2C3941;
+    --ink:#DCE5E9; --ink-2:#9BAEB8; --ink-3:#6F838E;
+    --accent:#E8A33D; --accent-soft:#3A2E17;
+    --pass:#4FB8A0; --pass-soft:#16302B;
+    --fail:#D9614C; --fail-soft:#3A1F1A;
+    --pend:#9A9EC4; --pend-soft:#23253A;
+  }
+
+  *{box-sizing:border-box}
+  body{background:var(--ground);color:var(--ink);font-family:var(--sans);line-height:1.55;
+       -webkit-font-smoothing:antialiased}
+  .wrap{max-width:1080px;margin:0 auto;padding:32px 24px 80px}
+
+  header.masthead{display:flex;flex-direction:column;gap:6px;padding-bottom:18px;
+       border-bottom:2px solid var(--ink)}
+  .eyebrow{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;
+       color:var(--ink-3)}
+  h1{font-family:var(--cond);font-weight:700;font-size:clamp(30px,5vw,44px);line-height:1.04;
+       margin:0;text-wrap:balance;letter-spacing:-.01em}
+  .sub{color:var(--ink-2);max-width:62ch;font-size:15px;margin:2px 0 0}
+
+  /* status strip ------------------------------------------------------ */
+  .strip{display:grid;grid-template-columns:repeat(auto-fit,minmax(158px,1fr));gap:1px;
+       background:var(--line);border:1px solid var(--line);margin:22px 0 0}
+  .tile{background:var(--surface);padding:13px 14px;display:flex;flex-direction:column;gap:3px}
+  .tile .k{font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;
+       color:var(--ink-3)}
+  .tile .v{font-family:var(--cond);font-size:25px;font-weight:700;font-variant-numeric:tabular-nums;
+       line-height:1.1}
+  .tile .n{font-size:11.5px;color:var(--ink-2)}
+  .v.pass{color:var(--pass)} .v.fail{color:var(--fail)} .v.acc{color:var(--accent)}
+
+  /* tabs -------------------------------------------------------------- */
+  nav.tabs{display:flex;gap:0;flex-wrap:wrap;margin:26px 0 0;border-bottom:1px solid var(--line)}
+  nav.tabs button{appearance:none;background:none;border:0;border-bottom:2px solid transparent;
+       font-family:var(--cond);font-weight:600;font-size:14.5px;color:var(--ink-3);
+       padding:9px 14px;cursor:pointer;letter-spacing:.01em}
+  nav.tabs button:hover{color:var(--ink)}
+  nav.tabs button[aria-selected="true"]{color:var(--ink);border-bottom-color:var(--accent)}
+  nav.tabs button:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+  section.panel{padding-top:24px}
+  section.panel[hidden]{display:none!important}
+
+  h2{font-family:var(--cond);font-weight:700;font-size:20px;margin:30px 0 8px;letter-spacing:-.005em}
+  h2:first-child{margin-top:0}
+  h3{font-family:var(--cond);font-weight:600;font-size:15.5px;margin:22px 0 6px;color:var(--ink)}
+  p{margin:0 0 11px;max-width:70ch}
+  ul{margin:0 0 12px;padding-left:18px;max-width:70ch} li{margin-bottom:5px}
+
+  code,.mono{font-family:var(--mono);font-size:.88em}
+  code{background:var(--surface-2);padding:1px 5px;border-radius:2px}
+  pre{background:var(--surface);border:1px solid var(--line);border-left:3px solid var(--accent);
+      padding:12px 14px;overflow-x:auto;font-family:var(--mono);font-size:12.5px;line-height:1.6;
+      margin:0 0 14px}
+
+  .tablewrap{overflow-x:auto;margin:0 0 16px;border:1px solid var(--line);background:var(--surface)}
+  table{border-collapse:collapse;width:100%;font-size:13.5px}
+  th,td{text-align:left;padding:8px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{font-family:var(--mono);font-size:10.5px;letter-spacing:.09em;text-transform:uppercase;
+     color:var(--ink-3);font-weight:500;background:var(--surface-2)}
+  tr:last-child td{border-bottom:0}
+  td.num{font-family:var(--mono);font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap}
+  tr.hl td{background:var(--accent-soft)}
+
+  .chip{display:inline-block;font-family:var(--mono);font-size:10.5px;padding:1px 6px;
+       border-radius:2px;white-space:nowrap;letter-spacing:.02em}
+  .chip.pass{background:var(--pass-soft);color:var(--pass)}
+  .chip.fail{background:var(--fail-soft);color:var(--fail)}
+  .chip.pend{background:var(--pend-soft);color:var(--pend)}
+  .chip.src{background:var(--surface-2);color:var(--ink-3)}
+
+  .note{border:1px solid var(--line);border-left:3px solid var(--ink-3);background:var(--surface);
+       padding:11px 14px;margin:0 0 15px;font-size:13.5px}
+  .note.key{border-left-color:var(--accent)}
+  .note .lbl{font-family:var(--mono);font-size:10px;letter-spacing:.11em;text-transform:uppercase;
+       color:var(--ink-3);display:block;margin-bottom:4px}
+  .note p:last-child{margin-bottom:0}
+
+  .steps{list-style:none;padding:0;margin:0 0 16px;display:flex;flex-direction:column;gap:1px;
+        background:var(--line);border:1px solid var(--line)}
+  .steps li{background:var(--surface);padding:10px 13px;margin:0;display:flex;gap:12px;
+        align-items:baseline;flex-wrap:wrap}
+  .steps .nm{font-family:var(--cond);font-weight:600;flex:1;min-width:190px}
+  .steps .dt{color:var(--ink-2);font-size:12.5px;flex-basis:100%;margin-top:2px}
+
+  footer{margin-top:44px;padding-top:14px;border-top:1px solid var(--line);
+        font-size:12px;color:var(--ink-3);font-family:var(--mono)}
+  @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+
+<div class="wrap">
+<header class="masthead">
+  <span class="eyebrow">OmniReset replication &middot; UWLab &middot; branch cube-stack/delto</span>
+  <h1>Cube Stacking on the Tesollo DG-5F</h1>
+  <p class="sub">Porting the OmniReset cube-stacking task from a Robotiq 2F-85 parallel jaw to a
+  20-joint five-fingered hand on a UR10e, in two variants: position-only and
+  orientation-constrained.</p>
+</header>
+
+<div class="strip">
+  <div class="tile"><span class="k">Cube, paper</span><span class="v fail">0 / 320</span><span class="n">40&nbsp;mm grasps held</span></div>
+  <div class="tile"><span class="k">Cube, resized</span><span class="v pass">51 / 1024</span><span class="n">34&nbsp;mm grasps held &middot; 5.0%</span></div>
+  <div class="tile"><span class="k">Scored successes</span><span class="v fail">3 / 43</span><span class="n">all 10 frames &middot; pre-solved at reset</span></div>
+  <div class="tile"><span class="k">Defects found</span><span class="v acc">9</span><span class="n">5 fixed, 3 worked around</span></div>
+  <div class="tile"><span class="k">Genuine stacks</span><span class="v fail">0</span><span class="n">trained or untrained, any family</span></div>
+</div>
+
+<nav class="tabs" role="tablist">
+  <button role="tab" aria-selected="true"  aria-controls="p-status">Status</button>
+  <button role="tab" aria-selected="false" aria-controls="p-results">Results</button>
+  <button role="tab" aria-selected="false" aria-controls="p-finding">Key finding</button>
+  <button role="tab" aria-selected="false" aria-controls="p-bank">Grasp bank</button>
+  <button role="tab" aria-selected="false" aria-controls="p-resets">Reset banks</button>
+  <button role="tab" aria-selected="false" aria-controls="p-thumb">Thumb A/B</button>
+  <button role="tab" aria-selected="false" aria-controls="p-train">Training</button>
+  <button role="tab" aria-selected="false" aria-controls="p-task">Task &amp; variants</button>
+  <button role="tab" aria-selected="false" aria-controls="p-defects">Defects</button>
+  <button role="tab" aria-selected="false" aria-controls="p-method">Method</button>
+  <button role="tab" aria-selected="false" aria-controls="p-repro">Reproduce</button>
+</nav>
+
+<!-- ================================================================= STATUS -->
+<section class="panel" id="p-status" role="tabpanel">
+  <h2>Pipeline state</h2>
+  <p>Every row is graded on positive evidence — the artefact exists and is well-formed — never on a
+  wrapper's exit code. That rule is inherited from this branch, where
+  <code>cert_nnlv_vertgoal.sh:232-247</code> records that a run which died with a traceback still
+  matched its own success grep and exited&nbsp;0.</p>
+
+  <ul class="steps">
+    <li><span class="nm">0 &middot; Local Isaac Sim 5.1 environment</span><span class="chip pass">PASS</span>
+      <span class="dt">uv venv, Python 3.11, torch 2.7.0+cu126. Isaac launches headless on the RTX 4070 Ti Super.</span></li>
+    <li><span class="nm">1 &middot; Cube pair resolves on UR10e+DG-5F</span><span class="chip pass">PASS</span>
+      <span class="dt">Env constructs; pair directory <code>InsertiveCube34__ReceptiveCube34</code>; DELTO dataset seam applied.</span></li>
+    <li><span class="nm">2 &middot; Config: dataset seam, orientation-free variant, 34&nbsp;mm assets</span><span class="chip pass">PASS</span>
+      <span class="dt">Both task variants registered; full-actuation guard satisfied at construction and at startup.</span></li>
+    <li><span class="nm">3 &middot; Grasp bank, 34&nbsp;mm cube</span><span class="chip pass">PASS</span>
+      <span class="dt">1056 grasps, 6.19&nbsp;MB, 32&nbsp;min. Diversity QA passed — see Grasp bank tab.</span></li>
+    <li><span class="nm">4a &middot; Near-goal offsets (partial assemblies)</span><span class="chip pass">PASS</span>
+      <span class="dt">31.5&nbsp;KB, ~256 offsets — larger than the shipped 40&nbsp;mm pair's 18.7&nbsp;KB.</span></li>
+    <li><span class="nm">4b &middot; C1 reset bank — reaching</span><span class="chip pass">PASS</span>
+      <span class="dt">4000 states, 16.7&nbsp;MB, ~2&nbsp;min. Zero dropped-contact warnings.</span></li>
+    <li><span class="nm">4c &middot; C3 / C2 / C4 reset banks</span><span class="chip pass">RUNNING</span>
+      <span class="dt">The expensive stage. All three require the hand to actually <em>hold</em> the cube, so
+      acceptance collapses — see the Reset banks tab. Running on a rented A6000 at 4096 envs, with the
+      dev card continuing at 1024 as insurance.</span></li>
+    <li><span class="nm">5 &middot; Play/eval config validated end to end</span><span class="chip pass">PASS</span>
+      <span class="dt">34&nbsp;mm assets resolved, <code>use_orientation: False</code> on the dense reward,
+      DELTO-local dataset dir, action space <code>(8, 26)</code>, and <strong>live thresholds
+      <code>pos=0.005 rot=7.0</code></strong> read back out of the running env — the position-only
+      override is active in simulation, not just in config. 20 steps, finite state.</span></li>
+    <li><span class="nm">6 &middot; Full training, both variants</span><span class="chip pass">RUNNING</span>
+      <span class="dt">Both training in parallel since 04:17 — position-only on the dev card, oriented on
+      the rented A6000. Measured <strong>47.4&nbsp;s/iteration</strong> at 2048 envs, of which
+      45.9&nbsp;s is physics collection and 0.109&nbsp;s is the learning step: <strong>99.8% of the
+      cost is simulation</strong>, at 1423 steps/s. Checkpoints land every 100 iterations and are
+      evaluated as they appear.</span></li>
+    <li><span class="nm">7 &middot; Rollout video from the reaching distribution</span><span class="chip pend">PENDING</span></li>
+  </ul>
+
+  <div class="note key"><span class="lbl">Where compute runs, and why</span>
+  <p>Training goes to rented GPUs; <strong>all rendering stays local</strong>. The deployment guide
+  requires an RTX-class GPU on driver branch&nbsp;580 for any camera-enabled run — this box is a
+  4070&nbsp;Ti&nbsp;SUPER on 580.159.04. A100/H100 cannot render at all, and driver&nbsp;595
+  segfaults <code>rtx.scenedb</code> on Isaac&nbsp;5.1.</p></div>
+
+  <h2>Budget</h2>
+  <div class="tablewrap"><table>
+    <tr><th>Item</th><th>Plan</th><th>Spent</th></tr>
+    <tr><td>Reserve, untouchable</td><td class="num">$20.00</td><td class="num">—</td></tr>
+    <tr><td>Position-only variant, ~24&nbsp;h on 4&times;&nbsp;RTX&nbsp;3090</td><td class="num">$14.10</td><td class="num">$0.00</td></tr>
+    <tr><td>Oriented variant, ~24&nbsp;h</td><td class="num">$14.10</td><td class="num">$0.00</td></tr>
+    <tr><td>Bring-up, evals, re-runs</td><td class="num">$15.00</td><td class="num">$0.00</td></tr>
+  </table></div>
+  <p>Bank generation was expected to need rented compute and does not: one batch is 180 env-steps in
+  97&nbsp;s at 1024&nbsp;envs, so a full 1000-grasp bank takes about 32&nbsp;minutes locally.</p>
+</section>
+
+<!-- ================================================================ RESULTS -->
+<section class="panel" id="p-results" role="tabpanel" hidden>
+  <h2>The 9–10% is not a policy achievement at all</h2>
+  <div class="note key"><span class="lbl">Found by inspecting the video, not the numbers</span>
+  <p>Rendering 43 near-goal episodes produced 3 scored successes. <strong>All three ran exactly
+  10&nbsp;frames.</strong> An episode is 160 steps, and failed episodes in the same run ran 130–160.
+  The Play config ends an episode successfully via
+  <code>consecutive_success_state_with_min_length(num_consecutive_successes=5,
+  min_episode_length=10)</code> — so 10 frames means <strong>the success predicate was already
+  satisfied at the earliest instant it could be checked</strong>.</p>
+  <p>These are near-goal resets that <strong>spawned already inside the 5&nbsp;mm tolerance</strong>,
+  sat still for the minimum episode length, and were counted as wins. The cube was stacked before
+  the episode began.</p>
+  <p>That resolves the whole result: trained 9.05% and untrained 10.13% are not two policies
+  performing similarly — they are <strong>the same property of the reset distribution, measured
+  twice</strong>. The near-goal family carries a free ~10% that no policy has to earn.</p>
+  <p class="mono" style="font-size:12px">Successful episodes: ep19 pos_err 3.48&nbsp;mm · ep24
+  2.83&nbsp;mm · ep30 4.98&nbsp;mm, each with euler_xy ≈ 0 and each 10 frames long.</p></div>
+
+  <div class="note"><span class="lbl">What the video files are</span>
+  <p><code>rollout-step-0.mp4</code> — the full 43-episode recording, and the honest artefact: it
+  shows the policy moving arm and hand vigorously without completing a stack.
+  <br><code>prescored_resets_not_stacking.mp4</code> — the 3 scored episodes, renamed from
+  <code>successes.mp4</code> once the 10-frame pattern was found. It is <strong>not</strong> footage
+  of cube stacking and is shipped with a README saying so.
+  <br><code>failures_representative.mp4</code> (full-task) — 2 representative attempts from a family
+  that scored 0/18, labelled as failures rather than padded into a success reel.</p></div>
+
+  <h2>The trained policy does not outperform an untrained one</h2>
+  <p>Position-only variant, <code>model_400</code> (402 iterations), evaluated deterministically and
+  decomposed by reset family the way the paper's Fig.&nbsp;8 decomposes it — ordered from the end of
+  the task to the beginning.</p>
+
+  <div class="tablewrap"><table>
+    <tr><th>Reset family</th><th>Where in the task</th><th>Held at end</th><th>Ever during</th><th>n</th><th>‖a‖ hand</th></tr>
+    <tr class="hl"><td class="mono">C4 PartiallyAssembledEEGrasped</td><td>end — near-goal</td><td class="num">9.0%</td><td class="num">9.3%</td><td class="num">818</td><td class="num">0.820</td></tr>
+    <tr><td class="mono">C3 AnywhereEEGrasped</td><td>middle — grasped, in air</td><td class="num">0.0%</td><td class="num">0.0%</td><td class="num">384</td><td class="num">0.730</td></tr>
+    <tr><td class="mono">C2 RestingEEGrasped</td><td>earlier — near-object</td><td class="num">0.0%</td><td class="num">0.0%</td><td class="num">385</td><td class="num">0.704</td></tr>
+    <tr><td class="mono">C1 AnywhereEEAnywhere</td><td>start — full task</td><td class="num">0.0%</td><td class="num">0.0%</td><td class="num">385</td><td class="num">0.628</td></tr>
+    <tr><td colspan="6" style="padding-top:10px"><em>untrained <code>model_0</code>, same C4 family:</em>
+      <strong>10.13%</strong> &nbsp;·&nbsp; n = 829 &nbsp;·&nbsp; ‖a‖ hand <strong>0.071</strong></td></tr>
+  </table></div>
+
+  <div class="note key"><span class="lbl">The headline, stated plainly</span>
+  <p><strong>402 iterations produced no improvement.</strong> Trained 9.05% vs untrained 10.13% on
+  near-goal — <strong>−1.09 pp, z = −0.75, p = 0.454</strong>. The only non-zero cell in the whole
+  table is the family where the cube already starts inside the 5&nbsp;mm tolerance, and an inert
+  policy scores the same there. Nothing propagated backwards from the goal, which is precisely the
+  mechanism OmniReset claims.</p></div>
+
+  <h3>What did change: the policy learned to act, not to succeed</h3>
+  <div class="tablewrap"><table>
+    <tr><th>&nbsp;</th><th>‖a‖ arm</th><th>‖a‖ hand</th><th>near-goal success</th></tr>
+    <tr><td>untrained</td><td class="num">0.098</td><td class="num">0.071</td><td class="num">10.13%</td></tr>
+    <tr><td>trained (402 iters)</td><td class="num">0.482 <span class="mono">4.9&times;</span></td><td class="num">0.820 <span class="mono">11.5&times;</span></td><td class="num">9.05%</td></tr>
+  </table></div>
+  <p>Hand motion rose <strong>11.5&times;</strong>. The policy travelled a long way from its
+  initialisation — it simply did not travel in a direction that raises success. Action magnitudes are
+  large and roughly uniform across <em>all four</em> families (arm 0.48–0.67, hand 0.63–0.82): it acts
+  vigorously from every starting distribution and completes the task from none.</p>
+
+  <div class="note"><span class="lbl">A confirming signature</span>
+  <p><code>ever-during</code> exceeds <code>held-at-end</code> <strong>only</strong> in the trained
+  arm (9.30% vs 9.00%). The untrained policy is identical on both, because it never disturbs
+  anything. The trained one sometimes reaches success and then knocks the cube back out — the
+  expected sign for a policy that actively pushes.</p></div>
+
+  <h3>Why this is a result about compute, not about the port</h3>
+  <p>Every stage demonstrably works: banks load, the reward fires, the success predicate is computed
+  identically in training and evaluation, and the policy visibly changes. What is missing is
+  experience — <strong>~26M environment-steps</strong> at 2048 parallel environments, the
+  <em>bottom</em> of the paper's swept range, for 402 of 2000 iterations. That is roughly two orders
+  of magnitude below the runs the paper reports, and it is the constraint the 47.4&nbsp;s/iteration
+  measurement predicted from the start.</p>
+
+  <div class="note key"><span class="lbl">The methodological finding, which is the transferable part</span>
+  <p>One fixed untrained policy measured <strong>5.67% → 7.69% → 10.13%</strong> as n grew from 194
+  to 829. Every intermediate conclusion drawn at n≈195 was wrong — <em>including the one that
+  flattered the result</em> ("+3.60 pp, p = 0.052, suggestive"). The only reason this report is not
+  overclaiming is that the final comparison was re-specified to 800 episodes per arm on
+  power-analysis grounds <strong>before</strong> the numbers came in, rather than after seeing which
+  way they pointed.</p></div>
+</section>
+
+<!-- ================================================================ FINDING -->
+<section class="panel" id="p-finding" role="tabpanel" hidden>
+  <h2>The paper's cube does not fit this hand</h2>
+  <p>Measured directly off the USD meshes with <code>pxr</code>: <code>InsertiveCube</code> and
+  <code>ReceptiveCube</code> are both exactly <strong>40.0&nbsp;mm</strong> on every axis, and
+  neither authors a root <code>MassAPI</code>.</p>
+
+  <p>40&nbsp;mm sits <em>inside</em> the DG-5F's validated grasp window of 24.67–41.48&nbsp;mm
+  <span class="chip src">DeltoBlock/metadata.yaml:6-7</span> and under its 59&nbsp;mm
+  <code>maximum_aperture</code>, so the paper's own asset looked usable. It is not.</p>
+
+  <h3>Object sweep — identical sampler settings, only the object differing</h3>
+  <div class="tablewrap"><table>
+    <tr><th>Object</th><th>Edge</th><th>Mass</th><th>Envs</th><th>Attempts</th><th>Held</th><th>Rate</th></tr>
+    <tr><td><code>deltoblock</code> — the hand's own reference object</td><td class="num">34 mm</td><td class="num">0.030 kg</td><td class="num">64</td><td class="num">64</td><td class="num">2</td><td class="num">3.1%</td></tr>
+    <tr class="hl"><td><code>cube</code> — the paper's asset, re-massed</td><td class="num">40 mm</td><td class="num">0.049 kg</td><td class="num">64</td><td class="num">320</td><td class="num">0</td><td class="num">0.0%</td></tr>
+    <tr><td><code>cube34</code> — same asset, scale 0.85</td><td class="num">34 mm</td><td class="num">0.030 kg</td><td class="num">64</td><td class="num">64</td><td class="num">1</td><td class="num">1.6%</td></tr>
+    <tr><td><code>cube34</code> at scale</td><td class="num">34 mm</td><td class="num">0.030 kg</td><td class="num">1024</td><td class="num">1024</td><td class="num">51</td><td class="num">5.0%</td></tr>
+  </table></div>
+
+  <p>The 40&nbsp;mm result is not small-sample noise, and the mechanism is unambiguous. Before
+  gravity engages every condition sits at 64/64; the instant it does, at t=10&nbsp;s, the object is
+  gone:</p>
+  <pre>pre-gravity   (592 samples)  not_abnormal=64/64  stable=64  not_far=64  above_ground=64  coll_free=64
+post-gravity  (all batches)  not_abnormal=64/64  stable~24-30  <strong>not_far=0   above_ground=0</strong>   coll_free=64</pre>
+  <p><code>not_far=0, above_ground=0</code> means the cube left the grasp pose and reached the
+  ground, in every environment of every batch. The same line for <code>deltoblock</code> reads
+  <code>not_far=2 above_ground=2</code> — two envs hold. The window is a geometric reachability
+  bound, not a holding guarantee, and 40&nbsp;mm sits 1.5&nbsp;mm below its top.</p>
+
+  <div class="note key"><span class="lbl">Decision</span>
+  <p>Use the paper's cube <em>asset</em> at <code>scale=0.85</code> → 34.0&nbsp;mm, mass
+  0.03&nbsp;kg — geometrically and inertially identical to <code>deltoblock</code>, the object this
+  hand's grip-force budget was actually sized against. A stated, forced deviation: the paper's cube
+  is sized for a Robotiq 2F-85 parallel jaw, ours for a Tesollo DG-5F. The task — stack one cube on
+  another — is unchanged.</p></div>
+
+  <h3>Context: the grasp path was already the weak link</h3>
+  <p>This is not a regression introduced by the port. The branch documents its own sampler yield on
+  its own reference object <span class="chip src">delto_cfg.py:600-632</span>:</p>
+  <pre>"10x reproduces across three seeds (2/12, 1/12, 1/12 -- roughly 11 percent per-episode) with the
+ thumb gap collapsing 1.267 -> 0.006 rad and holding through gravity AND shake, 7 bodies in
+ contact, no limit cycle. 20x is WORSE (0/180, fewer bodies, lower peak force) ...
+ <strong>11 percent is well below the 60 percent acceptance bar</strong>"</pre>
+  <p>Separately, <code>DeltoHand/metadata.yaml:64</code> stamps the grasp centre
+  <strong>"FK-DERIVED, NOT YET EMPIRICALLY CONFIRMED"</strong> while the same file's header claims
+  replay "holds under gravity". The two statements are inconsistent; the measurements above side
+  with the cautious one.</p>
+</section>
+
+<!-- =================================================================== BANK -->
+<section class="panel" id="p-bank" role="tabpanel" hidden>
+  <h2>Is a 5%-acceptance bank actually usable?</h2>
+  <p>Low yield is a wall-clock problem, not automatically a quality one — every recorded grasp
+  passed the shake test. But it could mean the only candidates surviving are one face at one angle,
+  and the paper's §4.3 ablation shows a narrowed grasp distribution costs both sample efficiency and
+  final success rate. So the bank was measured, not assumed.</p>
+
+  <div class="tablewrap"><table>
+    <tr><th>Metric</th><th>Value</th><th>Reading</th></tr>
+    <tr><td>Grasps recorded</td><td class="num">1056</td><td>6.19&nbsp;MB; the shipped 2F-85 bank for this pair is 5.0&nbsp;MB</td></tr>
+    <tr><td>Grasp radius <code>|p|</code></td><td class="num">163.6 – 175.8 mm</td><td>a 12&nbsp;mm shell — expected, the pinch point sits at a fixed distance from the mount</td></tr>
+    <tr><td>Pairwise orientation, median</td><td class="num">89.4°</td><td>wide — not one pose repeated</td></tr>
+    <tr><td>Nearest-neighbour orientation, median</td><td class="num">0.58°</td><td>tight clusters <em>within</em> each mode</td></tr>
+    <tr><td>Cube faces approached</td><td class="num">4 / 6</td><td>+x 36.3%, −y 36.3%, +z 26.6%, +y 0.9%, −x and −z never</td></tr>
+  </table></div>
+
+  <div class="note key"><span class="lbl">The limitation, stated rather than buried</span>
+  <p>Coverage is structurally narrower than the paper's "Broad" setting, and it is <strong>the hand,
+  not a tuning miss</strong>. <code>DeltoHand/metadata.yaml</code> zeroes all three top-down sweep
+  knobs, with the reason given in the file: <em>"Generic top-down position/height/tilt and standoff
+  sweeps move this non-parallel hand off its narrow opposing-pad basin; keep them disabled for
+  DELTO."</em> The DG-5F trades grasp diversity for grasp reliability. Approach from below (−z) is
+  geometrically impossible for a top-down sampler on a resting object in any case.</p>
+  <p>By the paper's own ablation this predicts somewhat worse sample efficiency than their 2F-85
+  cube run. That is a property of the port's hardware, and it belongs in the results up front rather
+  than being discovered later in a learning curve.</p></div>
+
+  <h3>Untested lever, if sample efficiency disappoints</h3>
+  <p>The four <code>grasp_topdown_*</code> knobs are exposed as Hydra overrides precisely so they can
+  be swept per object. The warnings that led to zeroing them were written about a 200&nbsp;mm table
+  leg; a cube is a far more forgiving shape, so a small non-zero roll/pitch sweep might buy diversity
+  without leaving the opposing-pad basin. That is a measurable experiment, not a guess — and it has
+  not been run.</p>
+</section>
+
+<!-- ================================================================= RESETS -->
+<section class="panel" id="p-resets" role="tabpanel" hidden>
+  <h2>Where reset generation gets expensive</h2>
+  <div class="tablewrap"><table>
+    <tr><th>Bank</th><th>Family</th><th>Needs the hand to hold?</th><th>Cost at 1024 envs</th></tr>
+    <tr><td>partial assemblies</td><td>near-goal offsets</td><td>no</td><td class="num">seconds</td></tr>
+    <tr><td class="mono">C1</td><td>reaching</td><td>no</td><td class="num">4000 states / ~2 min</td></tr>
+    <tr class="hl"><td class="mono">C3</td><td>stable grasp</td><td><strong>yes</strong></td><td class="num">~2.0 / min &rarr; <strong>122 states</strong></td></tr>
+    <tr><td class="mono">C2</td><td>near-object</td><td><strong>yes</strong></td><td class="num">~3.1 / min &rarr; 100 states</td></tr>
+    <tr><td class="mono">C4</td><td>near-goal</td><td><strong>yes</strong></td><td class="num">~1.4 / min &rarr; <strong>125 states</strong></td></tr>
+  </table></div>
+
+  <p>C1 only has to place a cube on a table and put the arm somewhere legal. The other three all
+  require a sustained grasp, and that is a 3-order-of-magnitude difference in cost.</p>
+
+  <div class="note key"><span class="lbl">This is inherent, not a defect in the port</span>
+  <p>The branch's own measured acceptance on the leg pair is <strong>0.83%</strong> (40/4799) for
+  the near-object family against <strong>57.21%</strong> for reaching — a 69&times; spread between
+  the grasped and ungrasped families. Our C3 sits in the same regime, for two compounding reasons:
+  the hand holds this cube about 5% of the time at best (that is the ceiling), and C3 is strictly
+  harder than the sampler that produced that 5% — the sampler uses the hand-only articulation with
+  a fixed root, while C3 must also drive the full UR10e to a mid-air grasp pose and keep the grasp
+  through the arm's own dynamics.</p></div>
+
+  <h3>What was done about it</h3>
+  <p>Acceptance-bound work scales linearly in parallel environments, and the dev card was already at
+  14.8 of 16.4&nbsp;GB at 1024 envs — no headroom to buy. So an RTX A6000 (46&nbsp;GB) was rented at
+  $0.4556/h and the three grasped banks moved there at 4096 envs.</p>
+  <p>Bank sizes are 2000 states for the grasped families against 4000 for C1 — a deliberate, stated
+  reduction. The paper never states bank sizes; the deployment guide suggests 10,000. At training
+  time the four banks are sampled uniformly at 0.25 each across roughly 1.6M episode starts, so
+  every state is reused hundreds of times whether the bank holds 2000 or 10,000.</p>
+
+  <h3>Two harness bugs this stage exposed</h3>
+  <ul>
+    <li><strong>The verifier passed on a stale artefact.</strong> After a fast-failing rerun the
+    previous run's file was still on disk at full size, so C1 "passed" in 7 seconds having recorded
+    nothing. Every stage now deletes its output first and requires the artefact to be newer than the
+    stage that produced it.</li>
+    <li><strong>A killed Isaac process wedges the GPU.</strong> <code>kill -9</code> left 13.8&nbsp;GB
+    held; the next run came up with <code>_physics_sim_view = None</code> and died at
+    <code>create_rigid_body_view</code> — which reads like a config error and is not. There is now a
+    VRAM preflight that refuses to start below 8&nbsp;GB free and names the offending PIDs.</li>
+  </ul>
+</section>
+
+<!-- ================================================================== THUMB -->
+<section class="panel" id="p-thumb" role="tabpanel" hidden>
+  <h2>A hypothesis that did not survive its own test</h2>
+  <p>Grasp sampling accepts at 5.0%. The three grasp-dependent reset families accept at roughly 1%
+  — same object, same grasps, same hand. A 5&times; gap between <em>sampling</em> a grasp and
+  <em>replaying</em> it needs an explanation.</p>
+
+  <h3>The mechanism found</h3>
+  <p><code>DeltoGraspSamplingCfg</code> rebinds two joints before it samples — <code>rj_dg_1_4</code>
+  and <code>rj_dg_5_4</code>, the distal joints of the thumb-side pair, from ~0.17 to ~1.70 stiffness
+  — and the branch records why the stock values do not work:</p>
+  <pre>"realised torque is bounded by stiffness * 0.1. At 0.1698 that is 0.0170 N.m -- matching the
+ measured applied torque to four decimals -- against a 0.01 N.m friction floor ...
+ <strong>The joint sat frozen at ~1.05 rad, velocity exactly 0.000</strong>, in EVERY
+ velocity/deadband/stiffness combination swept."</pre>
+  <p><strong>That rebind is scoped to the sampler alone.</strong> Every reset-state and RL config
+  uses the stock actuator. So a grasp is sampled and shake-validated by a hand that can close its
+  thumb, then replayed — during reset recording <em>and during RL</em> — by a hand that cannot.</p>
+
+  <h3>The test, and the result</h3>
+  <p>512 envs, 420&nbsp;s per arm, same object, same grasp bank, only the two stiffnesses differing.
+  C3 accepts a state only if the grasp holds, so its acceptance rate <em>is</em> the hold rate —
+  there is no interpretation layer between the number and the claim.</p>
+  <div class="tablewrap"><table>
+    <tr><th>Arm</th><th>States accepted in 420 s</th><th>Poisson noise</th></tr>
+    <tr><td>stock actuator</td><td class="num">23</td><td class="num">&plusmn;4.8</td></tr>
+    <tr><td>grasp-matched actuator</td><td class="num">31</td><td class="num">&plusmn;5.6</td></tr>
+  </table></div>
+
+  <div class="note key"><span class="lbl">Verdict</span>
+  <p>+35%, but the difference is <strong>8 &plusmn; 7.4 — about 1.1&sigma;. Not significant.</strong>
+  A run this size cannot separate a 35% effect from chance; it would need roughly an order of
+  magnitude more states per arm. <strong>The hypothesis is not supported.</strong> The thumb-side
+  stiffness is not what accounts for the sampling-to-reset gap. The likelier explanation remains the
+  one already on the table: the sampler uses the hand-only articulation with a fixed root, while the
+  reset families must additionally drive the full UR10e to the grasp pose and hold it through the
+  arm's own dynamics.</p></div>
+
+  <h3>Adopted anyway — for a different reason</h3>
+  <ul>
+    <li><strong>The grasp bank was recorded with this actuator.</strong> Replaying those postures
+    under a different one is a real mismatch whatever it costs in acceptance rate.</li>
+    <li><strong>It cannot exceed the force budget.</strong> At 10&times; the commanded torque already
+    exceeds the 0.06&nbsp;N·m <code>effort_limit_sim</code>, so delivered torque is still capped
+    there and the ~2.2&nbsp;N fingertip ceiling is unchanged. It lets the joint reach a budget it
+    already has.</li>
+    <li><strong>A frozen thumb handicaps the policy</strong>, not just the recorder — independently
+    of how many reset states get banked.</li>
+  </ul>
+  <p><strong>Not claimed</strong>: that this speeds up bank generation, or improves final success
+  rate. Neither is established.</p>
+
+  <h3>A side-finding worth more than the hypothesis</h3>
+  <p>Fewer environments run <em>faster</em> here. The rented A6000 at 2048 envs managed ~1.2
+  states/min; the dev card at 512 managed 3.3–4.4. Acceptance is per-env-per-episode, but per-step
+  cost grows faster than that, so extra parallelism was actively hurting. Both boxes now run 512 —
+  which also means the paper's "scale the number of parallel environments" advice, which is about
+  <em>PPO batch size</em>, does not transfer to reset-state <em>recording</em>.</p>
+</section>
+
+<!-- ================================================================== TRAIN -->
+<section class="panel" id="p-train" role="tabpanel" hidden>
+  <h2>What the run actually costs</h2>
+  <p>The smoke run measures rather than assumes, and the measurement reshaped the plan:</p>
+  <div class="tablewrap"><table>
+    <tr><th>Quantity</th><th>Measured</th><th>Meaning</th></tr>
+    <tr><td>Per iteration</td><td class="num">47.4 s</td><td>at 2048 envs &times; 32 steps</td></tr>
+    <tr class="hl"><td>&mdash; physics collection</td><td class="num">45.9 s</td><td><strong>99.8% of the cost</strong></td></tr>
+    <tr><td>&mdash; learning step</td><td class="num">0.109 s</td><td>the gradient update is free by comparison</td></tr>
+    <tr><td>Throughput</td><td class="num">1423 steps/s</td><td>a typical IsaacLab manipulation task runs 50–200k</td></tr>
+    <tr><td>2000 iterations</td><td class="num">26.3 h</td><td>not reachable; hence a planned stop</td></tr>
+  </table></div>
+  <p>The cause is this hand, not the task: <code>solver_position_iteration_count = 36</code> against a
+  default of 4–8, with self-collisions across 25 finger bodies. Those are the settings that make the
+  soft-pad grasp behave, and <strong>they were not lowered</strong> — the reset banks were recorded
+  at 36, so training under cheaper contact physics would replay them under different dynamics than
+  they were validated in.</p>
+
+  <h2>The training curve is misleading, and here is why</h2>
+  <p>Mean reward falls from &minus;0.44 to &minus;3.28 over 200 iterations. Taken alone that reads
+  as divergence. The decomposition says otherwise:</p>
+  <div class="tablewrap"><table>
+    <tr><th>iter</th><th>success_reward</th><th>dense</th><th>ee_dist</th><th>action_rate</th><th>gSDE noise std</th></tr>
+    <tr><td class="num">12</td><td class="num">0.0214</td><td class="num">0.0767</td><td class="num">0.0754</td><td class="num">&minus;0.041</td><td class="num">1.02</td></tr>
+    <tr><td class="num">50</td><td class="num">0.0095</td><td class="num">0.0775</td><td class="num">0.0762</td><td class="num">&minus;0.177</td><td class="num">1.82</td></tr>
+    <tr><td class="num">100</td><td class="num">0.0234</td><td class="num">0.0771</td><td class="num">0.0755</td><td class="num">&minus;0.251</td><td class="num">2.32</td></tr>
+    <tr><td class="num">200</td><td class="num">0.0275</td><td class="num">0.0782</td><td class="num">0.0761</td><td class="num">&minus;0.290</td><td class="num">2.65</td></tr>
+  </table></div>
+  <p>The task terms are <em>flat</em>. The entire decline is the <code>action_rate</code> penalty
+  tracking gSDE's exploration noise as it inflates from 0.75 to 2.65 — the entropy bonus dominating
+  a weak advantage signal, which is what a batch two orders of magnitude below the paper's produces.</p>
+
+  <div class="note key"><span class="lbl">Why that curve cannot answer "did it learn"</span>
+  <p>Evaluation is <strong>deterministic</strong>. <code>rsl_rl</code>'s
+  <code>get_inference_policy</code> returns <code>act_inference</code>, which is the actor's
+  <em>mean</em> action — the exploration noise that dominates the training reward never enters it.
+  Training return and evaluated behaviour are measuring different things, so the only honest way to
+  separate "learned a little" from "learned nothing" is to evaluate an untrained checkpoint against
+  a trained one under identical deterministic conditions. That comparison is what this run reports,
+  rather than an inference from the curve.</p></div>
+
+  <h2>First measured comparison — later overturned</h2>
+  <div class="note" style="border-left-color:var(--fail)"><span class="lbl">Superseded</span>
+  <p>This n≈195 comparison is <strong>overturned</strong> by the 800-episode result in
+  <strong>Results</strong>. Retained because it shows exactly how an under-powered measurement
+  produced a plausible, publishable-looking, and wrong conclusion.</p></div>
+  <p>Untrained <code>model_0</code> against <code>model_200</code>, identical deterministic
+  evaluation, near-goal reset family:</p>
+  <div class="tablewrap"><table>
+    <tr><th>Checkpoint</th><th>Success (held at end)</th><th>n</th><th>Position error, median</th></tr>
+    <tr><td><code>model_0</code> — untrained</td><td class="num">5.67%</td><td class="num">194</td><td class="num">13.5 mm</td></tr>
+    <tr class="hl"><td><code>model_200</code></td><td class="num">9.23%</td><td class="num">195</td><td class="num">18.4 mm</td></tr>
+    <tr><td colspan="4"><strong>+3.56 pp &middot; z = 1.34 &middot; two-tailed p = 0.181 &mdash;
+      NOT SIGNIFICANT</strong></td></tr>
+  </table></div>
+
+  <div class="note key"><span class="lbl">The baseline is the point</span>
+  <p>An <em>untrained</em> policy scores <strong>5.67%</strong> from near-goal resets: those states
+  begin close enough that a policy doing nothing useful still leaves the cube seated some of the
+  time. Reported alone, 9.23% would have looked like a modest success. It is only meaningful against
+  that floor — which is why the baseline was run at all, and why a +63% relative improvement is
+  still not a claim.</p>
+  <p>Resolving an effect this size needs roughly <strong>800 episodes per arm</strong> (z ≈ 2.7), so
+  the final comparison was re-specified from 256 to 800. Evaluation costs a fraction of training;
+  under-powering the one measurement the result rests on would be a poor trade.</p></div>
+
+  <h3>The trend: a step, not a slope</h3>
+  <div class="note" style="border-left-color:var(--fail)"><span class="lbl">Superseded — kept as a record of how the estimate moved</span>
+  <p>Everything in this section was measured at <strong>n ≈ 195 per point</strong> and is
+  <strong>overturned</strong> by the 800-episode comparison in the <strong>Results</strong> tab. The
+  final answer is that trained and untrained are indistinguishable (9.05% vs 10.13%, p = 0.454). It
+  is kept here because <em>how</em> the estimate moved is the most transferable lesson in this
+  report: the same untrained policy read 5.67% → 7.69% → 10.13% as n grew, and the intermediate
+  readings below looked convincing at every stage.</p></div>
+  <p>Two points cannot resolve a 3.5&nbsp;pp difference, so four checkpoints were evaluated under
+  identical conditions. The shape is independent evidence a single pair cannot give.</p>
+  <div class="tablewrap"><table>
+    <tr><th>Checkpoint</th><th>Near-goal success</th><th>n</th></tr>
+    <tr><td><code>model_0</code> — untrained</td><td class="num">5.67%</td><td class="num">194</td></tr>
+    <tr><td><code>model_100</code></td><td class="num">11.50%</td><td class="num">200</td></tr>
+    <tr><td><code>model_200</code></td><td class="num">9.23%</td><td class="num">195</td></tr>
+    <tr><td><code>model_300</code></td><td class="num">10.10%</td><td class="num">198</td></tr>
+    <tr class="hl"><td><strong>trained, pooled</strong></td><td class="num"><strong>10.29%</strong></td><td class="num">593</td></tr>
+  </table></div>
+  <pre>untrained vs trained pooled   +4.62 pp,  z = 1.94,  two-tailed p = 0.0529
+trained rate 95% CI (Wilson)  [8.09%, 12.99%]   — excludes the untrained 5.67%
+across trained checkpoints    9.2% – 11.5%, <strong>no monotonic trend</strong>
+model_100 vs model_200        z = 0.72, p = 0.472 — indistinguishable</pre>
+
+  <div class="note key"><span class="lbl">What this says</span>
+  <p><strong>Training does something, and it stops early.</strong> The gain appears by iteration 100
+  (~6.5M env-steps) and then flatlines for the next 13M. p = 0.0529 is <em>marginally short</em> of
+  the conventional threshold — called suggestive, not established, because rounding it down to
+  "significant" would be the easy write-up and the wrong one. The 800-episode harvest settles it.</p>
+  <p>This is the shape the paper's own §4.3 ablation predicts for an under-resourced run: small
+  environment counts "can make progress at solving the task from Near-Goal states" but fail to scale
+  to the full multi-stage task. This run sits at 2048 envs — the <em>bottom</em> of their swept
+  range — for 300 iterations rather than 2000.</p></div>
+
+  <h3>The degenerate-policy alternative: ruled out by measurement</h3>
+  <p>Beating the baseline at near-goal is not by itself competence — some resets spawn the cube
+  already inside the 5&nbsp;mm threshold, so a policy that learned to <strong>hold still</strong>
+  would collect those for free. Measured directly:</p>
+  <div class="tablewrap"><table>
+    <tr><th>Checkpoint</th><th>Success</th><th>‖a‖ arm</th><th>‖a‖ hand</th></tr>
+    <tr><td><code>model_0</code> — untrained</td><td class="num">7.7%</td><td class="num">0.096</td><td class="num">0.071</td></tr>
+    <tr class="hl"><td><code>model_300</code> — trained</td><td class="num">10.8%</td><td class="num">0.408 <span class="mono">(4.3&times;)</span></td><td class="num">0.665 <span class="mono">(9.4&times;)</span></td></tr>
+  </table></div>
+  <p>The trained policy moves the hand <strong>9.4&times;</strong> more. It is not frozen — it is
+  actively engaging the cube. Rejected on measurement, not on argument.</p>
+
+  <div class="note key"><span class="lbl">A correction that goes against the result</span>
+  <p>Re-running the <em>same</em> untrained checkpoint gave <strong>7.69%</strong> where the first
+  measurement gave <strong>5.67%</strong> — identical settings, only the seed differed. That
+  <strong>2.02&nbsp;pp spread is the noise floor at n≈195</strong>, comparable to the entire effect
+  being measured.</p>
+  <p>My earlier comparison had used the low draw as its baseline. Pooling both untrained runs gives
+  <strong>6.68%</strong> (26/389) against a trained <strong>10.29%</strong> (61/593):
+  <strong>+3.60&nbsp;pp, z = 1.94, p = 0.052</strong>. The effect is <em>smaller</em> than the
+  +4.62&nbsp;pp reported earlier and still not significant. Not an arithmetic error — an
+  under-powered baseline, which is precisely the failure a single measurement invites.</p></div>
+
+  <div class="note"><span class="lbl">What the combination supports</span>
+  <p>The policy <strong>acts</strong> (9.4&times; hand motion) and scores <strong>modestly</strong>
+  higher, but does <strong>not</strong> place accurately — position error median got worse and the
+  full task stays at 0%. It has learned to engage the cube, not to place it. That is a more specific
+  claim than "it learned a bit": it says which half was learned and which was not.</p></div>
+
+  <h3>A detail a single number would have hidden</h3>
+  <p>Position error <em>median</em> got <strong>worse</strong> (13.5 → 18.4 mm) while the success
+  <em>rate</em> went <strong>up</strong>. Those reconcile only if the distribution became bimodal —
+  more episodes landing inside the 5 mm threshold <em>and</em> more ending far away, with fewer in
+  between. That is what an emerging but unreliable manipulation policy looks like: sometimes
+  decisive, sometimes shoving the cube off. A median alone reads "worse"; a success rate alone reads
+  "better". Both are recorded, with p90, for exactly this reason.</p>
+  <p><code>ever_during</code> equals <code>held_at_end</code> in both arms, so nothing is being
+  knocked off after a momentary success — the failure mode this branch's sticky-OR grading would
+  have concealed is not occurring here.</p>
+
+  <h2>The compute gap, stated plainly</h2>
+  <p>The paper's ablation sweeps 2048–65 536 parallel environments and finds that small counts still
+  solve <em>near-goal</em> states but fail the full task from reaching states. This run is at 2048 —
+  the bottom of that range — for a few hundred iterations rather than 2000.</p>
+  <p>So the honest target here is <strong>near-goal competence</strong>, which is exactly what the
+  paper's Fig.&nbsp;8 shows emerging first, and success is reported <strong>decomposed by reset
+  family</strong> for the same reason the paper decomposes it. A single full-task number would hide
+  whichever way the result went.</p>
+</section>
+
+<!-- =================================================================== TASK -->
+<section class="panel" id="p-task" role="tabpanel" hidden>
+  <h2>Two variants, one shared pipeline</h2>
+  <p>Success is computed in one place, <code>ProgressContext.__call__</code>
+  <span class="chip src">mdp/rewards.py</span>:</p>
+  <pre>e_x, e_y, _ = euler_xyz_from_quat(...)
+euler_xy_distance   = |wrap_to_pi(e_x)| + |wrap_to_pi(e_y)|   <em># yaw is dropped, deliberately</em>
+orientation_aligned = euler_xy_distance &lt; success_orientation_threshold
+position_aligned    = xyz_distance      &lt; success_position_threshold
+success             = orientation_aligned &amp; position_aligned</pre>
+
+  <p>Yaw is already discarded upstream, so the <strong>oriented</strong> variant constrains roll and
+  pitch only — "a chosen face must end up facing up, but the cube may spin freely about the
+  vertical". That is exactly what the paper's "with a desired orientation" (§4.1) means as this
+  codebase implements it, and it is what a red-face-up criterion would be.</p>
+
+  <div class="tablewrap"><table>
+    <tr><th>&nbsp;</th><th>Position-only (primary)</th><th>Oriented (paper-faithful)</th></tr>
+    <tr><td>Success test</td><td>position only</td><td>position <strong>and</strong> roll/pitch</td></tr>
+    <tr><td><code>success_orientation_threshold</code></td><td class="num">7.0 rad</td><td class="num">0.05 rad</td></tr>
+    <tr><td>Dense goal shaping</td><td><code>use_orientation=False</code></td><td>50/50 position + angle</td></tr>
+    <tr><td>Reset banks</td><td colspan="2">shared — recording grades from asset metadata, never the command term</td></tr>
+  </table></div>
+
+  <h3>Why 7.0 and not infinity</h3>
+  <p><code>euler_xy_distance</code> is a sum of two <code>wrap_to_pi</code> magnitudes and is
+  therefore bounded by 2π ≈ 6.2832. 7.0 is unconditionally satisfied, exactly like infinity, while
+  staying a finite number that logging and JSON serialisation handle without special cases.</p>
+
+  <h3>Dropping orientation is a deletion, not a re-weighting</h3>
+  <p>The paper's Eq.&nbsp;5 is
+  <code>r_dist = λ·½·[exp(−|x_err|/σ) + exp(−|θ_err|/σ)]</code>. The orientation-free variant drops
+  the second summand <em>and</em> the ½, so the position term keeps full scale. Setting
+  <code>std_angle</code> huge instead is not equivalent — it leaves a constant +0.5 and halves the
+  position gradient.</p>
+
+  <div class="note"><span class="lbl">Supporting evidence from the branch</span>
+  <p>On the table-leg task, adding an orientation requirement cost a <strong>4.5× precision
+  penalty</strong> — 26.4&nbsp;mm median against 4.8&nbsp;mm without. That is the best in-repo
+  reason to expect the position-only variant to be markedly the easier of the two.</p></div>
+</section>
+
+<!-- ================================================================ DEFECTS -->
+<section class="panel" id="p-defects" role="tabpanel" hidden>
+  <h2>Defects found in the inherited branch</h2>
+  <div class="tablewrap"><table>
+    <tr><th>&nbsp;</th><th>Defect</th><th>Consequence</th><th>Action</th></tr>
+    <tr><td class="mono">D1</td>
+      <td><code>Ur10eDelto/metadata.yaml:43</code> carried a stale <code>gripper_offset</code>,
+        15.7&nbsp;mm from the value at <code>DeltoHand/metadata.yaml:64</code> — while its own
+        line&nbsp;39 states the two must match.</td>
+      <td>The reach reward measured end-effector-to-object distance from a point that does not
+        exist. The stale number is the one whose use previously cost 6144 attempts → 0 successes.</td>
+      <td><span class="chip pass">FIXED</span></td></tr>
+    <tr><td class="mono">D2</td>
+      <td><code>ur10e_delto_cfg.py</code> never calls <code>_apply_delto_dataset_dir</code>; the
+        UR5e variant calls it at nine sites.</td>
+      <td>Every UR10eDelto task silently reads the shared cloud dataset — for this pair, a 12-joint
+        Robotiq bank that dies at reset in a 26-DOF articulation.</td>
+      <td><span class="chip pass">WORKED AROUND</span></td></tr>
+    <tr><td class="mono">D3</td>
+      <td><code>axial_depth_sampling</code> is hardwired to table-leg thread geometry, and its two
+        raise-loudly guards <em>pass</em> for a cube pair.</td>
+      <td>It would have run silently, drawing near-goal offsets from a bore that does not exist on a
+        stacking task.</td>
+      <td><span class="chip pass">WORKED AROUND</span></td></tr>
+    <tr><td class="mono">D4</td>
+      <td>The shipped cube spawns at the 1&nbsp;g default and authors no <code>MassAPI</code>, so
+        <code>override_mass=False</code> does not help either.</td>
+      <td>The DELTO sampler scales its validating shake by mass — at 1&nbsp;g essentially any
+        candidate survives, so the bank would be meaningless.</td>
+      <td><span class="chip pass">WORKED AROUND</span></td></tr>
+    <tr><td class="mono">D5</td>
+      <td>Two comments cite a 7.31&nbsp;rad/s hand velocity limit; the real cap is 3.0.</td>
+      <td>None — comments only.</td>
+      <td><span class="chip pend">LEFT ALONE</span></td></tr>
+    <tr><td class="mono">D6</td>
+      <td>A <strong>missing dataset surfaces as a nonsense <code>TypeError</code></strong>:
+        <code>MultiResetManager.__init__() got an unexpected keyword argument 'dataset_dir'</code>.</td>
+      <td>Says nothing about the real cause, which is a <code>FileNotFoundError</code> on a
+        <code>resets_*.pt</code> that does not exist. Cost real debugging time.</td>
+      <td><span class="chip pass">DIAGNOSED</span></td></tr>
+    <tr><td class="mono">D7</td>
+      <td>A byte-size check cannot distinguish a truncated bank from a complete one.</td>
+      <td>A killed recording left a 207&nbsp;KB file holding <strong>49 of 2000</strong> states, and
+        it passed a <code>&ge; 100&nbsp;KB</code> threshold as if complete.</td>
+      <td><span class="chip pass">FIXED</span></td></tr>
+    <tr><td class="mono">D8</td>
+      <td><code>randomize_insertive_object_mass</code> draws uniform <strong>0.02–0.2&nbsp;kg at
+        startup</strong>, held per-environment for the whole run. Its own comment: <em>"we assume
+        insertive object is somewhere between 20g and 200g"</em> — a Robotiq 2F-85 assumption.</td>
+      <td>This hand holds its validated 0.030&nbsp;kg object ~5% of the time and fails 0.049&nbsp;kg
+        entirely. Only 17% of environments would draw &le;&nbsp;50&nbsp;g; the other <strong>~83%
+        would train on a physically unavailable grasp for the entire run</strong>, and it would have
+        read as "RL did not converge".</td>
+      <td><span class="chip pass">FIXED</span></td></tr>
+    <tr><td class="mono">D9</td>
+      <td>Cap scripts used <code>pkill</code> (SIGTERM); Isaac ignores it.</td>
+      <td>The C3 cap <strong>logged success while the recorder kept running</strong>, so the next
+        family never got the GPU. Found by verifying rather than trusting the log.</td>
+      <td><span class="chip pass">FIXED</span></td></tr>
+  </table></div>
+
+  <div class="note key"><span class="lbl">D8 — and a hypothesis rejected before acting on it</span>
+  <p>The same range looked like it might <em>also</em> explain the 5%&nbsp;→&nbsp;~1% collapse in
+  reset-bank acceptance: if 83% of environments carry an unholdable cube, then
+  <code>0.17 × 5% ≈ 0.85%</code> reproduces the observed rate almost exactly. A very tempting fit.</p>
+  <p><strong>It is wrong.</strong> <code>ResetStatesBaseEventCfg</code> contains no mass
+  randomization at all — recording runs at the fixed 0.030&nbsp;kg spawn mass, exactly like the
+  grasp sampler. The arithmetic agreeing was coincidence. This was checked <em>before</em> restarting
+  any recording on the strength of it, which would have cost about an hour.</p></div>
+
+  <div class="note key"><span class="lbl">D6 — the mechanism, because it will bite anyone extending this</span>
+  <p>IsaacLab defers instantiation of non-<code>prestartup</code> class event terms to a callback on
+  the Omniverse timeline PLAY event. <code>MultiResetManager</code> is such a term, so it is
+  constructed <em>inside</em> that callback — and this branch already documents that the timeline
+  dispatcher <strong>prints and continues</strong> rather than propagating. The
+  <code>FileNotFoundError</code> is therefore swallowed, <code>term_cfg.func</code> is left as the
+  class rather than an instance, and the next <code>EventManager.apply(mode="reset")</code> calls it
+  as a plain function — landing in <code>__init__</code>, which complains about the first keyword it
+  sees.</p>
+  <p>Confirmed rather than inferred: a diagnostic that inspects the manager shows the term correctly
+  instantiated and <code>reset()</code> succeeding when the banks exist, and reproduces the
+  <code>TypeError</code> when they do not. <strong>When you see it, check that
+  <code>&lt;dataset_dir&gt;/Resets/&lt;pair&gt;/resets_&lt;Type&gt;.pt</code> exists</strong> — nothing in
+  the error names the file, the pair, or the directory.</p></div>
+
+  <div class="note"><span class="lbl">On D1</span>
+  <p>The correction changes the reach reward's reference point for every task on this robot,
+  including the table-leg ones. That is deliberate — the point it referenced does not exist — and it
+  is one line to revert. It cannot invalidate any grasp dataset: the sampler reads
+  <code>grasp_center_offset</code> from <code>Robots/DeltoHand/metadata.yaml</code>, never this
+  field.</p></div>
+</section>
+
+<!-- ================================================================= METHOD -->
+<section class="panel" id="p-method" role="tabpanel" hidden>
+  <h2>What OmniReset actually does</h2>
+  <p>The method's claim is that long-horizon exploration collapses if you reset the simulator into
+  the diverse states that make up the task, rather than shaping rewards or supplying demonstrations.
+  Rewards are task-agnostic and shared across every task in the paper without modification.</p>
+
+  <h3>Four reset families, sampled as a flat mixture</h3>
+  <div class="tablewrap"><table>
+    <tr><th>Bank</th><th>Family</th><th>How it is generated</th><th>Needs</th></tr>
+    <tr><td class="mono">C1</td><td>Reaching</td><td>object on the table, gripper anywhere in the workspace</td><td>—</td></tr>
+    <tr><td class="mono">C2</td><td>Near-object</td><td>gripper at a grasp point + jitter, open or closed at random</td><td>C1 + grasps</td></tr>
+    <tr><td class="mono">C3</td><td>Stable grasp</td><td>object in mid-air, gripper at a feasible grasp point</td><td>grasps</td></tr>
+    <tr><td class="mono">C4</td><td>Near-goal</td><td>object at a dislodged-from-goal offset, gripper in contact</td><td>partial assemblies + grasps</td></tr>
+  </table></div>
+  <p>Training samples <code>Uniform(C1 ∪ C2 ∪ C3 ∪ C4)</code> at 0.25 each — no curriculum, no
+  ordering, no graph between states. The backwards curriculum the paper describes (solve near-goal
+  first, then the whole task) is <em>emergent</em>, not imposed. Evaluation uses C1 alone, so the
+  headline number is measured from the full-task reaching distribution.</p>
+
+  <h3>Reward, verbatim from the paper</h3>
+  <pre>r = r_success + r_dist + r_reach + r_smooth + r_term
+
+r_reach   = 0.1 · (1 − tanh(‖p_ee − p_obj‖ / σ))
+r_dist    = 0.1 · ½ · [exp(−‖x_err‖/σ) + exp(−‖θ_err‖/σ)]
+r_success = 1.0 · 1[position and orientation thresholds satisfied]
+r_smooth  = −1e-4‖a‖² − 1e-3‖a − a_prev‖² − 1e-2‖q̇‖²
+r_term    = −100 · 1[abnormal state]</pre>
+  <p>These map one-to-one onto <code>ee_asset_distance_tanh</code>,
+  <code>dense_success_reward</code>, <code>success_reward</code> and the clamped penalty terms in
+  <code>rl_state_cfg.py:561-603</code>.</p>
+
+  <h3>What the paper does not specify</h3>
+  <p>No PPO hyperparameters, no network sizes, no episode length, no <code>σ</code>, no success
+  thresholds, no cube dimensions, and no compute figure for cube stacking. §4.1 defers to the code
+  release. The repository, not the paper, is the source of truth for every task parameter here.</p>
+
+  <h3>Deliberately skipped</h3>
+  <p>The sim-to-real dynamics curriculum. The paper states its own simulation-only results are
+  trained without it (§5, §A.3.9), and this is a simulation deliverable — the curriculum would only
+  spend compute.</p>
+</section>
+
+<!-- =============================================================== REPRODUCE -->
+<section class="panel" id="p-repro" role="tabpanel" hidden>
+  <h2>Reproducing this</h2>
+  <p>Branch <code>cube-stack/delto</code>, a worktree off <code>origin/dexreset/v2-resets</code>.
+  Every command takes <code>env.scene.insertive_object=cube34
+  env.scene.receptive_object=cube34</code>; grasp sampling takes
+  <code>env.scene.object=cube34</code>.</p>
+
+  <h3>1 — Grasp bank</h3>
+  <pre>python scripts_v2/tools/record_grasps.py \
+  --task OmniReset-Delto-GraspSampling-v0 \
+  --num_envs 1024 --num_grasps 1000 --headless \
+  --dataset_dir ./Datasets_ur10e_delto/OmniReset \
+  env.scene.object=cube34</pre>
+
+  <h3>2 — Near-goal offsets, then the four reset banks</h3>
+  <pre>python scripts_v2/tools/record_partial_assemblies.py \
+  --task OmniReset-CubeStack-PartialAssemblies-v0 ...
+
+python scripts_v2/tools/record_reset_states.py \
+  --task OmniReset-UR10eDelto-CubeStack-<em>&lt;Family&gt;</em>-v0 \
+  --num_envs 1024 --num_reset_states 4000 --headless ...</pre>
+  <p>Order matters: C1 before C2, and the grasp bank before C2, C3 and C4.</p>
+
+  <h3>3 — Train</h3>
+  <pre>python scripts/reinforcement_learning/rsl_rl/train.py \
+  --task OmniReset-UR10eDelto-CubeStackNoOrient-RelCartesianOSC-State-v0 \
+  --num_envs 2048 --max_iterations 2000 --seed 42 --headless \
+  env.scene.insertive_object=cube34 env.scene.receptive_object=cube34</pre>
+  <p>Swap the task id for <code>...-CubeStack-RelCartesianOSC-State-v0</code> to train the oriented
+  variant. <strong>Pass <code>--max_iterations</code> explicitly</strong> — the config's ceiling is
+  40&nbsp;000 and the run will never stop otherwise.</p>
+
+  <div class="note key"><span class="lbl">You will hit this first</span>
+  <p>Training aborts immediately with
+  <code>ValueError: Unknown standard deviation type: gsde</code>. The agent config uses gSDE — the
+  paper's §3.3 exploration decision — and upstream <code>rsl-rl-lib</code> on PyPI does not implement
+  it. <code>uwlab_rl/setup.py</code> pins the right source:</p>
+  <pre>pip install --no-deps --force-reinstall \
+  "rsl-rl-lib @ git+https://github.com/UW-Lab/rsl_rl.git@main"</pre>
+  <p><strong><code>--no-deps</code> is required</strong> — installing it with dependencies drags
+  torch to 2.13.0+cu130, which Isaac Sim 5.1 does not expect. Re-pin torch 2.7.0+cu128 afterwards.</p></div>
+
+  <h3>4 — Evaluate, decomposed and against a baseline</h3>
+  <pre>python eval_policy.py --task ...-State-Play-v0 --checkpoint model_400.pt \
+  --num_envs 128 --episodes 800 --reset_type ObjectPartiallyAssembledEEGrasped</pre>
+  <p>Two things this run learned the hard way. <strong>Always evaluate the untrained
+  <code>model_0</code> too</strong>: near-goal resets score ~10% with an inert policy, so a trained
+  number means nothing without that floor. And <strong>use ≥ 800 episodes</strong>: at n≈195 the
+  noise floor is ~2&nbsp;pp, comparable to any effect worth detecting.</p>
+
+  <div class="note"><span class="lbl">Two traps worth carrying over</span>
+  <p><strong>The collision stack.</strong> <code>_apply_delto_collision_stack_size</code> pins
+  3.75&nbsp;GiB, the maximum legal value, sized for 24&nbsp;GB cards; on a 16&nbsp;GB card PhysX
+  OOMs mid-build. Reducing it is safe only for small probes — an undersized stack does not crash,
+  it logs "Contacts have been dropped" and silently continues, so every bank here is checked for
+  that string before being accepted.</p>
+  <p><strong>Detached processes.</strong> vast.ai reaps <code>setsid</code>/<code>nohup</code>/
+  <code>tmux</code> children when the spawning ssh closes, so long runs there must go through
+  <code>--onstart</code> under the container's init.</p></div>
+</section>
+
+<footer>
+  Measured on a local RTX 4070 Ti SUPER, Isaac Sim 5.1.0, driver 580.159.04 &middot;
+  every number on this page is from a run in this repository, not from the paper unless stated
+</footer>
+</div>
+
+<script>
+  const tabs = [...document.querySelectorAll('nav.tabs button')];
+  const panels = tabs.map(t => document.getElementById(t.getAttribute('aria-controls')));
+  function show(i){
+    tabs.forEach((t,j) => t.setAttribute('aria-selected', j === i ? 'true' : 'false'));
+    panels.forEach((p,j) => p.hidden = j !== i);
+    try { localStorage.setItem('cubestack.tab', String(i)); } catch (e) {}
+  }
+  tabs.forEach((t,i) => t.addEventListener('click', () => show(i)));
+  tabs.forEach((t,i) => t.addEventListener('keydown', e => {
+    if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
+    e.preventDefault();
+    const n = (i + (e.key === 'ArrowRight' ? 1 : tabs.length - 1)) % tabs.length;
+    tabs[n].focus(); show(n);
+  }));
+  try {
+    const saved = parseInt(localStorage.getItem('cubestack.tab'), 10);
+    if (Number.isInteger(saved) && saved >= 0 && saved < tabs.length) show(saved);
+  } catch (e) {}
+</script>

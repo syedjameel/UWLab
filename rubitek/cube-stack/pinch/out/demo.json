@@ -1,0 +1,61 @@
+{
+ "grid": "demo",
+ "num_envs": 3,
+ "cube_mass_kg": 0.03930400684475899,
+ "results": [
+  {
+   "ctrl": "direct",
+   "posture": "repo_full",
+   "ramp_s": 2.0,
+   "friction": 0.0003,
+   "stiff4": 1.0,
+   "pin": false,
+   "held": false,
+   "final_dist_mm": 5743.38,
+   "dist_at_release_mm": 17.74,
+   "aperture_mm": 51.03,
+   "peak_cube_speed": 3.848,
+   "thumb_err_rad": 0.0003,
+   "index_err_rad": 0.0002,
+   "max_distal_err_rad": 0.001,
+   "tip_force_thumb_N": 0.457,
+   "tip_force_index_N": 0.0
+  },
+  {
+   "ctrl": "direct",
+   "posture": "repo_pinch",
+   "ramp_s": 2.0,
+   "friction": 0.0003,
+   "stiff4": 1.0,
+   "pin": false,
+   "held": false,
+   "final_dist_mm": 425.25,
+   "dist_at_release_mm": 22.39,
+   "aperture_mm": 51.03,
+   "peak_cube_speed": 2.8672,
+   "thumb_err_rad": 0.0011,
+   "index_err_rad": 0.0005,
+   "max_distal_err_rad": 0.0618,
+   "tip_force_thumb_N": 0.357,
+   "tip_force_index_N": 0.715
+  },
+  {
+   "ctrl": "direct",
+   "posture": "opt_pinch",
+   "ramp_s": 2.0,
+   "friction": 0.0003,
+   "stiff4": 1.0,
+   "pin": false,
+   "held": true,
+   "final_dist_mm": 26.85,
+   "dist_at_release_mm": 21.71,
+   "aperture_mm": 26.0,
+   "peak_cube_speed": 0.5874,
+   "thumb_err_rad": 0.2689,
+   "index_err_rad": 0.0318,
+   "max_distal_err_rad": 0.2689,
+   "tip_force_thumb_N": 14.347,
+   "tip_force_index_N": 9.268
+  }
+ ]
+}

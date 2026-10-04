@@ -1,0 +1,73 @@
+{
+ "closed": {
+  "grasp_center_offset": [
+   0.093663,
+   0.029925,
+   0.163512
+  ],
+  "grasp_align_axis": [
+   -0.253221,
+   0.236808,
+   0.937977
+  ],
+  "gripper_approach_direction": [
+   0.703686,
+   0.224826,
+   0.674002
+  ],
+  "pad_separation_mm": 30.011
+ },
+ "open": {
+  "grasp_center_offset": [
+   0.09367,
+   0.029915,
+   0.163505
+  ],
+  "grasp_align_axis": [
+   -0.36211,
+   0.258482,
+   0.89558
+  ],
+  "gripper_approach_direction": [
+   0.703749,
+   0.224755,
+   0.67396
+  ],
+  "pad_separation_mm": 50.0
+ },
+ "fist_reference": {
+  "grasp_center_offset": [
+   0.063714,
+   0.04651,
+   0.149997
+  ],
+  "grasp_align_axis": [
+   0.632272,
+   -0.725372,
+   0.272153
+  ],
+  "gripper_approach_direction": [
+   0.580933,
+   0.42407,
+   0.694753
+  ],
+  "pad_separation_mm": 51.027
+ },
+ "metadata_today": {
+  "grasp_center_offset": [
+   0.0637,
+   0.0465,
+   0.15
+  ],
+  "grasp_align_axis": [
+   -0.7422,
+   0.6555,
+   -0.1395
+  ],
+  "gripper_approach_direction": [
+   0.2582,
+   0.4717,
+   0.8431
+  ]
+ }
+}

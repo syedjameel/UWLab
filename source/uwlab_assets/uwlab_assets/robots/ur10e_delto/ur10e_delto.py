@@ -87,6 +87,14 @@ UR10E_DELTO_DEFAULT_JOINT_POS = {
 # The practical consequence, for anything that reads a velocity limit: ``data.joint_vel_limits`` is
 # exactly this actuator's 3.0 rad/s, so a termination of the form "joint_vel > 2 * limit" cannot
 # fire. Two task modules were justified by the sentence above; both are fixed.
+# UWLAB_HAND_EFFORT_SCALE multiplies every cap below. It exists because the pinch was measured
+# sitting AT the cap -- 2.07 N of the ~2.2 N the caps permit -- which is exactly why raising the
+# grip bias 5x (0.08 -> 0.40 rad) changed fingertip force not at all: the hand is torque-saturated,
+# not under-commanded. The scale lets saturation be tested as a hypothesis without editing the
+# identified gains. 1.0 is the identified hardware value and stays the default; anything above it
+# makes the sim hand STRONGER than the real DG-5F and is a fidelity trade, not a free win.
+_HAND_EFFORT_SCALE = float(_os.environ.get("UWLAB_HAND_EFFORT_SCALE", "1.0"))
+
 _DELTO_HAND_ACTUATOR = ImplicitActuatorCfg(
     joint_names_expr=[r"rj_dg_[1-5]_[1-4]"],
     # The USD's OWN per-joint stiffness, except for the three distal _4 joints whose authored
@@ -141,10 +149,10 @@ _DELTO_HAND_ACTUATOR = ImplicitActuatorCfg(
     # copies it; at these levers that permits 323-1176 N at the fingertip. This is a BACKSTOP
     # against a runaway target, not a substitute for commanding a sane stroke.
     effort_limit_sim={
-        r"rj_dg_[1-5]_1": 0.13,
-        r"rj_dg_[1-5]_2": 0.17,
-        r"rj_dg_[1-5]_3": 0.14,
-        r"rj_dg_[1-5]_4": 0.06,
+        r"rj_dg_[1-5]_1": 0.13 * _HAND_EFFORT_SCALE,
+        r"rj_dg_[1-5]_2": 0.17 * _HAND_EFFORT_SCALE,
+        r"rj_dg_[1-5]_3": 0.14 * _HAND_EFFORT_SCALE,
+        r"rj_dg_[1-5]_4": 0.06 * _HAND_EFFORT_SCALE,
     },
     # Closing speed sets the kinetic energy delivered to a ~40 g part on first touch, which is the
     # ejection mode directly; the reference's 10000 rad/s is effectively unbounded. 3.0 rad/s is

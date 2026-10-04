@@ -1,0 +1,7 @@
+{
+  "kind": "success",
+  "title": "Six genuine stacks, earlier checkpoint",
+  "note": "Cut from a 58-episode rollout by the same success predicate the reward reads. Each ran well past the 10-step boundary below which a success is only a reset that spawned solved: 28, 33, 39 and 51 steps, final errors 4.2-4.8 mm against a 5 mm tolerance. All six end with the cube at rest and the hand withdrawn (154-174 mm away, 0.0-9.9 mm/s).",
+  "reset_type": "ObjectPartiallyAssembledEEGrasped",
+  "loop": true
+}

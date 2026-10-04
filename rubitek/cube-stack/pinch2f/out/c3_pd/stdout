@@ -1,0 +1,12 @@
+P3PD RECORD_START 2026-09-15T23:58:03+09:00
+P3PD RECORD_END rc=0 0/6 [00:00 2026-09-15T23:58:28+09:00
+P3PD FILM_START 2026-09-15T23:58:28+09:00
+P3PD FILM_END rc=0 2026-09-16T00:00:43+09:00
+  state  1  idx    37  z  0.0270 m  drift      0.2 mm  [    0.2,    0.2]  OPPOSED                 tips_loaded=2/5  opposed=True  AIRBORNE
+  state  2  idx    10  z  0.0949 m  drift      0.1 mm  [    0.1,    0.1]  OPPOSED                 tips_loaded=2/5  opposed=True  AIRBORNE
+  state  3  idx    17  z  0.1768 m  drift      0.4 mm  [    0.4,    0.4]  OPPOSED                 tips_loaded=2/5  opposed=True  AIRBORNE
+  state  4  idx     5  z  0.2711 m  drift      0.2 mm  [    0.2,    0.2]  OPPOSED                 tips_loaded=2/5  opposed=True  AIRBORNE
+  state  5  idx    34  z  0.2238 m  drift      0.1 mm  [    0.1,    0.1]  OPPOSED                 tips_loaded=2/5  opposed=True  AIRBORNE
+  state  6  idx    35  z  0.1294 m  drift      0.4 mm  [    0.4,    0.4]  OPPOSED                 tips_loaded=2/5  opposed=True  AIRBORNE
+[view] OPPOSED 6/6  CONTACT_NO_OPPOSITION 0/6  NO_CONTACT 0/6  AIRBORNE 6/6  frames in /home/mattephi/Work/Rubitek/cube-stack/pinch2f/out/c3_pd/film  json in /home/mattephi/Work/Rubitek/cube-stack/pinch2f/out/c3_pd/film
+P3PD_DONE 2026-09-16T00:00:43+09:00

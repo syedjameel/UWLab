@@ -1,0 +1,6 @@
+{
+  "title": "Close-up camera, derived from the bank geometry",
+  "caption": "The stored reset banks put the receptive cube at (0.482, 0.012, 0.021) and the insertive at z 0.056, so the camera looks at (0.48, 0.01, 0.045) from 0.42 m at 15 degrees elevation, on the far side of the workspace from the arm base. The cube now subtends ~100 px instead of ~30, and the stack is legible even after the hand withdraws.",
+  "kind": "frames",
+  "reset_type": "ObjectPartiallyAssembledEEGrasped"
+}

@@ -1,0 +1,5 @@
+instance 51171924 vanished from the sinew account between 12:30:57Z (last watchdog line, iter 460) and 12:58Z.
+Not destroyed by me: launch_is6.sh destroy was never called. 'vastai show instances' returns 0 instances,
+so the API is healthy and the instance genuinely no longer exists -- host failure or external termination.
+Last known state: stage B, iter 460/850, C4 0.653, C3 0.000, reward 7.77.
+Salvaged before loss: model_249.pt (end of stage A) in cube-stack/train/ck_pull/.

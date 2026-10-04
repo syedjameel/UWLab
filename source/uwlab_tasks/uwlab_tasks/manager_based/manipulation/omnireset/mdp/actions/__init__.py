@@ -4,4 +4,5 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
 from .actions_cfg import *
+from .latched_joint_actions import *
 from .task_space_actions import *

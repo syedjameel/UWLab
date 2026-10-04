@@ -1,0 +1,889 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<title>Cube Stack Bench</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&family=JetBrains+Mono:wght@400;600&display=swap">
+
+<style>
+:root{
+  --ground:#EFEDE8; --surface:#FFFFFF; --surface-2:#F7F5F1; --line:#DAD5CC;
+  --ink:#15181B; --muted:#6B7176; --accent:#0B5FA5; --signal:#C0521C;
+  --pass:#227A47; --hold:#9A7A0E; --fail:#A8342A;
+  --display:'Archivo',system-ui,sans-serif;
+  --body:'Source Serif 4',Georgia,serif;
+  --mono:'JetBrains Mono',ui-monospace,monospace;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --ground:#121618; --surface:#191E21; --surface-2:#20262A; --line:#2E363B;
+    --ink:#E7E9EA; --muted:#98A1A7; --accent:#5AA9E6; --signal:#E8834A;
+    --pass:#4FBE7C; --hold:#D8B33C; --fail:#E0685C;
+  }
+}
+:root[data-theme="dark"]{
+  --ground:#121618; --surface:#191E21; --surface-2:#20262A; --line:#2E363B;
+  --ink:#E7E9EA; --muted:#98A1A7; --accent:#5AA9E6; --signal:#E8834A;
+  --pass:#4FBE7C; --hold:#D8B33C; --fail:#E0685C;
+}
+
+*{box-sizing:border-box}
+body{background:var(--ground);color:var(--ink);font-family:var(--body);line-height:1.5;
+     -webkit-font-smoothing:antialiased}
+h1,h2,h3,.ui{font-family:var(--display);letter-spacing:-0.01em;text-wrap:balance}
+.num{font-family:var(--mono);font-variant-numeric:tabular-nums}
+
+.shell{display:grid;grid-template-columns:212px minmax(0,1fr);min-height:100vh}
+.rail{background:var(--surface);border-right:1px solid var(--line);
+      display:flex;flex-direction:column;gap:2px;padding:20px 12px;position:sticky;top:0;
+      height:100vh;overflow-y:auto}
+.brand{font-family:var(--display);font-weight:700;font-size:15px;line-height:1.25;
+       padding:0 10px 4px;margin-bottom:12px}
+.brand small{display:block;font-family:var(--mono);font-weight:400;font-size:10.5px;
+             color:var(--muted);letter-spacing:.02em;margin-top:5px}
+.tab{appearance:none;border:0;background:none;color:var(--muted);font-family:var(--display);
+     font-weight:600;font-size:13px;text-align:left;padding:8px 10px;border-radius:5px;cursor:pointer;
+     display:flex;justify-content:space-between;align-items:center;gap:8px}
+.tab:hover{background:var(--surface-2);color:var(--ink)}
+.tab[aria-selected="true"]{background:var(--accent);color:#fff}
+.tab .cnt{font-family:var(--mono);font-size:10.5px;opacity:.7}
+.tab:focus-visible,.chip:focus-visible,button:focus-visible{outline:2px solid var(--signal);outline-offset:2px}
+main{padding:30px 34px 80px;max-width:1320px}
+@media(max-width:820px){
+  .shell{grid-template-columns:1fr}
+  .rail{position:static;height:auto;flex-direction:row;overflow-x:auto;border-right:0;
+        border-bottom:1px solid var(--line);padding:10px}
+  .brand{display:none}
+  .tab{white-space:nowrap}
+  main{padding:18px 16px 60px}
+}
+
+.panel[hidden]{display:none!important}
+.eyebrow{font-family:var(--mono);font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;
+         color:var(--muted);margin:0 0 6px}
+h1{font-size:clamp(24px,3.4vw,34px);margin:0 0 6px;font-weight:700}
+h2{font-size:17px;margin:34px 0 12px;font-weight:600}
+h2:first-of-type{margin-top:22px}
+p{max-width:66ch;margin:0 0 10px}
+.lede{color:var(--muted);font-size:14.5px;max-width:70ch;margin-bottom:20px}
+
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(168px,1fr));gap:10px;margin:16px 0 6px}
+.tile{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:13px 14px}
+.tile .k{font-family:var(--mono);font-size:10px;letter-spacing:.08em;text-transform:uppercase;
+         color:var(--muted);margin-bottom:7px}
+.tile .v{font-family:var(--mono);font-size:25px;font-weight:600;line-height:1;
+         font-variant-numeric:tabular-nums}
+.tile .s{font-family:var(--mono);font-size:11px;color:var(--muted);margin-top:6px}
+.tile.pass .v{color:var(--pass)} .tile.hold .v{color:var(--hold)} .tile.fail .v{color:var(--fail)}
+.tile.accent .v{color:var(--accent)}
+.lede a{color:var(--accent);text-decoration:underline;text-underline-offset:2px}
+.lede a:hover{text-decoration-thickness:2px}
+
+.vgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:16px;margin-top:14px}
+.vcard{background:var(--surface);border:1px solid var(--line);border-radius:9px;overflow:hidden;
+       display:flex;flex-direction:column}
+.vcard video{width:100%;display:block;background:#000;aspect-ratio:16/9;object-fit:contain}
+.vmeta{padding:11px 13px 13px;display:flex;flex-direction:column;gap:5px}
+.vmeta .t{font-family:var(--display);font-weight:600;font-size:13.5px}
+.vmeta .d{font-family:var(--mono);font-size:11px;color:var(--muted);line-height:1.55}
+.hero{background:var(--surface);border:1px solid var(--line);border-radius:11px;overflow:hidden;
+      margin:18px 0 4px}
+.hero video{width:100%;display:block;background:#000;max-height:62vh;object-fit:contain}
+.hero .cap{padding:12px 16px;display:flex;flex-wrap:wrap;gap:6px 18px;align-items:baseline;
+           border-top:1px solid var(--line)}
+.hero .cap b{font-family:var(--display);font-size:13.5px;font-weight:600}
+.hero .cap span{font-family:var(--mono);font-size:11px;color:var(--muted)}
+
+.chartbox{background:var(--surface);border:1px solid var(--line);border-radius:9px;
+          padding:14px 16px 8px;margin-bottom:14px}
+.chartbox h3{margin:0 0 2px;font-size:13.5px;font-weight:600}
+.chartbox .sub{font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-bottom:8px}
+.chartbox svg{width:100%;height:230px;display:block;overflow:visible}
+.legend{display:flex;flex-wrap:wrap;gap:8px 16px;margin-top:6px;padding-bottom:6px}
+.legend span{font-family:var(--mono);font-size:10.5px;color:var(--muted);display:flex;
+             align-items:center;gap:6px}
+.legend i{width:14px;height:2.5px;border-radius:2px;display:inline-block}
+.readout{font-family:var(--mono);font-size:11px;color:var(--ink);min-height:16px;padding:2px 0 6px}
+
+.scroll{overflow-x:auto;border:1px solid var(--line);border-radius:8px;background:var(--surface)}
+table{border-collapse:collapse;width:100%;font-family:var(--mono);font-size:11.5px}
+th{text-align:left;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;
+   font-size:9.5px;padding:9px 12px;border-bottom:1px solid var(--line);white-space:nowrap}
+td{padding:8px 12px;border-bottom:1px solid var(--line);white-space:nowrap;
+   font-variant-numeric:tabular-nums}
+tr:last-child td{border-bottom:0}
+tbody tr:hover{background:var(--surface-2)}
+td.good,span.good{color:var(--pass)} td.bad,span.bad{color:var(--fail)} td.warn,span.warn{color:var(--hold)}
+
+.chips{display:flex;flex-wrap:wrap;gap:7px;margin:12px 0}
+.chip{appearance:none;font-family:var(--mono);font-size:11px;padding:5px 11px;border-radius:99px;
+      border:1px solid var(--line);background:var(--surface);color:var(--muted);cursor:pointer}
+.chip[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);color:#fff}
+
+pre{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:13px 15px;
+    overflow-x:auto;font-family:var(--mono);font-size:11.5px;line-height:1.6;margin:0 0 12px}
+code{font-family:var(--mono);font-size:.92em;background:var(--surface-2);padding:1px 5px;
+     border-radius:4px}
+.sheet{margin:0 0 18px;background:var(--surface);border:1px solid var(--line);border-radius:9px;
+       overflow:hidden}
+.sheet img{width:100%;display:block;background:#000}
+.sheet figcaption{padding:12px 15px 14px;display:flex;flex-direction:column;gap:6px}
+.sheet figcaption b{font-family:var(--display);font-size:14px;font-weight:600}
+.sheet figcaption .d{font-family:var(--mono);font-size:11px;color:var(--muted)}
+.sheet figcaption .c{font-size:13.5px;color:var(--muted);max-width:78ch;line-height:1.55}
+.empty{border:1px dashed var(--line);border-radius:9px;padding:26px;text-align:center;
+       color:var(--muted);font-family:var(--mono);font-size:12px}
+.foot{margin-top:44px;padding-top:14px;border-top:1px solid var(--line);
+      font-family:var(--mono);font-size:10.5px;color:var(--muted);
+      display:flex;flex-wrap:wrap;gap:6px 20px}
+@media(prefers-reduced-motion:no-preference){.panel{animation:fade .16s ease-out}}
+@keyframes fade{from{opacity:0;transform:translateY(3px)}to{opacity:1;transform:none}}
+</style>
+
+<div class="shell">
+  <nav class="rail" role="tablist" aria-label="Sections">
+    <div class="brand">Cube Stack Bench<small id="brandsub">UR10e + DELTO DG-5F</small></div>
+    <button class="tab" role="tab" data-p="result" aria-selected="true">Result</button>
+    <button class="tab" role="tab" data-p="video">Video <span class="cnt" id="cnt-video"></span></button>
+    <button class="tab" role="tab" data-p="physics">Physics <span class="cnt" id="cnt-phys"></span></button>
+    <button class="tab" role="tab" data-p="curves">Learning <span class="cnt" id="cnt-runs"></span></button>
+    <button class="tab" role="tab" data-p="evals">Measurements <span class="cnt" id="cnt-evals"></span></button>
+    <button class="tab" role="tab" data-p="setup">Setup</button>
+    <button class="tab" role="tab" data-p="repro">Reproduce</button>
+  </nav>
+
+  <main>
+    <section class="panel" id="p-result">
+      <p class="eyebrow">Position-only cube stacking &middot; UR10e + Tesollo DELTO DG-5F</p>
+      <h1>Stack a 34&nbsp;mm cube on a 34&nbsp;mm cube, within 5&nbsp;mm</h1>
+      <p class="lede">UR10e arm, Tesollo DELTO DG-5F hand, 26-dimensional action space, OmniReset
+        four-family reset distribution. Every number here is read from the artefact that produced it:
+        TensorBoard event files, eval JSON, per-episode render sidecars.</p>
+      <div id="hero"></div>
+      <p class="lede"><b>The reset banks now hold the cube.</b> Every &ldquo;grasped&rdquo; reset
+        family was releasing it one control step after the reset &mdash; measured with the null
+        action, not inferred &mdash; and a constant closing bias on the hand action puts the grip
+        back. The <a href="#physics" onclick="document.querySelector('.tab[data-p=physics]').click();return false">Physics</a>
+        tab has the measurement and the before/after clips.</p>
+      <p class="lede"><b>Six genuine stacks from the final policy</b>, cut from a 51-episode rollout
+        of the last checkpoint. Eleven episodes succeeded; six ran past the 10-step boundary below
+        which a success is only a reset that spawned solved &mdash; 21, 22, 32, 35 and 42 steps,
+        final errors <b>2.6 to 4.9&nbsp;mm</b> against a 5&nbsp;mm tolerance. Every one ends with the
+        cube <b>at rest and the hand withdrawn</b> (149&ndash;176&nbsp;mm away, 0.0&ndash;2&nbsp;mm/s):
+        the success predicate requires neither, so release is measured rather than assumed.</p>
+      <div class="tiles" id="tiles"></div>
+
+      <h2>Near-Goal: trained against untrained, identical evaluation</h2>
+      <div class="scroll"><table id="ab"><thead><tr>
+        <th>Checkpoint</th><th>Reset family</th><th>n</th><th>Success</th>
+        <th>Genuine &gt;10 steps</th><th>Sustained &gt;20 steps</th><th>Median error</th>
+        <th>|a| arm</th><th>|a| hand</th>
+      </tr></thead><tbody></tbody></table></div>
+      <p class="lede" style="margin-top:10px"><b>Success</b> counts an episode whose object-to-goal
+        distance is under 5&nbsp;mm at the final step. <b>Genuine</b> additionally requires the episode
+        to have run longer than 10 steps: the termination rule permits an episode to end successfully
+        at step&nbsp;10, which happens exactly when the reset spawned already inside the tolerance.
+        7.2% of near-goal reset states do, measured directly off the bank.</p>
+    </section>
+
+    <section class="panel" id="p-video" hidden>
+      <p class="eyebrow">Recorded rollouts</p>
+      <h1>What the policy does</h1>
+      <p class="lede">Clips are cut from full recordings by the same success predicate the reward
+        reads, using the frame ranges in each recording's <code>episodes.json</code>. Nothing is
+        chosen by eye.</p>
+      <div class="chips" id="vfilter"></div>
+      <div id="vgrid"></div>
+
+      <h2>Frame by frame</h2>
+      <p class="lede">One episode per sheet, sampled at even intervals with the step index burned
+        into each frame. A video answers whether an episode succeeded; a sheet answers what the
+        policy actually did.</p>
+      <div id="sheets"></div>
+    </section>
+
+    <section class="panel" id="p-physics" hidden>
+      <p class="eyebrow">Environment QA</p>
+      <h1>Does the reset actually hold the cube?</h1>
+      <p class="lede">No policy is involved on this page. Each measurement resets into one family and
+        then applies the <b>null action</b> for a full episode, so whatever the cube does belongs to
+        the environment, not to an actor. Zero action is the right probe precisely because it is not
+        a policy.</p>
+
+      <h2>What the reset produces, and what happens next</h2>
+      <div class="scroll"><table id="physfam"><thead><tr>
+        <th>Reset family</th><th>Cube z start</th><th>Cube z end</th><th>Drop</th>
+        <th>Nearest fingertip, start</th><th>&hellip; end</th><th>Peak fingertip force</th>
+      </tr></thead><tbody></tbody></table></div>
+      <p class="lede" style="margin-top:10px">Near-Goal and Near-Object look stable only because
+        their cube is already resting on the base cube or on the table. <b>Stable Grasp is the only
+        family whose cube starts in the air</b>, and it slides out of the hand. A 30&nbsp;g cube
+        weighs 0.29&nbsp;N; no fingertip in any family carries a tenth of that.</p>
+
+      <h2>The closing bias that fixes it</h2>
+      <p class="lede">The hand runs <code>RelativeJointPositionAction</code> with
+        <code>use_zero_offset=True</code>, so <code>target = measured + scale&times;action</code> and
+        the first <code>apply_actions()</code> after every reset overwrites the set point the bank
+        restored. At action&nbsp;0 the PD error is zero and so is the grip force. A constant closing
+        offset restores exactly what the recorder captured &mdash; a set point held a fixed angle
+        ahead of the measurement. It is a bias, not a constraint: the policy still commands
+        <code>[&minus;0.1 + bias, +0.1 + bias]</code> per step, so opening stays available.</p>
+      <div class="scroll"><table id="physbias"><thead><tr>
+        <th>Bias</th><th>Joints</th><th>Cube z start</th><th>Cube z end</th><th>Drop</th>
+        <th>Palm-to-cube start</th><th>&hellip; end</th><th>Peak fingertip force</th>
+      </tr></thead><tbody></tbody></table></div>
+      <p class="lede" style="margin-top:10px">Palm-to-cube <i>shrinking</i> is the signature of a
+        real grasp: the fingers draw the cube into the grasp centre instead of letting it fall away
+        from a hand that is also drifting.</p>
+      <h2>Is the carry being learned?</h2>
+      <p class="lede">Stable-Grasp success is a step function &mdash; flat at zero until the policy can
+        both carry the cube <i>and</i> place it inside 5&nbsp;mm &mdash; so it carries no information
+        while the runs are still learning to carry. <b>Progress</b> is measured against each
+        episode&rsquo;s own starting distance, so a policy that changes nothing scores zero however
+        extreme its endpoints look, and it moves continuously.</p>
+      <div class="scroll"><table id="carrytbl"><thead><tr>
+        <th>Box</th><th>Checkpoint</th><th>Median progress</th><th>Episodes closer &gt;5&nbsp;mm</th>
+        <th>p90 progress</th><th>|a| arm</th><th>Success</th>
+      </tr></thead><tbody></tbody></table></div>
+      <p class="lede" style="margin-top:10px">Measurement noise, from three evaluations of one fixed
+        checkpoint: <b>&plusmn;4&nbsp;mm</b> on the median, <b>&plusmn;2&nbsp;points</b> on the closer
+        fraction, <b>&plusmn;7&nbsp;mm</b> on p90. Nothing inside that band is a finding, and three
+        single-interval &ldquo;trends&rdquo; were claimed and withdrawn before this was measured.</p>
+
+      <h2>Through the task id, not the command line</h2>
+      <p class="lede">Every row above patches the action term from the command line. These run the
+        same null-action probe through the <i>registered task configurations</i> &mdash; the path
+        training and evaluation actually take. It is checked separately because a bias that silently
+        failed to apply here would be indistinguishable from a fix that does not work.</p>
+      <div class="scroll"><table id="phystask"><thead><tr>
+        <th>Task</th><th>Cube z start</th><th>Cube z end</th><th>Drop</th>
+        <th>Peak fingertip force</th><th>Verdict</th>
+      </tr></thead><tbody></tbody></table></div>
+
+      <h2>What a controller can achieve, with no policy at all</h2>
+      <p class="lede">A scripted proportional controller: it knows the goal exactly, has no
+        exploration problem and no reward to satisfy. It answers a question a training curve cannot
+        &mdash; whether a family is <i>hard to learn</i> or <i>not reachable as configured</i>, which
+        look identical at 0% and call for opposite responses. <b>Near-Goal is the positive
+        control</b>: it scores, so the environment can produce a success.</p>
+      <div class="scroll"><table id="physoracle"><thead><tr>
+        <th>Reset family</th><th>OSC stiffness</th><th>Episode</th><th>Path</th>
+        <th>n</th><th>Median error</th><th>Success</th>
+      </tr></thead><tbody></tbody></table></div>
+      <p class="lede" style="margin-top:10px">The Stable-Grasp rows floor near 60&nbsp;mm because this
+        controller drives only the three translational action dimensions and leaves rotation at zero,
+        so the cube it carries stays at the ~71&deg; tilt its reset gave it &mdash; and a cube that
+        tilted cannot seat flat however its centre is placed. Near-Goal starts nearly level
+        (0.31&nbsp;rad), which is why the same controller reaches 11&nbsp;mm there. <b>A policy
+        commands all six dimensions</b>, so this is a limit of the probe, not of the task.</p>
+
+      <h2>The same thing in frames</h2>
+      <div id="physsheets"></div>
+      <div id="physvid"></div>
+    </section>
+
+    <section class="panel" id="p-curves" hidden>
+      <p class="eyebrow">Training</p>
+      <h1>Learning curves</h1>
+      <p class="lede">Drag across a chart for a shared crosshair readout. Toggle runs with the chips.</p>
+      <div class="chips" id="runfilter"></div>
+      <div id="charts"></div>
+    </section>
+
+    <section class="panel" id="p-evals" hidden>
+      <p class="eyebrow">Deterministic evaluation</p>
+      <h1>Every measurement taken</h1>
+      <p class="lede">One row per <code>eval_policy.py</code> run, graded at the actor's mean action.
+        Newest first.</p>
+      <div class="scroll"><table id="evaltab"><thead><tr>
+        <th>File</th><th>Checkpoint</th><th>Reset family</th><th>n</th><th>Held at end</th>
+        <th>Ever during</th><th>Genuine</th><th>Median pos err</th><th>p90</th>
+        <th>Threshold</th><th>envs</th><th>solver it</th><th>a-noise</th>
+        <th>|a| arm</th><th>|a| hand</th>
+      </tr></thead><tbody></tbody></table></div>
+
+      <h2>Reset-state banks</h2>
+      <div class="scroll"><table><thead><tr>
+        <th>Family</th><th>States</th><th>Median goal error at reset</th>
+        <th>Already inside 5 mm</th><th>Unique states</th>
+      </tr></thead><tbody>
+        <tr><td>Reaching</td><td class="num">4008</td><td class="num">168.2 mm</td>
+            <td class="num">1 (0.02%)</td><td class="num">4008</td></tr>
+        <tr><td>Near-Object</td><td class="num">103</td><td class="num">163.5 mm</td>
+            <td class="num">0</td><td class="num">103</td></tr>
+        <tr><td>Stable Grasp</td><td class="num">122</td><td class="num">214.5 mm</td>
+            <td class="num">0</td><td class="num">122</td></tr>
+        <tr><td>Near-Goal</td><td class="num">125</td><td class="num">13.1 mm</td>
+            <td class="num warn">9 (7.20%)</td><td class="num">125</td></tr>
+        <tr><td>Grasp bank (cube34)</td><td class="num">1056</td><td>—</td><td>—</td>
+            <td class="num">1056</td></tr>
+      </tbody></table></div>
+      <div class="scroll" style="margin-top:12px"><table id="banktab"><thead><tr>
+        <th>File</th><th>Size</th></tr></thead><tbody></tbody></table></div>
+    </section>
+
+    <section class="panel" id="p-setup" hidden>
+      <p class="eyebrow">Task definition</p>
+      <h1>Setup</h1>
+      <div class="tiles">
+        <div class="tile"><div class="k">Arm</div><div class="v" style="font-size:17px">UR10e</div>
+          <div class="s">6 DoF, relative Cartesian OSC</div></div>
+        <div class="tile"><div class="k">Hand</div><div class="v" style="font-size:17px">DELTO DG-5F</div>
+          <div class="s">20 actuated joints, all independent</div></div>
+        <div class="tile"><div class="k">Action space</div><div class="v num">26</div>
+          <div class="s">6 arm + 20 hand, no clip</div></div>
+        <div class="tile"><div class="k">Control rate</div><div class="v num">10 Hz</div>
+          <div class="s">sim 120 Hz, decimation 12</div></div>
+        <div class="tile"><div class="k">Episode</div><div class="v num">160</div>
+          <div class="s">steps, 16 s</div></div>
+        <div class="tile"><div class="k">Cube</div><div class="v num">34 mm</div>
+          <div class="s">30 g, 0.85 of the paper's 40 mm</div></div>
+        <div class="tile"><div class="k">Position tolerance</div><div class="v num">5 mm</div>
+          <div class="s">object to goal, assembled offsets applied</div></div>
+        <div class="tile"><div class="k">EE resolution</div><div class="v num">4.7 mm</div>
+          <div class="s">per unit action per control step</div></div>
+      </div>
+
+      <h2>Reset families, sampled at 0.25 each</h2>
+      <div class="scroll"><table><thead><tr>
+        <th>Family</th><th>Paper name</th><th>State at reset</th></tr></thead><tbody>
+        <tr><td>ObjectAnywhereEEAnywhere</td><td>Reaching</td><td>cube on the table, hand anywhere</td></tr>
+        <tr><td>ObjectRestingEEGrasped</td><td>Near-Object</td><td>cube on the table, hand at it</td></tr>
+        <tr><td>ObjectAnywhereEEGrasped</td><td>Stable Grasp</td><td>cube held, anywhere in the workspace</td></tr>
+        <tr><td>ObjectPartiallyAssembledEEGrasped</td><td>Near-Goal</td><td>cube held, near the stack pose</td></tr>
+      </tbody></table></div>
+
+      <h2>Why the cube is 34 mm, not the paper's 40 mm</h2>
+      <div class="scroll"><table><thead><tr>
+        <th>Object</th><th>Size</th><th>Mass</th><th>Grasp attempts</th><th>Held under gravity</th>
+      </tr></thead><tbody>
+        <tr><td>deltoblock</td><td>34 mm</td><td>30 g</td><td class="num">64</td><td class="num">2 (3.1%)</td></tr>
+        <tr><td>paper cube</td><td>40 mm</td><td>49 g</td><td class="num">320</td><td class="num bad">0 (0.0%)</td></tr>
+        <tr><td>cube34</td><td>34 mm</td><td>30 g</td><td class="num">1024</td><td class="num good">51 (5.0%)</td></tr>
+      </tbody></table></div>
+
+      <h2>Config defects found, and their measured effect</h2>
+      <div class="scroll"><table><thead><tr>
+        <th>What</th><th>Was</th><th>Now</th><th>Measured effect</th>
+      </tr></thead><tbody>
+        <tr><td>entropy_coef</td><td class="num">0.006</td><td class="num">0.0005</td>
+            <td class="good">gSDE noise held at 0.73 instead of climbing to 2.65; near-goal success
+                1.9% &rarr; 20% in 60 iterations, two seeds</td></tr>
+        <tr><td>goal-distance shaping</td><td>exp(-d/1.0) only</td><td>+ exp(-d/0.02)</td>
+            <td class="warn">value of closing 16 mm &rarr; 5 mm rises from +1.1e-4 to +3.3e-2 per
+                step &mdash; but measured against both baselines over matched windows it changed
+                <b>nothing</b> (0.100/0.143/0.170 vs 0.106/0.145/0.170; median error 17.0 vs
+                17.4 mm). The plateau is not a missing gradient here.</td></tr>
+        <tr><td>grasp reward</td><td>none &mdash; closing the hand paid 0.0</td>
+            <td>fingertip distance, contact, lift</td>
+            <td class="good">the chain from "hand anywhere" to "cube stacked" has no unpaid arc for
+                the first time; verified reading live, not assumed</td></tr>
+        <tr><td>scene objects</td><td>unpinned (peg/peg-hole default)</td><td>cube34 pinned</td>
+            <td class="good">a run missing the CLI flag was peg-in-hole with PegHole's
+                thresholds, logged as CubeStack</td></tr>
+        <tr><td>success measurement</td><td>raw rate</td><td>split by episode length</td>
+            <td class="good">separates the 7.2% of near-goal resets that spawn already inside
+                tolerance from stacks the policy performed</td></tr>
+      </tbody></table></div>
+
+      <h2>The reward chain</h2>
+      <p class="lede">Every arc from "hand anywhere" to "cube stacked" needs a term, or the policy
+        stops where the reward stops paying. Two arcs had none. Each weight is sized against the same
+        measured <code>action_rate</code> penalty of &minus;2.8e-3 per step.</p>
+      <div class="scroll"><table><thead><tr>
+        <th>Stage</th><th>Term</th><th>Weight</th><th>Form</th><th>Pays</th>
+      </tr></thead><tbody>
+        <tr><td>hand anywhere</td><td>ee_asset_distance</td><td class="num">0.1</td>
+            <td>1 &minus; tanh(d<sub>palm</sub> / 1.0)</td><td class="num">+4.6e-3 over 0.5 m</td></tr>
+        <tr><td>palm at the cube</td><td>fingertip_object_distance</td><td class="num">0.05</td>
+            <td>1 &minus; tanh(d&#772;<sub>tips</sub> / 0.03)</td>
+            <td class="num good">+2.2e-2 / step, 30&rarr;10 mm</td></tr>
+        <tr><td>fingers on it</td><td>any_finger_contact</td><td class="num">0.01</td>
+            <td>any tip &gt; 0.2 N</td><td class="num">+1.0e-2 / step</td></tr>
+        <tr><td>gripping</td><td>grasp_contact</td><td class="num">0.05</td>
+            <td>opposed tips in contact</td><td class="num good">+5.0e-2 / step</td></tr>
+        <tr><td>carrying</td><td>object_lift</td><td class="num">0.05</td>
+            <td>tanh(v&#8593; / 0.05), contact-gated</td><td class="num">+3.7e-2 / step</td></tr>
+        <tr><td>transport</td><td>dense_success_reward</td><td class="num">0.1</td>
+            <td>exp(-d<sub>goal</sub> / 1.0)</td>
+            <td class="num bad">+1.1e-4 / step, 16&rarr;5 mm</td></tr>
+        <tr><td>placement</td><td>dense_success_reward_fine</td><td class="num">0.1</td>
+            <td>exp(-d<sub>goal</sub> / 0.02)</td>
+            <td class="num good">+3.3e-2 / step, 16&rarr;5 mm</td></tr>
+        <tr><td>stacked</td><td>success_reward</td><td class="num">1.0</td>
+            <td>1 inside 5 mm</td><td class="num good">+0.1 / step held</td></tr>
+        <tr><td>throughout</td><td>action_rate</td><td class="num">-1e-3</td>
+            <td>&Sigma;(&Delta;a)&sup2;</td><td class="num">&minus;2.8e-3 / step</td></tr>
+      </tbody></table></div>
+      <p class="lede" style="margin-top:10px">The two rows added here are
+        <b>fingertip_object_distance</b> and <b>dense_success_reward_fine</b>. Without the first,
+        <code>ee_asset_distance</code> reads only the palm body, so parking the open hand on the cube
+        is already optimal and the fingers never close. Without the second, the goal shaping's
+        length scale is 200&times; the tolerance it is scored against.</p>
+    </section>
+
+    <section class="panel" id="p-repro" hidden>
+      <p class="eyebrow">Commands</p>
+      <h1>Reproduce</h1>
+      <h2>Train</h2><pre id="cmd-train"></pre>
+      <h2>Evaluate</h2><pre id="cmd-eval"></pre>
+      <h2>Record video</h2><pre id="cmd-render"></pre>
+      <h2>Refresh this page</h2><pre id="cmd-data"></pre>
+    </section>
+
+    <div class="foot" id="foot"></div>
+  </main>
+</div>
+
+<script>
+const $ = (s, r) => (r || document).querySelector(s);
+const $$ = (s, r) => [...(r || document).querySelectorAll(s)];
+const fx = (v, n) => (v === null || v === undefined || Number.isNaN(v)) ? "—" : (+v).toFixed(n);
+const mm = v => (v === null || v === undefined) ? "—" : (v * 1000).toFixed(1) + " mm";
+const FAMILY_SHORT = {
+  ObjectAnywhereEEAnywhere: "Reaching",
+  ObjectRestingEEGrasped: "Near-Object",
+  ObjectAnywhereEEGrasped: "Stable Grasp",
+  ObjectPartiallyAssembledEEGrasped: "Near-Goal",
+};
+
+$$(".tab").forEach(t => t.onclick = () => {
+  $$(".tab").forEach(x => x.setAttribute("aria-selected", String(x === t)));
+  $$(".panel").forEach(p => p.hidden = p.id !== "p-" + t.dataset.p);
+  history.replaceState(null, "", "#" + t.dataset.p);
+});
+
+// A tiny SVG line chart. A charting library would outweigh the data it draws, and the only
+// interaction wanted here is a shared crosshair readout across the stacked panels.
+const PALETTE = ["#0B5FA5", "#C0521C", "#227A47", "#7B4BA8", "#9A7A0E", "#1F8B8B"];
+function chart(host, series, opts) {
+  opts = opts || {};
+  const W = 720, H = 230, L = 54, R = 14, T = 12, B = 30;
+  const pts = series.flatMap(s => s.data);
+  if (!pts.length) return;
+  const xs = pts.map(p => p[0]), ys = pts.map(p => p[1]);
+  const x0 = 0, x1 = Math.max(...xs) || 1;
+  let y0 = opts.zero ? 0 : Math.min(...ys), y1 = Math.max(...ys);
+  if (opts.clip !== undefined) y1 = Math.min(y1, opts.clip);
+  if (y1 === y0) y1 = y0 + 1;
+  const pad = (y1 - y0) * 0.08; y1 += pad; if (!opts.zero) y0 -= pad;
+  const X = v => L + (v - x0) / (x1 - x0) * (W - L - R);
+  const Y = v => T + (1 - (v - y0) / (y1 - y0)) * (H - T - B);
+
+  const ns = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(ns, "svg");
+  svg.setAttribute("viewBox", "0 0 " + W + " " + H);
+  svg.setAttribute("preserveAspectRatio", "none");
+  const el = (n, a) => { const e = document.createElementNS(ns, n); for (const k in a) e.setAttribute(k, a[k]); return e; };
+
+  for (let i = 0; i <= 4; i++) {
+    const v = y0 + (y1 - y0) * i / 4;
+    svg.append(el("line", { x1: L, x2: W - R, y1: Y(v), y2: Y(v), stroke: "var(--line)", "stroke-width": 1 }));
+    const tx = el("text", { x: L - 8, y: Y(v) + 3.5, "text-anchor": "end", fill: "var(--muted)",
+      "font-size": 10, "font-family": "var(--mono)" });
+    tx.textContent = opts.pct ? (v * 100).toFixed(0) + "%" : (Math.abs(v) < 1 ? v.toFixed(3) : v.toFixed(2));
+    svg.append(tx);
+  }
+  for (let i = 0; i <= 4; i++) {
+    const v = x0 + (x1 - x0) * i / 4;
+    const tx = el("text", { x: X(v), y: H - 10, "text-anchor": "middle", fill: "var(--muted)",
+      "font-size": 10, "font-family": "var(--mono)" });
+    tx.textContent = Math.round(v);
+    svg.append(tx);
+  }
+  if (opts.hline !== undefined && opts.hline >= y0 && opts.hline <= y1) {
+    svg.append(el("line", { x1: L, x2: W - R, y1: Y(opts.hline), y2: Y(opts.hline),
+      stroke: "var(--signal)", "stroke-width": 1.2, "stroke-dasharray": "5 4" }));
+    const tx = el("text", { x: W - R - 4, y: Y(opts.hline) - 5, "text-anchor": "end",
+      fill: "var(--signal)", "font-size": 9.5, "font-family": "var(--mono)" });
+    tx.textContent = opts.hlabel || "";
+    svg.append(tx);
+  }
+  series.forEach((s, i) => {
+    const c = PALETTE[i % PALETTE.length];
+    const clampY = v => Y(Math.max(y0, Math.min(y1, v)));
+    const d = s.data.map((p, j) => (j ? "L" : "M") + X(p[0]).toFixed(1) + " " + clampY(p[1]).toFixed(1)).join(" ");
+    svg.append(el("path", { d, fill: "none", stroke: c, "stroke-width": 1.7,
+      "stroke-linejoin": "round", "stroke-linecap": "round" }));
+    s.color = c;
+  });
+  const cross = el("line", { y1: T, y2: H - B, stroke: "var(--ink)", "stroke-width": 1,
+    opacity: 0, "pointer-events": "none" });
+  svg.append(cross);
+  host.append(svg);
+
+  const read = document.createElement("div");
+  read.className = "readout";
+  host.append(read);
+  if (opts.legend !== false) {
+    const leg = document.createElement("div");
+    leg.className = "legend";
+    series.forEach(s => {
+      const sp = document.createElement("span");
+      const ic = document.createElement("i"); ic.style.background = s.color;
+      sp.append(ic, document.createTextNode(s.name));
+      leg.append(sp);
+    });
+    host.append(leg);
+  }
+
+  svg.addEventListener("pointermove", e => {
+    const r = svg.getBoundingClientRect();
+    const px = (e.clientX - r.left) / r.width * W;
+    if (px < L || px > W - R) return;
+    const it = x0 + (px - L) / (W - L - R) * (x1 - x0);
+    cross.setAttribute("x1", px); cross.setAttribute("x2", px); cross.setAttribute("opacity", .35);
+    read.textContent = "iter " + Math.round(it) + "   " + series.map(s => {
+      let best = null, bd = 1e18;
+      for (const p of s.data) { const d = Math.abs(p[0] - it); if (d < bd) { bd = d; best = p; } }
+      return best ? s.name + " " + (opts.pct ? (best[1] * 100).toFixed(1) + "%" : best[1].toFixed(4)) : "";
+    }).join("   ");
+  });
+  svg.addEventListener("pointerleave", () => { cross.setAttribute("opacity", 0); read.textContent = ""; });
+}
+
+let DATA = null;
+const RUNSEL = new Set();
+
+function renderCurves() {
+  const host = $("#charts"); host.innerHTML = "";
+  const runs = DATA.runs.filter(r => RUNSEL.has(r.name) && Object.keys(r.scalars).length);
+  if (!runs.length) { host.innerHTML = '<div class="empty">No run selected.</div>'; return; }
+  const specs = [
+    { k: "end_of_episode_success_rate", t: "End-of-episode success rate",
+      s: "fraction of episodes with the cube inside 5 mm on the final step", pct: 1, zero: 1,
+      hline: 0.072, hlabel: "7.2% pre-solved at reset" },
+    { k: "end_of_episode_pos_align_error", t: "End-of-episode position error",
+      s: "metres, object to goal — clipped at 60 mm; episodes that fling the cube reach 2.8 m",
+      zero: 1, clip: 0.06, hline: 0.005, hlabel: "5 mm tolerance" },
+    { k: "mean_noise_std", t: "gSDE exploration noise", s: "policy action-noise standard deviation" },
+    { k: "dense_success_reward", t: "Goal-distance shaping", s: "logged episode reward contribution" },
+    { k: "success_reward", t: "Success reward", s: "logged episode reward contribution", zero: 1 },
+    { k: "grasp_contact", t: "Grasp contact",
+      s: "logged episode reward contribution — a two-sided fingertip pinch on the cube. Flat at "
+         + "zero means the hand never closes; before this term existed, closing paid nothing at all.",
+      zero: 1 },
+    { k: "object_lift", t: "Contact-gated lift",
+      s: "logged episode reward contribution — upward object velocity while gripping", zero: 1 },
+  ];
+  for (const sp of specs) {
+    const series = runs.filter(r => r.scalars[sp.k]).map(r => ({ name: r.name, data: r.scalars[sp.k] }));
+    if (!series.length) continue;
+    const box = document.createElement("div"); box.className = "chartbox";
+    box.innerHTML = "<h3>" + sp.t + "</h3><div class='sub'>" + sp.s + "</div>";
+    host.append(box);
+    // Legend on the first chart only: the run order and therefore the colours are identical across
+    // all five panels, so repeating it four more times is pure noise.
+    chart(box, series, Object.assign({ legend: host.children.length === 1 }, sp));
+  }
+}
+
+function renderVideos(filter) {
+  const grid = $("#vgrid");
+  let vids = DATA.videos;
+  if (filter && filter !== "all") vids = vids.filter(v => (v.meta && v.meta.kind) === filter);
+  if (!vids.length) {
+    grid.className = "";
+    grid.innerHTML = '<div class="empty">No clips yet. Recording runs once a checkpoint clears the '
+      + 'pre-solved floor.</div>';
+    return;
+  }
+  grid.className = "vgrid";
+  grid.innerHTML = vids.map(v => {
+    const m = v.meta || {};
+    const bits = [];
+    if (m.reset_type) bits.push(FAMILY_SHORT[m.reset_type] || m.reset_type);
+    if (m.checkpoint) bits.push(m.checkpoint);
+    if (m.episodes !== undefined) bits.push(m.episodes + " episodes");
+    if (m.steps !== undefined) bits.push(m.steps + " steps");
+    if (m.final_position_error_m !== undefined) bits.push(mm(m.final_position_error_m) + " final error");
+    return '<div class="vcard"><video src="' + v.file + '" controls preload="metadata" playsinline'
+      + (m.loop ? " loop" : "") + '></video><div class="vmeta"><div class="t">'
+      + (m.title || v.file.split("/").pop()) + '</div><div class="d">' + bits.join(" &middot; ")
+      + (bits.length ? "<br>" : "") + v.size_mb + " MB</div></div></div>";
+  }).join("");
+}
+
+function renderSheets() {
+  const host = $("#sheets");
+  if (!DATA.sheets || !DATA.sheets.length) {
+    host.innerHTML = '<div class="empty">No contact sheets yet.</div>';
+    return;
+  }
+  host.innerHTML = DATA.sheets.map(s => {
+    const m = s.meta || {};
+    const bits = [];
+    if (m.reset_type) bits.push(FAMILY_SHORT[m.reset_type] || m.reset_type);
+    if (m.episode_index !== undefined) bits.push("episode " + m.episode_index);
+    if (m.steps !== undefined) bits.push(m.steps + " steps");
+    return '<figure class="sheet"><a href="' + s.file + '" target="_blank" rel="noopener">'
+      + '<img src="' + s.file + '" alt="' + (m.title || "") + '" loading="lazy"></a>'
+      + '<figcaption><b>' + (m.title || s.file.split("/").pop()) + "</b>"
+      + '<span class="d">' + bits.join(" &middot; ") + "</span>"
+      + (m.caption ? "<span class='c'>" + m.caption + "</span>" : "")
+      + "</figcaption></figure>";
+  }).join("");
+}
+
+function heroVideo() {
+  const host = $("#hero");
+  const h = DATA.videos.find(v => v.meta && v.meta.hero);
+  if (!h) { host.innerHTML = ""; return; }
+  const m = h.meta;
+  host.innerHTML = '<div class="hero"><video src="' + h.file
+    + '" controls autoplay muted loop playsinline></video><div class="cap"><b>'
+    + (m.title || "") + "</b><span>" + (FAMILY_SHORT[m.reset_type] || m.reset_type || "")
+    + "</span><span>" + (m.checkpoint || "") + "</span><span>"
+    + (m.steps !== undefined ? m.steps + " steps" : "") + "</span><span>"
+    + (m.final_position_error_m !== undefined ? mm(m.final_position_error_m) + " final error" : "")
+    + "</span></div></div>";
+}
+
+function renderTiles() {
+  // Degraded runs -- injected action noise, or a solver-iteration count other than the 36 the reset
+  // banks were recorded at -- are measurements of a different physics and must never win the
+  // headline tile just by being the largest number in the file.
+  const ev = DATA.evals.filter(e => e.genuine_success_pct !== undefined && !e.degraded);
+  const best = ev.slice().sort((a, b) => b.genuine_success_pct - a.genuine_success_pct)[0];
+  const runs = DATA.runs.filter(r => r.last_iter > 0);
+  const iters = runs.reduce((a, r) => a + r.last_iter, 0);
+  const t = [];
+  if (best) {
+    t.push('<div class="tile ' + (best.genuine_success_pct > 5 ? "pass" : "hold")
+      + '"><div class="k">Best genuine success</div><div class="v">'
+      + fx(best.genuine_success_pct, 2) + '%</div><div class="s">'
+      + (FAMILY_SHORT[best.reset_distribution] || best.reset_distribution)
+      + ", n=" + best.episodes + "</div></div>");
+    t.push('<div class="tile"><div class="k">Median position error</div><div class="v">'
+      + mm(best.position_error_m && best.position_error_m.median)
+      + '</div><div class="s">tolerance 5.0 mm</div></div>');
+  }
+  t.push('<div class="tile accent"><div class="k">Training iterations</div><div class="v">'
+    + iters + '</div><div class="s">' + runs.length + " runs</div></div>");
+  t.push('<div class="tile"><div class="k">Episodes graded</div><div class="v">'
+    + DATA.evals.reduce((a, e) => a + (e.episodes || 0), 0) + '</div><div class="s">'
+    + DATA.evals.length + " evaluations</div></div>");
+  t.push('<div class="tile"><div class="k">Clips</div><div class="v">' + DATA.videos.length
+    + '</div><div class="s">cut by predicate, not by eye</div></div>');
+  $("#tiles").innerHTML = t.join("");
+}
+
+function renderAB() {
+  const tb = $("#ab tbody");
+  // NEAR-GOAL ONLY, AND THE BEST RUN PER CHECKPOINT. This table exists to answer one question --
+  // does training beat not training, graded identically -- and the carry trackers add dozens of
+  // Stable-Grasp rows that all read 0% because that family is not placed yet. Those belong in the
+  // Physics tab's carry table, where zero is the expected reading and is explained; here they bury
+  // the comparison under rows that answer a different question.
+  const seen = new Set();
+  const rows = DATA.evals
+    .filter(e => e.genuine_success_pct !== undefined && !e.degraded)
+    .filter(e => (e.reset_distribution || "") === "ObjectPartiallyAssembledEEGrasped")
+    .sort((a, b) => (b.genuine_success_pct || 0) - (a.genuine_success_pct || 0))
+    .filter(e => {
+      const k = (e.checkpoint || "").split("/").pop();
+      if (seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    })
+    .slice(0, 12);
+  tb.innerHTML = rows.map(e => {
+    const g = e.genuine_success_pct;
+    const cls = g === undefined ? "" : (g >= 5 ? "good" : g >= 1 ? "warn" : "bad");
+    const su = e.sustained_success_pct;
+    const scls = su === undefined ? "" : (su >= 3 ? "good" : su >= 0.5 ? "warn" : "bad");
+    return "<tr><td>" + (e.checkpoint || "").split("/").pop() + "</td><td>"
+      + (FAMILY_SHORT[e.reset_distribution] || e.reset_distribution) + "</td><td>" + e.episodes
+      + "</td><td>" + fx(e.success_held_at_end_pct, 1) + '%</td><td class="' + cls + '">'
+      + (g === undefined ? "—" : fx(g, 2) + "%") + '</td><td class="' + scls + '">'
+      + (su === undefined ? "—" : fx(su, 2) + "% (" + e.sustained_success_n + ")") + "</td><td>"
+      + mm(e.position_error_m && e.position_error_m.median) + "</td><td>"
+      + fx(e.mean_abs_action_arm, 3) + "</td><td>" + fx(e.mean_abs_action_hand, 3) + "</td></tr>";
+  }).join("") || '<tr><td colspan="9">No episode-length-instrumented evaluation yet.</td></tr>';
+}
+
+function renderEvals() {
+  $("#evaltab tbody").innerHTML = DATA.evals.slice().sort((a, b) => b._mtime - a._mtime).map(e => {
+    const g = e.genuine_success_pct;
+    return "<tr><td>" + e._file + "</td><td>" + (e.checkpoint || "").split("/").pop() + "</td><td>"
+      + (FAMILY_SHORT[e.reset_distribution] || e.reset_distribution) + "</td><td>" + e.episodes
+      + "</td><td>" + fx(e.success_held_at_end_pct, 1) + "%</td><td>"
+      + fx(e.success_ever_during_pct, 1) + "%</td><td>"
+      + (g === undefined ? "—" : fx(g, 2) + "%") + "</td><td>"
+      + mm(e.position_error_m && e.position_error_m.median) + "</td><td>"
+      + mm(e.position_error_m && e.position_error_m.p90) + "</td><td>"
+      + mm(e.thresholds && e.thresholds.position_m) + "</td><td>"
+      + (e.num_envs === undefined ? "—" : e.num_envs) + '</td><td class="'
+      + (e.solver_iters && e.solver_iters !== 36 ? "warn" : "") + '">'
+      + (e.solver_iters === undefined || e.solver_iters === null ? "36" : e.solver_iters)
+      + '</td><td class="' + (e.action_noise ? "warn" : "") + '">'
+      + fx(e.action_noise || 0, 2) + "</td><td>"
+      + fx(e.mean_abs_action_arm, 3) + "</td><td>" + fx(e.mean_abs_action_hand, 3) + "</td></tr>";
+  }).join("") || '<tr><td colspan="15">No evaluations yet.</td></tr>';
+  $("#banktab tbody").innerHTML = DATA.banks.map(b =>
+    "<tr><td>" + b.path + "</td><td>" + b.size_mb + " MB</td></tr>").join("")
+    || '<tr><td colspan="2">No banks found.</td></tr>';
+}
+
+function renderPhysics() {
+  const P = DATA.physics || { families: [], bias_sweep: [] };
+  const row = r => "<tr><td>" + r.c.join("</td><td>") + "</td></tr>";
+  const N = v => (v === null || v === undefined) ? "&mdash;" : v;
+
+  // Families: one row each, ordered along the task rather than alphabetically, because the point is
+  // that the ONE family starting in the air is the one that fails.
+  const ORDER = ["ObjectPartiallyAssembledEEGrasped", "ObjectRestingEEGrasped",
+                 "ObjectAnywhereEEGrasped", "ObjectAnywhereEEAnywhere"];
+  const fam = P.families.filter(f => !f.hold_hand && !f.grip_bias)
+    .sort((a, b) => ORDER.indexOf(a.reset_type) - ORDER.indexOf(b.reset_type));
+  $("#physfam tbody").innerHTML = fam.map(f => row({ c: [
+    "<b>" + (FAMILY_SHORT[f.reset_type] || f.reset_type) + "</b>",
+    N(f.z_start_mm) + " mm", N(f.z_end_mm) + " mm",
+    '<span class="' + (f.drop_mm > 20 ? "bad" : "good") + '">' + N(f.drop_mm) + " mm</span>",
+    N(f.nearest_tip_start_mm) + " mm", N(f.nearest_tip_end_mm) + " mm",
+    N(f.max_tip_force_N) + " N",
+  ]})).join("") || '<tr><td colspan="7" class="empty">No probe recorded yet.</td></tr>';
+
+  const sw = (P.bias_sweep || []).slice().sort((a, b) =>
+    (a.joints || "").localeCompare(b.joints || "") || (a.grip_bias || 0) - (b.grip_bias || 0));
+  const base = fam.find(f => f.reset_type === "ObjectAnywhereEEGrasped");
+  // The hold_hand control belongs at the END of this table, not in the family table: it is not a
+  // reset property, it is the ceiling. Driving all twenty joints at the full +0.1 rad/step is the
+  // most closure the action space can express, and it holds the cube -- which is what establishes
+  // that the grasp was reachable all along and only the command was missing.
+  const ceiling = P.families.filter(f => f.hold_hand).map(f =>
+    Object.assign({}, f, { grip_bias: "0.1 (max action)", joints: "all, full action" }));
+  const rows = (base ? [Object.assign({}, base, { grip_bias: 0, joints: "none (baseline)" })] : [])
+    .concat(sw).concat(ceiling);
+  $("#physbias tbody").innerHTML = rows.map(f => row({ c: [
+    "<b>" + (f.grip_bias === 0 ? "0" : f.grip_bias) + (f.hold_hand ? "" : " rad") + "</b>",
+    f.joints || "&mdash;",
+    N(f.z_start_mm) + " mm", N(f.z_end_mm) + " mm",
+    '<span class="' + (f.drop_mm > 20 ? "bad" : "good") + '">' + N(f.drop_mm) + " mm</span>",
+    N(f.palm_start_mm) + " mm", N(f.palm_end_mm) + " mm", N(f.max_tip_force_N) + " N",
+  ]})).join("") || '<tr><td colspan="8" class="empty">No sweep recorded yet.</td></tr>';
+
+  const vids = (DATA.videos || []).filter(v => (v.meta && v.meta.kind) === "reset-physics");
+  const carry = DATA.carry || [];
+  $("#carrytbl tbody").innerHTML = carry.map(c => {
+    // Colour only what clears the measured noise floor, so the table cannot suggest a trend the
+    // measurement cannot support.
+    const cls = c.p90_mm > 100 ? "good" : (c.p90_mm < 70 ? "bad" : "");
+    return row({ c: [
+      "<b>" + c.box + "</b>", c.iter,
+      fx(c.median_mm, 1) + " mm",
+      fx(c.frac_closer, 0) + "%",
+      '<span class="' + cls + '">' + fx(c.p90_mm, 1) + " mm</span>",
+      fx(c.abs_action_arm, 3),
+      fx(c.success_pct, 1) + "%",
+    ]});
+  }).join("") || '<tr><td colspan="7" class="empty">No tracked checkpoints yet.</td></tr>';
+
+  const TASK_LABEL = { plain: "CubeStackNoOrient (no fix)", grip: "CubeStackGrip",
+                       carry: "CubeStackGripCarry" };
+  const tk = (P.task_ids || []);
+  $("#phystask tbody").innerHTML = tk.map(f => row({ c: [
+    "<b>" + (TASK_LABEL[f.variant] || f.variant) + "</b>",
+    N(f.z_start_mm) + " mm", N(f.z_end_mm) + " mm",
+    '<span class="' + (f.drop_mm > 25 ? "bad" : "good") + '">' + N(f.drop_mm) + " mm</span>",
+    N(f.max_tip_force_N) + " N",
+    '<span class="' + (f.drop_mm > 25 ? "bad" : "good") + '">'
+      + (f.drop_mm > 25 ? "dropped" : "held") + "</span>",
+  ]})).join("") || '<tr><td colspan="6" class="empty">Not measured yet.</td></tr>';
+
+  const FAM_SHORT = {ObjectAnywhereEEAnywhere: "Reaching", ObjectRestingEEGrasped: "Near-Object",
+                     ObjectAnywhereEEGrasped: "Stable Grasp",
+                     ObjectPartiallyAssembledEEGrasped: "Near-Goal"};
+  const orc = (P.oracle || []).slice().sort((a, b) =>
+    (a.reset_type || "").localeCompare(b.reset_type || "") || (a.median_err_mm - b.median_err_mm));
+  $("#physoracle tbody").innerHTML = orc.map(o => row({ c: [
+    "<b>" + (FAM_SHORT[o.reset_type] || o.reset_type) + "</b>",
+    o.stiffness ? o.stiffness + " N/m" : "200 (shipped)",
+    (o.episode_length_s || 16) + " s",
+    o.waypoint ? "over &amp; down" : "direct",
+    N(o.episodes),
+    fx(o.median_err_mm, 1) + " mm",
+    '<span class="' + (o.success_pct > 0 ? "good" : "bad") + '">' + fx(o.success_pct, 1) + "%</span>",
+  ]})).join("") || '<tr><td colspan="7" class="empty">Not measured yet.</td></tr>';
+
+  // The two contact sheets belong to this argument, not to the policy gallery: they show a RESET.
+  const shts = (DATA.sheets || []).filter(x => (x.meta && x.meta.kind) === "reset-physics");
+  $("#physsheets").innerHTML = shts.length
+    ? shts.map(x => '<figure class="sheet"><img src="' + x.file + '" alt="" loading="lazy">'
+        + '<figcaption><b>' + ((x.meta && x.meta.title) || x.file) + "</b>"
+        + '<span class="c">' + ((x.meta && x.meta.caption) || "") + "</span></figcaption></figure>").join("")
+    : "";
+  $("#physvid").innerHTML = vids.length
+    ? "<h2>The same reset, with and without the bias</h2>" + '<div class="vgrid">' + vids.map(v =>
+        '<div class="vcard"><video src="' + v.file + '" controls preload="metadata" playsinline loop>'
+        + '</video><div class="vmeta"><div class="t">' + ((v.meta && v.meta.title) || v.file)
+        + '</div><div class="d">' + ((v.meta && v.meta.note) || "") + "</div></div></div>").join("")
+      + "</div>"
+    : "";
+  $("#cnt-phys").textContent = (fam.length + sw.length + tk.length + orc.length) || "";
+}
+
+function renderRepro() {
+  $("#cmd-train").textContent =
+"./run.sh scripts/reinforcement_learning/rsl_rl/train.py \\\n"
++ "  --task OmniReset-UR10eDelto-CubeStackNoOrient-RelCartesianOSC-State-v0 \\\n"
++ "  --num_envs 4096 --max_iterations 3000 --seed 42 --headless \\\n"
++ "  env.scene.insertive_object=cube34 env.scene.receptive_object=cube34 \\\n"
++ "  agent.algorithm.entropy_coef=0.0005 agent.save_interval=50";
+  $("#cmd-eval").textContent =
+"./run.sh eval_policy.py \\\n"
++ "  --task OmniReset-UR10eDelto-CubeStackNoOrient-RelCartesianOSC-State-Play-v0 \\\n"
++ "  --checkpoint <run>/model_N.pt --num_envs 256 --episodes 800 \\\n"
++ "  --reset_type ObjectPartiallyAssembledEEGrasped --headless";
+  $("#cmd-render").textContent =
+"./run.sh render_rollout.py \\\n"
++ "  --task OmniReset-UR10eDelto-CubeStackNoOrient-RelCartesianOSC-State-Play-v0 \\\n"
++ "  --checkpoint <run>/model_N.pt --num_envs 1 --episodes 40 \\\n"
++ "  --reset_type ObjectPartiallyAssembledEEGrasped --out results/video\n"
++ "python cut_successes.py --dir results/video";
+  $("#cmd-data").textContent =
+"python collect_status.py     # rewrites report/data.json\n"
++ "./serve_report.sh            # serves it on the tailnet";
+}
+
+fetch("data.json?" + Date.now()).then(r => r.json()).then(d => {
+  DATA = d;
+  d.runs.forEach(r => RUNSEL.add(r.name));
+  $("#cnt-video").textContent = d.videos.length || "";
+  $("#cnt-runs").textContent = d.runs.length || "";
+  $("#cnt-evals").textContent = d.evals.length || "";
+  $("#brandsub").textContent = "updated " + d.generated.replace("T", " ");
+
+  const rf = $("#runfilter");
+  rf.innerHTML = d.runs.map(r => '<button class="chip" aria-pressed="true" data-run="' + r.name
+    + '">' + r.name + " &middot; " + r.last_iter + " it</button>").join("");
+  $$(".chip", rf).forEach(c => c.onclick = () => {
+    const on = c.getAttribute("aria-pressed") !== "true";
+    c.setAttribute("aria-pressed", String(on));
+    if (on) RUNSEL.add(c.dataset.run); else RUNSEL.delete(c.dataset.run);
+    renderCurves();
+  });
+
+  const kinds = [...new Set(d.videos.map(v => (v.meta && v.meta.kind) || "clip"))];
+  $("#vfilter").innerHTML = kinds.length > 1
+    ? ['<button class="chip" aria-pressed="true" data-k="all">all</button>']
+      .concat(kinds.map(k => '<button class="chip" data-k="' + k + '">' + k + "</button>")).join("")
+    : "";
+  $$("#vfilter .chip").forEach(c => c.onclick = () => {
+    $$("#vfilter .chip").forEach(x => x.setAttribute("aria-pressed", String(x === c)));
+    renderVideos(c.dataset.k);
+  });
+
+  heroVideo(); renderTiles(); renderAB(); renderVideos("all"); renderSheets();
+  renderCurves();
+  renderEvals(); renderPhysics(); renderRepro();
+  $("#foot").innerHTML = ["generated " + d.generated.replace("T", " "),
+    d.git ? "repo " + d.git : "", "served over tailnet from this machine"]
+    .filter(Boolean).map(s => "<span>" + s + "</span>").join("");
+
+  const h = location.hash.slice(1);
+  const t = h && $('.tab[data-p="' + h + '"]');
+  if (t) t.click();
+});
+</script>

@@ -1,0 +1,45 @@
+{
+ "rel": "/home/mattephi/Work/Rubitek/cube-stack/pinch/out/rel_ObjectRestingEEGrasped.json",
+ "label": "",
+ "pinch": false,
+ "held": 0,
+ "shown": 4,
+ "records": [
+  {
+   "index": 0,
+   "drop_mm": 282.9,
+   "moved_mm": 3177.4,
+   "held": false,
+   "grip_thumb_N": 0.0,
+   "grip_index_N": 0.0,
+   "grip_other_N": 0.0
+  },
+  {
+   "index": 12,
+   "drop_mm": 278.5,
+   "moved_mm": 3286.3,
+   "held": false,
+   "grip_thumb_N": 0.0,
+   "grip_index_N": 0.0,
+   "grip_other_N": 0.0
+  },
+  {
+   "index": 24,
+   "drop_mm": -4426.6,
+   "moved_mm": 5027.6,
+   "held": false,
+   "grip_thumb_N": 0.0,
+   "grip_index_N": 0.0,
+   "grip_other_N": 0.0
+  },
+  {
+   "index": 36,
+   "drop_mm": -4012.6,
+   "moved_mm": 5027.6,
+   "held": false,
+   "grip_thumb_N": 0.0,
+   "grip_index_N": 0.0,
+   "grip_other_N": 0.0
+  }
+ ]
+}

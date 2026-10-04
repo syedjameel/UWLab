@@ -1,0 +1,9 @@
+{
+  "kind": "success",
+  "hero": true,
+  "loop": true,
+  "title": "Six genuine stacks from the final policy",
+  "reset_type": "ObjectPartiallyAssembledEEGrasped",
+  "checkpoint": "b4 model_750",
+  "note": "Last checkpoint of the two-finger carry-shaped run, recorded at the stiff OSC gains it trained under. 51 episodes, 11 successes, 6 of them lasting past the 10-step boundary below which a success is only a reset that spawned solved \u2014 21, 22, 32, 35 and 42 steps, final errors 2.6-4.9 mm against a 5 mm tolerance. Every one ends with the cube at rest (0.0-2 mm/s) and the hand withdrawn 149-176 mm: the success predicate requires neither, so release is measured rather than assumed."
+}

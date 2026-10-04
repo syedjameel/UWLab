@@ -1,0 +1,8 @@
+{
+  "title": "The scene",
+  "caption": "Blue cube is the receptive base, spawned kinematic so it cannot be pushed. The red-and-green cube is the one to be placed; its coloured faces are what make the oriented variant's criterion visible. Green quad is the table mat.",
+  "kind": "frames",
+  "reset_type": "ObjectAnywhereEEAnywhere",
+  "episode_index": 0,
+  "steps": 47
+}

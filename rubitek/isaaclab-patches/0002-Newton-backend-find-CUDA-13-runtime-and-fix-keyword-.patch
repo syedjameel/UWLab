@@ -1,0 +1,128 @@
+From 708b71467b5c1016cb86161727ed84da76875983 Mon Sep 17 00:00:00 2001
+From: mattephi <ialentev@icloud.com>
+Date: Tue, 8 Sep 2026 20:49:37 +0900
+Subject: [PATCH 2/2] Newton backend: find CUDA 13 runtime, and fix
+ keyword-only writer calls
+
+Two upstream bugs in the Newton backend that block UWLab's OmniReset tasks.
+
+1. newton_manager.py: the CUDA runtime probe only tries libcudart.so.12 and the
+   unversioned libcudart.so. Isaac Sim 6.0 / torch cu130 ship CUDA 13, whose pip
+   wheel installs libcudart.so.13 under site-packages/nvidia/cu13/lib with no
+   unversioned symlink and that directory not on the loader path. Both attempts
+   fail, so relaxed-mode graph capture is disabled and Newton silently falls back
+   to EAGER execution -- surfacing only as a warning while costing a large part of
+   its speed advantage. Now tries .13 first, then the older names, then locates
+   the pip-installed runtime via sysconfig. Verified: the run now logs "Newton
+   CUDA graph captured (deferred relaxed mode, RTX-compatible)".
+
+2. rigid_object.py: write_root_{link,com}_{pose,velocity}_to_sim_index are all
+   keyword-only (note the `*` in their signatures), but the deprecated
+   write_root_state_to_sim / write_root_link_state_to_sim wrappers call them
+   positionally, so every call raises
+       TypeError: ... takes 1 positional argument but 2 were given
+   Six sites fixed to pass by keyword. This is what broke the Near-Goal reset
+   family, which replays object poses from the partial-assembly bank.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01JhuUnim6biTdbSspBfCgm5
+---
+ .../assets/rigid_object/rigid_object.py       | 16 ++++---
+ .../isaaclab_newton/physics/newton_manager.py | 43 ++++++++++++++++---
+ 2 files changed, 46 insertions(+), 13 deletions(-)
+
+diff --git a/source/isaaclab_newton/isaaclab_newton/assets/rigid_object/rigid_object.py b/source/isaaclab_newton/isaaclab_newton/assets/rigid_object/rigid_object.py
+index a56e4fb..131af9d 100644
+--- a/source/isaaclab_newton/isaaclab_newton/assets/rigid_object/rigid_object.py
++++ b/source/isaaclab_newton/isaaclab_newton/assets/rigid_object/rigid_object.py
+@@ -1126,8 +1126,10 @@ class RigidObject(BaseRigidObject):
+         )
+         if isinstance(root_state, wp.array):
+             raise ValueError("The root state must be a torch tensor, not a warp array.")
+-        self.write_root_link_pose_to_sim_index(root_state[:, :7], env_ids=env_ids)
+-        self.write_root_com_velocity_to_sim_index(root_state[:, 7:], env_ids=env_ids)
++        # UWLAB PORT NOTE: write_root_link_pose_to_sim_index is keyword-only (see its `*`),
++        # so the positional call upstream raises TypeError. Passing by keyword.
++        self.write_root_link_pose_to_sim_index(root_pose=root_state[:, :7], env_ids=env_ids)
++        self.write_root_com_velocity_to_sim_index(root_velocity=root_state[:, 7:], env_ids=env_ids)
+ 
+     def write_root_com_state_to_sim(
+         self, root_state: torch.Tensor, env_ids: Sequence[int] | torch.Tensor | None = None
+@@ -1142,8 +1144,8 @@ class RigidObject(BaseRigidObject):
+         )
+         if isinstance(root_state, wp.array):
+             raise ValueError("The root state must be a torch tensor, not a warp array.")
+-        self.write_root_com_pose_to_sim_index(root_state[:, :7], env_ids=env_ids)
+-        self.write_root_com_velocity_to_sim_index(root_state[:, 7:], env_ids=env_ids)
++        self.write_root_com_pose_to_sim_index(root_pose=root_state[:, :7], env_ids=env_ids)
++        self.write_root_com_velocity_to_sim_index(root_velocity=root_state[:, 7:], env_ids=env_ids)
+ 
+     def write_root_link_state_to_sim(
+         self, root_state: torch.Tensor, env_ids: Sequence[int] | torch.Tensor | None = None
+@@ -1158,5 +1160,7 @@ class RigidObject(BaseRigidObject):
+         )
+         if isinstance(root_state, wp.array):
+             raise ValueError("The root state must be a torch tensor, not a warp array.")
+-        self.write_root_link_pose_to_sim_index(root_state[:, :7], env_ids=env_ids)
+-        self.write_root_link_velocity_to_sim_index(root_state[:, 7:], env_ids=env_ids)
++        # UWLAB PORT NOTE: write_root_link_pose_to_sim_index is keyword-only (see its `*`),
++        # so the positional call upstream raises TypeError. Passing by keyword.
++        self.write_root_link_pose_to_sim_index(root_pose=root_state[:, :7], env_ids=env_ids)
++        self.write_root_link_velocity_to_sim_index(root_velocity=root_state[:, 7:], env_ids=env_ids)
+diff --git a/source/isaaclab_newton/isaaclab_newton/physics/newton_manager.py b/source/isaaclab_newton/isaaclab_newton/physics/newton_manager.py
+index 238253b..eab933d 100644
+--- a/source/isaaclab_newton/isaaclab_newton/physics/newton_manager.py
++++ b/source/isaaclab_newton/isaaclab_newton/physics/newton_manager.py
+@@ -19,13 +19,42 @@ import warp as wp
+ # Load CUDA runtime for relaxed-mode graph capture (RTX-compatible).
+ # cudaStreamCaptureModeRelaxed (2) allows the RTX compositor's background
+ # CUDA stream to keep running during capture without invalidating it.
+-try:
+-    _cudart = ctypes.CDLL("libcudart.so.12")
+-except OSError:
+-    try:
+-        _cudart = ctypes.CDLL("libcudart.so")
+-    except OSError:
+-        _cudart = None
++def _load_cudart():
++    """Locate the CUDA runtime for relaxed-mode graph capture.
++
++    UWLAB PORT NOTE: upstream tries only ``libcudart.so.12`` and the unversioned
++    ``libcudart.so``. Isaac Sim 6.0 / torch cu130 ship CUDA **13**, and the pip
++    wheels install ``libcudart.so.13`` under ``site-packages/nvidia/cu13/lib``
++    with no unversioned symlink and that directory not on the loader path. So
++    both upstream attempts fail, graph capture is silently disabled, and Newton
++    falls back to eager execution -- which costs a large part of its speed
++    advantage while looking like a mere warning.
++    """
++    import glob
++    import os
++    import sysconfig
++
++    names = ["libcudart.so.13", "libcudart.so.12", "libcudart.so"]
++    for name in names:
++        try:
++            return ctypes.CDLL(name)
++        except OSError:
++            pass
++    # Fall back to the pip-installed CUDA runtime, wherever this interpreter put it.
++    roots = [sysconfig.get_paths().get("purelib", ""), sysconfig.get_paths().get("platlib", "")]
++    for root in filter(None, roots):
++        for pattern in ("nvidia/cu*/lib/libcudart.so*", "nvidia/cuda_runtime/lib/libcudart.so*"):
++            for path in sorted(glob.glob(os.path.join(root, pattern)), reverse=True):
++                if path.endswith(".a"):
++                    continue
++                try:
++                    return ctypes.CDLL(path)
++                except OSError:
++                    pass
++    return None
++
++
++_cudart = _load_cudart()
+ from newton import Axis, CollisionPipeline, Contacts, Control, Model, ModelBuilder, State, eval_fk
+ from newton._src.usd.schemas import SchemaResolverNewton, SchemaResolverPhysx
+ from newton.sensors import SensorContact as NewtonContactSensor
+-- 
+2.55.0
+

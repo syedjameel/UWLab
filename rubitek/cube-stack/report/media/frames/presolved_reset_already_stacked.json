@@ -1,0 +1,8 @@
+{
+  "title": "What a pre-solved reset looks like",
+  "caption": "Near-goal episode 19, scored a success, ran 10 steps. The cube is ALREADY stacked at the first frame -- red-on-green sitting square on the blue base -- and nothing changes for the whole episode. 9 of the 125 stored near-goal reset states (7.2%) spawn inside the 5 mm tolerance like this, which is why the raw success rate cannot be read without splitting by episode length.",
+  "kind": "frames",
+  "reset_type": "ObjectPartiallyAssembledEEGrasped",
+  "episode_index": 19,
+  "steps": 10
+}

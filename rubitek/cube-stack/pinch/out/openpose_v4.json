@@ -1,0 +1,75 @@
+{
+ "seed_pose": "/home/mattephi/Work/Rubitek/cube-stack/pinch/out/pinchpose_22.json",
+ "held_rate": 0.7734,
+ "pinch_rate": 0.707,
+ "single_best": {
+  "held_rate": 1.0,
+  "pinch_rate": 1.0,
+  "grip_thumb_N": 1.708,
+  "grip_index_N": 1.522,
+  "grip_other_N": 0.0,
+  "aperture_mm": 22.59,
+  "clearance_mm": 36.11,
+  "align_deg": 89.04
+ },
+ "close": {
+  "joints": {
+   "rj_dg_1_1": 0.750351,
+   "rj_dg_1_2": -0.861632,
+   "rj_dg_1_3": 0.311633,
+   "rj_dg_1_4": 0.542582,
+   "rj_dg_2_1": -0.221533,
+   "rj_dg_2_2": 0.584831,
+   "rj_dg_2_3": 1.110997,
+   "rj_dg_2_4": 0.978642,
+   "rj_dg_3_1": 0.313581,
+   "rj_dg_3_2": 0.153487,
+   "rj_dg_3_3": 0.758653,
+   "rj_dg_3_4": 0.841969,
+   "rj_dg_4_1": 0.091995,
+   "rj_dg_4_2": 1.309865,
+   "rj_dg_4_3": 0.842643,
+   "rj_dg_4_4": 0.594149,
+   "rj_dg_5_1": 0.498542,
+   "rj_dg_5_2": 0.94804,
+   "rj_dg_5_3": 0.476936,
+   "rj_dg_5_4": 0.471104
+  },
+  "aperture_mm": 22.59
+ },
+ "open": {
+  "joints": {
+   "rj_dg_1_1": 0.60083,
+   "rj_dg_2_1": -0.17268,
+   "rj_dg_3_1": 0.111624,
+   "rj_dg_4_1": 0.139395,
+   "rj_dg_5_1": 0.48851,
+   "rj_dg_1_2": -1.339903,
+   "rj_dg_2_2": 0.180511,
+   "rj_dg_3_2": 0.304997,
+   "rj_dg_4_2": 1.163181,
+   "rj_dg_5_2": 0.888919,
+   "rj_dg_1_3": 0.322935,
+   "rj_dg_2_3": 0.98614,
+   "rj_dg_3_3": 0.835919,
+   "rj_dg_4_3": 0.753081,
+   "rj_dg_5_3": 0.455467,
+   "rj_dg_1_4": 0.722167,
+   "rj_dg_2_4": 1.302429,
+   "rj_dg_3_4": 0.827671,
+   "rj_dg_4_4": 0.586726,
+   "rj_dg_5_4": 0.709842
+  },
+  "aperture_mm": 81.25
+ },
+ "jaw_drift_mm": 0.0,
+ "open_derived": {
+  "source_pose": "/home/mattephi/Work/Rubitek/cube-stack/pinch/out/pinchhold_v4.json",
+  "pad_distances_mm": [
+   42.36,
+   42.19
+  ],
+  "required_mm": 33.5,
+  "margin_mm": 8.69
+ }
+}

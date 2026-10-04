@@ -1,0 +1,5 @@
+{
+  "kind": "reset-physics",
+  "title": "Before: the hand never closes",
+  "note": "Null action for a whole episode, camera on the cube that is supposed to be held. The fingers stay splayed open beside it. Across 64 environments the cube falls 102 mm to 34 mm and every fingertip reads under 0.01 N against a 0.29 N cube."
+}

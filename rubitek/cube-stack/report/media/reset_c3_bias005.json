@@ -1,0 +1,5 @@
+{
+  "kind": "reset-physics",
+  "title": "After: a constant closing bias",
+  "note": "Same family, same null action, one parameter different. Across 64 environments the drop falls to 15 mm, fingertip force rises to 2.58 N, and palm-to-cube SHRINKS from 178 to 174 mm as the fingers draw the cube in."
+}

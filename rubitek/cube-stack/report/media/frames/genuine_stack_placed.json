@@ -1,0 +1,8 @@
+{
+  "title": "Placed and released",
+  "caption": "Near-goal episode 53, 51 steps, final object-to-goal error 4.7 mm against a 5 mm tolerance. The green cube is set square on the blue base and the fingers lift clear: hand 174 mm from the cube at the end, cube moving at 10 mm/s. The success predicate requires none of that -- it tests one distance and would score a cube still held at the goal point identically -- so the release is measured separately and every one of the six genuine successes in this rollout satisfies it.",
+  "kind": "frames",
+  "reset_type": "ObjectPartiallyAssembledEEGrasped",
+  "episode_index": 53,
+  "steps": 51
+}

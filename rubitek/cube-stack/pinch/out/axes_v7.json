@@ -1,0 +1,74 @@
+{
+ "closed": {
+  "grasp_center_offset": [
+   0.084761,
+   0.031759,
+   0.167652
+  ],
+  "grasp_align_axis": [
+   -0.621889,
+   -0.267982,
+   0.735826
+  ],
+  "gripper_approach_direction": [
+   0.650066,
+   0.243572,
+   0.719783
+  ],
+  "pad_separation_mm": 30.815
+ },
+ "open": {
+  "grasp_center_offset": [
+   0.089701,
+   0.025879,
+   0.172353
+  ],
+  "grasp_align_axis": [
+   -0.451165,
+   0.290753,
+   0.843749
+  ],
+  "gripper_approach_direction": [
+   0.660771,
+   0.190635,
+   0.725975
+  ],
+  "pad_separation_mm": 94.664
+ },
+ "fist_reference": {
+  "grasp_center_offset": [
+   0.063714,
+   0.04651,
+   0.149997
+  ],
+  "grasp_align_axis": [
+   0.632272,
+   -0.725372,
+   0.272153
+  ],
+  "gripper_approach_direction": [
+   0.580933,
+   0.42407,
+   0.694753
+  ],
+  "pad_separation_mm": 51.027
+ },
+ "source_pose": "/home/mattephi/Work/Rubitek/cube-stack/pinch/out/openpose_v7.json",
+ "metadata_today": {
+  "grasp_center_offset": [
+   0.0637,
+   0.0465,
+   0.15
+  ],
+  "grasp_align_axis": [
+   -0.7422,
+   0.6555,
+   -0.1395
+  ],
+  "gripper_approach_direction": [
+   0.2582,
+   0.4717,
+   0.8431
+  ]
+ }
+}

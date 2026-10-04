@@ -1,0 +1,5 @@
+{
+  "kind": "reset-physics",
+  "title": "Null action, 0.05 rad closing bias on every hand joint",
+  "caption": "The same family and the same zero action, with the constant closing offset. The fingers close on the cube and keep it. A different reset state is drawn at random, so read the pair as illustration -- the measurement is the 64-environment probe: drop 68 mm to 15 mm, fingertip force 0.01 N to 2.58 N."
+}

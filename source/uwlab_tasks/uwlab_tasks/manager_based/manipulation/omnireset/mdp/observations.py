@@ -28,6 +28,14 @@ def _as_torch(x, device) -> torch.Tensor:
     return x.to(device)
 
 
+def _static_obs(env, key, compute) -> torch.Tensor:
+    """Compute a startup-constant observation once per env and reuse it every step."""
+    cache = env.__dict__.setdefault("_uwlab_static_obs_cache", {})
+    if key not in cache:
+        cache[key] = compute()
+    return cache[key]
+
+
 def target_asset_pose_in_root_asset_frame(
     env: ManagerBasedEnv,
     target_asset_cfg: SceneEntityCfg,
@@ -164,7 +172,11 @@ def get_material_properties(
     asset_cfg: SceneEntityCfg,
 ):
     asset: RigidObject | Articulation = env.scene[asset_cfg.name]
-    return _as_torch(asset.root_physx_view.get_material_properties(), env.device).reshape(env.num_envs, -1)
+    # Cached: materials are randomized only at startup, and this is a PhysX CPU readback over every
+    # shape of the asset (dozens on the DELTO robot) -- per control step it throttled collection.
+    return _static_obs(env, ("material", asset_cfg.name),
+                       lambda: _as_torch(asset.root_physx_view.get_material_properties(), env.device)
+                       .reshape(env.num_envs, -1))
 
 
 def get_mass(
@@ -172,7 +184,9 @@ def get_mass(
     asset_cfg: SceneEntityCfg,
 ):
     asset: RigidObject | Articulation = env.scene[asset_cfg.name]
-    return _as_torch(asset.root_physx_view.get_masses(), env.device).reshape(env.num_envs, -1)
+    # Cached like materials: masses are randomized only at startup (PhysX CPU readback otherwise).
+    return _static_obs(env, ("mass", asset_cfg.name),
+                       lambda: _as_torch(asset.root_physx_view.get_masses(), env.device).reshape(env.num_envs, -1))
 
 
 def get_joint_friction(

@@ -1,0 +1,30 @@
+{
+ "grid": "demo",
+ "label": "hero repo_pinch",
+ "postures": "/home/mattephi/Work/Rubitek/cube-stack/pinch/out/jawopt30.json",
+ "num_envs": 1,
+ "cube_mass_kg": 0.03930400684475899,
+ "results": [
+  {
+   "ctrl": "direct",
+   "posture": "repo_pinch",
+   "ramp_s": 2.0,
+   "friction": 0.0003,
+   "stiff4": 1.0,
+   "pin": false,
+   "held": true,
+   "final_dist_mm": 15.69,
+   "dist_at_release_mm": 18.84,
+   "aperture_mm": 51.03,
+   "peak_cube_speed": 0.0806,
+   "thumb_err_rad": 0.0285,
+   "index_err_rad": 0.0002,
+   "max_distal_err_rad": 0.0581,
+   "grip_thumb_N": 0.168,
+   "grip_index_N": 0.0,
+   "grip_other_N": 0.35,
+   "peak_thumb_N": 0.25,
+   "peak_index_N": 0.0
+  }
+ ]
+}

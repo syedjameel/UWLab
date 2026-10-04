@@ -1,0 +1,5 @@
+{
+  "kind": "reset-physics",
+  "title": "Null action, no grip bias: the fingers never close",
+  "caption": "One Stable-Grasp episode under the zero action, camera on the cube that is supposed to be held. The green insertive cube sits beside the fingers for all 160 steps while the hand drifts past it. Nothing in the frame is the policy's doing -- the action is identically zero, so this is what the RESET produces."
+}

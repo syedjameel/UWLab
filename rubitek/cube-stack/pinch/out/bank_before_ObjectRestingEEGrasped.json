@@ -1,0 +1,82 @@
+{
+ "bank": "/home/mattephi/Work/Rubitek/UWLab-cubestack/Datasets_ur10e_delto/OmniReset/Resets/InsertiveCube34__ReceptiveCube34/resets_ObjectRestingEEGrasped.pt",
+ "label": "before ObjectRestingEEGrasped",
+ "settle_s": 1.5,
+ "total_states": 103,
+ "shown": 8,
+ "stable": 5,
+ "records": [
+  {
+   "index": 0,
+   "drift_mm": 5.41,
+   "fell": false,
+   "pop_mm": 20.57,
+   "z_stored_mm": 21.0,
+   "z_start_mm": 41.6,
+   "z_end_mm": 46.7
+  },
+  {
+   "index": 12,
+   "drift_mm": 2.79,
+   "fell": false,
+   "pop_mm": 23.03,
+   "z_stored_mm": 21.0,
+   "z_start_mm": 44.0,
+   "z_end_mm": 46.8
+  },
+  {
+   "index": 24,
+   "drift_mm": 4.2,
+   "fell": false,
+   "pop_mm": 21.82,
+   "z_stored_mm": 21.0,
+   "z_start_mm": 42.8,
+   "z_end_mm": 46.8
+  },
+  {
+   "index": 36,
+   "drift_mm": 11.01,
+   "fell": false,
+   "pop_mm": 20.11,
+   "z_stored_mm": 21.0,
+   "z_start_mm": 41.1,
+   "z_end_mm": 52.1
+  },
+  {
+   "index": 48,
+   "drift_mm": 12.76,
+   "fell": false,
+   "pop_mm": 18.31,
+   "z_stored_mm": 21.0,
+   "z_start_mm": 39.3,
+   "z_end_mm": 52.1
+  },
+  {
+   "index": 60,
+   "drift_mm": 4.11,
+   "fell": false,
+   "pop_mm": 21.91,
+   "z_stored_mm": 21.0,
+   "z_start_mm": 42.9,
+   "z_end_mm": 46.8
+  },
+  {
+   "index": 72,
+   "drift_mm": 13.23,
+   "fell": false,
+   "pop_mm": 18.44,
+   "z_stored_mm": 21.0,
+   "z_start_mm": 39.4,
+   "z_end_mm": 52.7
+  },
+  {
+   "index": 84,
+   "drift_mm": 1.89,
+   "fell": false,
+   "pop_mm": 24.01,
+   "z_stored_mm": 21.0,
+   "z_start_mm": 45.0,
+   "z_end_mm": 46.9
+  }
+ ]
+}

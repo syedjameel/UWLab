@@ -1,0 +1,51 @@
+{
+  "ordinal": 4,
+  "idx": 3,
+  "z_stored_m": 0.28648465871810913,
+  "z_after_settle_m": 0.020999984815716743,
+  "drift_mm_median": 267.23113656044006,
+  "drift_mm_range": [
+    267.23113656044006,
+    267.23113656044006
+  ],
+  "drift_n_repeats": 1,
+  "target_gap_rad_max": 0.25761738419532776,
+  "has_stored_targets": true,
+  "fingertip_force_N": {
+    "rl_dg_1_tip": 0.0,
+    "rl_dg_5_tip": 0.0,
+    "rl_dg_2_tip": 0.0,
+    "rl_dg_3_tip": 0.0,
+    "rl_dg_4_tip": 0.0
+  },
+  "force_threshold_N": 0.2,
+  "thumb_tip_names": [
+    "rl_dg_1_tip",
+    "rl_dg_5_tip"
+  ],
+  "tip_names": [
+    "rl_dg_2_tip",
+    "rl_dg_3_tip",
+    "rl_dg_4_tip"
+  ],
+  "thumb_loaded": [],
+  "tip_loaded": [],
+  "n_tips_loaded": 0,
+  "opposed": false,
+  "contact_verdict": "NO_CONTACT",
+  "table_datum_z_m": -0.0038902508094906807,
+  "height_above_table_m": 0.024890235625207424,
+  "supported": false,
+  "in_palm_offset_m_REFERENCE_ONLY": [
+    0.32340994477272034,
+    0.10077321529388428,
+    0.3251657783985138
+  ],
+  "bore_engagement_PREMEASURED_NOT_RECOMPUTED": null,
+  "bore_in_bore": null,
+  "radial_clearance_mm": 0.912,
+  "engaged_span_mm": 25.0,
+  "png_stem": "state04_idx3_z0.286m_NO_CONTACT",
+  "has_macro_view": false,
+  "macro_png_stem": null
+}

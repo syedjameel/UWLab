@@ -1,0 +1,49 @@
+{
+  "ordinal": 38,
+  "idx": 37,
+  "z_stored_m": 0.05148462951183319,
+  "z_after_settle_m": 0.05146896839141846,
+  "drift_mm_median": 0.03781222039833665,
+  "drift_mm_range": [
+    0.03781222039833665,
+    0.03781222039833665
+  ],
+  "drift_n_repeats": 1,
+  "target_gap_rad_max": 0.017153892666101456,
+  "has_stored_targets": true,
+  "fingertip_force_N": {
+    "left_inner_finger": 24.06370735168457,
+    "right_inner_finger": 24.199541091918945
+  },
+  "force_threshold_N": 0.2,
+  "thumb_tip_names": [
+    "left_inner_finger"
+  ],
+  "tip_names": [
+    "right_inner_finger"
+  ],
+  "thumb_loaded": [
+    "left_inner_finger"
+  ],
+  "tip_loaded": [
+    "right_inner_finger"
+  ],
+  "n_tips_loaded": 2,
+  "opposed": true,
+  "contact_verdict": "OPPOSED",
+  "table_datum_z_m": -0.00542124267667532,
+  "height_above_table_m": 0.05689021106809378,
+  "supported": false,
+  "in_palm_offset_m_REFERENCE_ONLY": [
+    0.0006037838757038116,
+    -0.009835049510002136,
+    0.13721200823783875
+  ],
+  "bore_engagement_PREMEASURED_NOT_RECOMPUTED": null,
+  "bore_in_bore": null,
+  "radial_clearance_mm": 0.912,
+  "engaged_span_mm": 25.0,
+  "png_stem": "state38_idx37_z0.051m_OPPOSED",
+  "has_macro_view": false,
+  "macro_png_stem": null
+}

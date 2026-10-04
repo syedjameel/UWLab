@@ -1,0 +1,13 @@
+QA RENDER_ObjectRestingEEGrasped_START 2026-09-15T22:29:01+09:00
+QA RENDER_ObjectRestingEEGrasped_END rc=0 [view] OPPOSED 33/40  CONTACT_NO_OPPOSITION 0/40  NO_CONTACT 7/40  AIR 2026-09-15T22:31:53+09:00
+[filter] resets_ObjectRestingEEGrasped.unfiltered.pt: kept 33/40; dropped {4: 'NO_CONTACT', 11: 'NO_CONTACT', 13: 'NO_CONTACT', 20: 'NO_CONTACT', 24: 'NO_CONTACT', 28: 'NO_CONTACT', 39: 'NO_CONTACT'}
+[filter] wrote Datasets_ur10e_linear/OmniReset/Resets/InsertiveCube34__ReceptiveCube34/resets_ObjectRestingEEGrasped.pt
+QA RENDER_ObjectAnywhereEEGrasped_START 2026-09-15T22:31:54+09:00
+QA RENDER_ObjectAnywhereEEGrasped_END rc=0 [view] OPPOSED 40/40  CONTACT_NO_OPPOSITION 0/40  NO_CONTACT 0/40  AIR 2026-09-15T22:34:43+09:00
+[filter] resets_ObjectAnywhereEEGrasped.unfiltered.pt: kept 40/40; dropped {}
+[filter] wrote Datasets_ur10e_linear/OmniReset/Resets/InsertiveCube34__ReceptiveCube34/resets_ObjectAnywhereEEGrasped.pt
+QA RENDER_ObjectPartiallyAssembledEEGrasped_START 2026-09-15T22:34:44+09:00
+QA RENDER_ObjectPartiallyAssembledEEGrasped_END rc=0 [view] OPPOSED 39/40  CONTACT_NO_OPPOSITION 0/40  NO_CONTACT 1/40  AIR 2026-09-15T22:37:32+09:00
+[filter] resets_ObjectPartiallyAssembledEEGrasped.unfiltered.pt: kept 39/40; dropped {19: 'NO_CONTACT'}
+[filter] wrote Datasets_ur10e_linear/OmniReset/Resets/InsertiveCube34__ReceptiveCube34/resets_ObjectPartiallyAssembledEEGrasped.pt
+QA_DONE 2026-09-15T22:37:34+09:00

@@ -1,0 +1,4 @@
+Name: rsl-rl-lib
+Version: 3.1.2
+Location: /home/mattephi/Work/Rubitek/uwlab-env/.venv-is6/lib/python3.12/site-packages
+torch 2.11.0+cu130

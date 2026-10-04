@@ -1,0 +1,8 @@
+{
+  "kind": "success",
+  "title": "Final policy, two-finger hand \u2014 genuine stack",
+  "reset_type": "ObjectPartiallyAssembledEEGrasped",
+  "checkpoint": "b3 model_800",
+  "loop": true,
+  "note": "Recorded from the last checkpoint of the two-finger run, at the same stiff OSC gains it trained under. 43 episodes rendered, 3 successes, 1 lasting longer than the 10-step boundary below which a success is only a reset that spawned solved \u2014 28 steps, 3.9 mm final error against a 5 mm tolerance."
+}

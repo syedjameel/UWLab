@@ -1,0 +1,82 @@
+{
+ "bank": "/home/mattephi/Work/Rubitek/UWLab-cubestack/Datasets_ur10e_delto/OmniReset_pinchon/Resets/InsertiveCube34__ReceptiveCube34/resets_ObjectAnywhereEEAnywhere.pt",
+ "label": "after ObjectAnywhereEEAnywhere",
+ "settle_s": 1.5,
+ "total_states": 4008,
+ "shown": 8,
+ "stable": 5,
+ "records": [
+  {
+   "index": 0,
+   "drift_mm": 13.82,
+   "fell": false,
+   "pop_mm": 18.99,
+   "z_stored_mm": 21.0,
+   "z_start_mm": 40.0,
+   "z_end_mm": 53.8
+  },
+  {
+   "index": 501,
+   "drift_mm": 4.47,
+   "fell": false,
+   "pop_mm": 21.44,
+   "z_stored_mm": 21.0,
+   "z_start_mm": 42.4,
+   "z_end_mm": 46.9
+  },
+  {
+   "index": 1002,
+   "drift_mm": 13.58,
+   "fell": false,
+   "pop_mm": 19.01,
+   "z_stored_mm": 21.0,
+   "z_start_mm": 40.0,
+   "z_end_mm": 53.6
+  },
+  {
+   "index": 1503,
+   "drift_mm": 6.37,
+   "fell": false,
+   "pop_mm": 19.68,
+   "z_stored_mm": 21.0,
+   "z_start_mm": 40.7,
+   "z_end_mm": 46.9
+  },
+  {
+   "index": 2004,
+   "drift_mm": 2.62,
+   "fell": false,
+   "pop_mm": 23.37,
+   "z_stored_mm": 21.0,
+   "z_start_mm": 44.4,
+   "z_end_mm": 46.9
+  },
+  {
+   "index": 2505,
+   "drift_mm": 2.8,
+   "fell": false,
+   "pop_mm": 23.01,
+   "z_stored_mm": 21.0,
+   "z_start_mm": 44.0,
+   "z_end_mm": 46.8
+  },
+  {
+   "index": 3006,
+   "drift_mm": 2.24,
+   "fell": false,
+   "pop_mm": 23.68,
+   "z_stored_mm": 21.0,
+   "z_start_mm": 44.7,
+   "z_end_mm": 46.9
+  },
+  {
+   "index": 3507,
+   "drift_mm": 13.94,
+   "fell": false,
+   "pop_mm": 18.84,
+   "z_stored_mm": 21.0,
+   "z_start_mm": 39.8,
+   "z_end_mm": 53.8
+  }
+ ]
+}
